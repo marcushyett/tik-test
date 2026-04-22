@@ -8,6 +8,7 @@ import { generatePlan } from "./plan.js";
 import { runPlan } from "./runner.js";
 import { editHighlightReel } from "./editor.js";
 import { startViewer } from "./viewer.js";
+import { runForPR } from "./pr.js";
 
 const program = new Command();
 program
@@ -59,6 +60,31 @@ program
       process.env.TIK_RUNS_DIR = path.resolve(opts.outDir);
       await startViewer(Number(process.env.PORT ?? 5173));
     }
+  });
+
+program
+  .command("pr")
+  .argument("<pr>", "PR reference: URL, owner/repo#number, or bare number in a repo")
+  .description("Run tik-test against a GitHub pull request, then comment back with the video")
+  .option("-o, --out-dir <dir>", "output directory", "runs")
+  .option("-u, --url <url>", "override the target URL (skips preview-URL detection)")
+  .option("--music <path>", "optional audio file to mix under the video")
+  .option("--voice <name>", "macOS `say` voice for narration", "Samantha")
+  .option("--no-voice", "disable narration")
+  .option("--asset-repo <owner/repo>", "repo to upload the video release asset to (default: PR repo)")
+  .option("--skip-clone", "run against the current working directory instead of cloning")
+  .option("--skip-comment", "render the video but don't post a PR comment")
+  .action(async (pr, opts) => {
+    const voice = opts.voice === false ? null : (opts.voice as string);
+    await runForPR(pr, {
+      outDir: opts.outDir,
+      voice,
+      music: opts.music,
+      urlOverride: opts.url,
+      assetRepo: opts.assetRepo,
+      skipClone: !!opts.skipClone,
+      skipComment: !!opts.skipComment,
+    });
   });
 
 program
