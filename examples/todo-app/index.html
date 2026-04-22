@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Taskpad — stay focused</title>
+<style>
+  :root {
+    --bg: #f3f4f7;
+    --card: #ffffff;
+    --ink: #0e1116;
+    --ink-2: #4b5260;
+    --line: #e4e6ec;
+    --accent: #6c5cff;
+    --accent-2: #0bd8a6;
+    --danger: #ef4b4b;
+    --shadow: 0 12px 32px rgba(20, 22, 30, 0.08);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Helvetica, Arial, sans-serif; background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; }
+  .app { max-width: 640px; margin: 48px auto; padding: 0 20px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  header h1 { font-size: 28px; margin: 0; letter-spacing: -0.02em; }
+  header h1 span { color: var(--accent); }
+  header small { color: var(--ink-2); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
+  .new-task { display: flex; gap: 10px; padding: 16px; border-bottom: 1px solid var(--line); }
+  .new-task input[type=text] { flex: 1; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 16px; outline: none; transition: border-color 120ms; }
+  .new-task input[type=text]:focus { border-color: var(--accent); }
+  .new-task select { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fff; }
+  .new-task button { background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: 0 18px; font-weight: 700; cursor: pointer; transition: transform 80ms, background 120ms; }
+  .new-task button:hover { transform: translateY(-1px); background: #5a4bf0; }
+  .filters { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: #fafbfd; }
+  .filters button { background: transparent; border: 1px solid var(--line); color: var(--ink-2); border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+  .filters button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+  ul.tasks { list-style: none; margin: 0; padding: 0; }
+  ul.tasks li { display: grid; grid-template-columns: 28px 1fr auto auto; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); transition: background 120ms; }
+  ul.tasks li:last-child { border-bottom: 0; }
+  ul.tasks li:hover { background: #fafbfd; }
+  ul.tasks li.done .title { text-decoration: line-through; color: var(--ink-2); }
+  ul.tasks li.done { opacity: 0.7; }
+  ul.tasks input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent-2); cursor: pointer; }
+  .title { font-size: 15px; }
+  .badge { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 999px; background: #f0f2fa; color: var(--ink-2); }
+  .badge.high { background: #ffedea; color: #c83c1e; }
+  .badge.low { background: #eafaf3; color: #0a8560; }
+  .del { background: transparent; border: 0; color: var(--ink-2); cursor: pointer; padding: 6px 8px; border-radius: 8px; }
+  .del:hover { background: #ffecec; color: var(--danger); }
+  .empty { padding: 40px 20px; text-align: center; color: var(--ink-2); font-size: 14px; }
+  footer.foot { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; font-size: 12px; color: var(--ink-2); background: #fafbfd; border-top: 1px solid var(--line); }
+  footer.foot button { background: transparent; border: 0; color: var(--ink-2); font-size: 12px; cursor: pointer; }
+  footer.foot button:hover { color: var(--danger); text-decoration: underline; }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity 160ms, transform 160ms; }
+  .toast.show { opacity: 1; transform: translate(-50%, -8px); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Task<span>pad</span></h1>
+    <small id="counter" data-testid="counter">0 tasks</small>
+  </header>
+
+  <div class="card">
+    <form class="new-task" id="new-task-form">
+      <input id="new-task-input" data-testid="new-task-input" type="text" placeholder="What needs doing?" autocomplete="off" required />
+      <select id="new-task-priority" data-testid="new-task-priority">
+        <option value="low">Low</option>
+        <option value="normal" selected>Normal</option>
+        <option value="high">High</option>
+      </select>
+      <button type="submit" data-testid="add-task">Add</button>
+    </form>
+
+    <div class="filters" data-testid="filters">
+      <button data-filter="all" class="active">All</button>
+      <button data-filter="active">Active</button>
+      <button data-filter="done">Done</button>
+      <button data-filter="high">High priority</button>
+    </div>
+
+    <ul class="tasks" id="tasks" data-testid="tasks"></ul>
+    <div class="empty" id="empty" data-testid="empty">Nothing here yet — add your first task above.</div>
+
+    <footer class="foot">
+      <span id="stats" data-testid="stats">—</span>
+      <button id="clear-done" data-testid="clear-done">Clear completed</button>
+    </footer>
+  </div>
+</div>
+
+<div class="toast" id="toast" data-testid="toast"></div>
+
+<script>
+  const state = { tasks: [], filter: "all" };
+  const $ = (s) => document.querySelector(s);
+  const tasksEl = $("#tasks");
+  const emptyEl = $("#empty");
+  const statsEl = $("#stats");
+  const counterEl = $("#counter");
+  const toast = (msg) => {
+    const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+    setTimeout(() => t.classList.remove("show"), 1400);
+  };
+
+  function render() {
+    let items = state.tasks;
+    if (state.filter === "active") items = items.filter((t) => !t.done);
+    else if (state.filter === "done") items = items.filter((t) => t.done);
+    else if (state.filter === "high") items = items.filter((t) => t.priority === "high");
+
+    tasksEl.innerHTML = items.map((t) => `
+      <li class="${t.done ? "done" : ""}" data-id="${t.id}" data-testid="task-${t.id}">
+        <input type="checkbox" data-testid="toggle-${t.id}" ${t.done ? "checked" : ""} />
+        <div class="title">${escape(t.title)}</div>
+        <span class="badge ${t.priority}">${t.priority}</span>
+        <button class="del" data-testid="del-${t.id}" aria-label="Delete task">✕</button>
+      </li>
+    `).join("");
+
+    emptyEl.style.display = items.length ? "none" : "block";
+    const total = state.tasks.length;
+    const done = state.tasks.filter((t) => t.done).length;
+    counterEl.textContent = `${total} ${total === 1 ? "task" : "tasks"}`;
+    statsEl.textContent = total ? `${done}/${total} done · ${state.tasks.filter((t) => t.priority === "high" && !t.done).length} high-priority pending` : "No tasks";
+
+    tasksEl.querySelectorAll("input[type=checkbox]").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const id = cb.closest("li").dataset.id;
+        const t = state.tasks.find((x) => x.id === id);
+        t.done = cb.checked;
+        if (t.done) toast("Nice — marked done.");
+        render();
+      });
+    });
+    tasksEl.querySelectorAll(".del").forEach((b) => {
+      b.addEventListener("click", () => {
+        const id = b.closest("li").dataset.id;
+        state.tasks = state.tasks.filter((x) => x.id !== id);
+        toast("Task removed.");
+        render();
+      });
+    });
+  }
+
+  function escape(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+
+  $("#new-task-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const title = $("#new-task-input").value.trim();
+    if (!title) return;
+    const priority = $("#new-task-priority").value;
+    state.tasks.push({ id: "t" + (state.tasks.length + 1) + "-" + Math.random().toString(36).slice(2, 6), title, priority, done: false });
+    $("#new-task-input").value = "";
+    toast("Task added.");
+    render();
+  });
+
+  document.querySelectorAll(".filters button").forEach((b) => {
+    b.addEventListener("click", () => {
+      document.querySelectorAll(".filters button").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      state.filter = b.dataset.filter;
+      render();
+    });
+  });
+
+  $("#clear-done").addEventListener("click", () => {
+    const before = state.tasks.length;
+    state.tasks = state.tasks.filter((t) => !t.done);
+    if (before !== state.tasks.length) toast("Cleared completed.");
+    render();
+  });
+
+  // Seed with some demo data so first run isn't empty
+  state.tasks = [
+    { id: "seed-1", title: "Review draft spec", priority: "normal", done: true },
+    { id: "seed-2", title: "Ship Taskpad v0.1", priority: "high", done: false },
+  ];
+  render();
+</script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>tik-test · review your UI changes</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<aside id="runs">
+  <header>
+    <div class="logo">
+      <span class="logo-mark">▶</span> tik-test
+    </div>
+    <div class="tagline">UI change review, TikTok-style.</div>
+  </header>
+  <div id="runs-list"></div>
+  <footer>
+    <small>runs live in <code id="runs-dir">./runs</code></small>
+  </footer>
+</aside>
+
+<main id="stage">
+  <section id="player-pane">
+    <div id="player-wrap">
+      <video id="player" controls playsinline></video>
+      <div id="player-empty">Pick a run to watch.</div>
+    </div>
+    <div id="player-meta">
+      <div>
+        <h1 id="run-title">—</h1>
+        <div id="run-sub" class="dim"></div>
+      </div>
+      <div id="run-stats"></div>
+    </div>
+  </section>
+
+  <section id="timeline-pane">
+    <div class="timeline-head">
+      <h2>Timeline</h2>
+      <div id="timeline-legend">
+        <span class="chip pass">pass</span>
+        <span class="chip fail">fail</span>
+        <span class="chip skip">skip</span>
+        <span class="chip crit">high-importance</span>
+      </div>
+    </div>
+    <ol id="timeline"></ol>
+  </section>
+
+  <section id="feedback-pane">
+    <h2>Send feedback to Claude</h2>
+    <p class="dim">Click events you want to flag, add a note, then copy the prompt and paste into <code>claude -p</code>.</p>
+    <textarea id="feedback-note" placeholder="What should Claude fix? e.g. 'The submit button appears broken on step 6 — see caption.'"></textarea>
+    <div class="feedback-actions">
+      <button id="copy-prompt">Copy prompt</button>
+      <span id="copy-status" class="dim"></span>
+    </div>
+    <details>
+      <summary>Preview prompt</summary>
+      <pre id="prompt-preview"></pre>
+    </details>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
