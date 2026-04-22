@@ -7,7 +7,7 @@ import { gh, ghOrThrow, parsePRRef, type PRRef } from "./gh.js";
 import { loadConfig } from "./config.js";
 import { generatePlan } from "./plan.js";
 import { runPlan } from "./runner.js";
-import { editHighlightReel } from "./editor.js";
+import { editHighlightReel, renderPreviewGif } from "./editor.js";
 
 export interface PROptions {
   outDir: string;
@@ -41,9 +41,11 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
       if (!process.env.TIK_KEEP_CLONE) await rm(tmp, { recursive: true, force: true });
     };
     console.log(chalk.dim(`  cloning into ${tmp}…`));
-    await ghOrThrow(["repo", "clone", `${ref.owner}/${ref.repo}`, tmp, "--", "--depth", "50"]);
-    console.log(chalk.dim(`  checking out PR branch…`));
-    await ghOrThrow(["pr", "checkout", String(ref.number), "--repo", `${ref.owner}/${ref.repo}`], { cwd: tmp });
+    await ghOrThrow(["repo", "clone", `${ref.owner}/${ref.repo}`, tmp]);
+    console.log(chalk.dim(`  fetching PR branch…`));
+    // Fetch the PR's ref directly — gh pr checkout can struggle with shallow / tracking setup.
+    await runGit(tmp, ["fetch", "origin", `pull/${ref.number}/head:tik-test-pr-${ref.number}`]);
+    await runGit(tmp, ["checkout", `tik-test-pr-${ref.number}`]);
   }
 
   // Locate config (claude.md or README). Prefer claude.md → CLAUDE.md → tik-test.md → README.md.
@@ -92,12 +94,19 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     await editHighlightReel({ artifacts, outPath, musicPath: cfg.music ?? opts.music, voice: opts.voice });
     console.log(chalk.green(`     ✓ ${outPath}`));
 
+    // Build the inline-renderable GIF preview alongside the MP4.
+    const gifPath = path.join(runDir, "preview.gif");
+    console.log(chalk.dim("  rendering inline GIF preview…"));
+    await renderPreviewGif(outPath, gifPath);
+    console.log(chalk.green(`     ✓ ${gifPath}`));
+
     if (!opts.skipComment) {
       console.log(chalk.bold("\n4/4  uploading + commenting on PR"));
       const assetRepo = opts.assetRepo ?? `${ref.owner}/${ref.repo}`;
-      const videoUrl = await uploadRelease(assetRepo, outPath, ref);
+      const { videoUrl, gifUrl } = await uploadRelease(assetRepo, [outPath, gifPath], ref);
       await postPRComment(ref, {
         videoUrl,
+        gifUrl,
         plan: plan.name,
         events: artifacts.events,
         totalMs: artifacts.totalMs,
@@ -184,6 +193,16 @@ async function findConfig(workDir: string): Promise<string | null> {
   return null;
 }
 
+function runGit(cwd: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let err = "";
+    child.stderr.on("data", (b) => (err += b.toString()));
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`git ${args.join(" ")} failed: ${err}`))));
+  });
+}
+
 function spawnBackground(cmd: string, cwd: string): { kill: () => void } {
   const child = spawn("bash", ["-lc", cmd], { cwd, stdio: "inherit", detached: true });
   return {
@@ -205,35 +224,42 @@ async function waitForUrl(url: string, timeoutMs: number): Promise<void> {
   throw new Error(`Dev server at ${url} didn't respond within ${timeoutMs}ms.`);
 }
 
-async function uploadRelease(assetRepo: string, filePath: string, ref: PRRef): Promise<string> {
+async function uploadRelease(assetRepo: string, filePaths: string[], ref: PRRef): Promise<{ videoUrl: string; gifUrl?: string }> {
   const tagBase = "tik-test-reviews";
   const tag = `${tagBase}-pr${ref.number}-${Date.now()}`;
   const title = `tik-test review — PR #${ref.number}`;
   const notes = `Auto-generated video review of PR #${ref.number} in ${ref.owner}/${ref.repo}.`;
-  // Create release (tag created from default branch) and upload the file as asset.
   const { code, stderr } = await gh([
     "release", "create", tag,
     "--repo", assetRepo,
     "--title", title,
     "--notes", notes,
     "--prerelease",
-    filePath,
+    ...filePaths,
   ]);
   if (code !== 0) throw new Error(`gh release create failed: ${stderr}`);
-  // Resolve download URL from assets listing.
   const listRaw = await ghOrThrow([
     "release", "view", tag,
     "--repo", assetRepo,
     "--json", "assets",
   ]);
   const assets = JSON.parse(listRaw).assets as Array<{ name: string; apiUrl: string; url: string; browser_download_url?: string }>;
-  const asset = assets.find((a) => a.name === path.basename(filePath));
-  if (!asset) throw new Error(`Uploaded asset not found for ${filePath}`);
-  return asset.url ?? asset.browser_download_url ?? `https://github.com/${assetRepo}/releases/download/${tag}/${path.basename(filePath)}`;
+  const lookup = (name: string) => {
+    const a = assets.find((x) => x.name === name);
+    if (!a) return undefined;
+    return a.url ?? a.browser_download_url ?? `https://github.com/${assetRepo}/releases/download/${tag}/${name}`;
+  };
+  const videoName = filePaths.find((p) => /\.mp4$/i.test(p));
+  const gifName = filePaths.find((p) => /\.gif$/i.test(p));
+  const videoUrl = videoName ? lookup(path.basename(videoName)) : undefined;
+  const gifUrl = gifName ? lookup(path.basename(gifName)) : undefined;
+  if (!videoUrl) throw new Error("Failed to resolve uploaded MP4 asset URL");
+  return { videoUrl, gifUrl };
 }
 
 interface CommentData {
   videoUrl: string;
+  gifUrl?: string;
   plan: string;
   events: Array<{ description: string; outcome: string; error?: string; importance: string; startMs: number; endMs: number }>;
   totalMs: number;
@@ -252,14 +278,22 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
   };
   const stepsMd = data.events.map(bulletFor).join("\n");
 
+  const preview = data.gifUrl
+    // Inline GIF renders animated on GitHub. Wrap it in a link to the full MP4 so clicking it opens the download.
+    ? `<a href="${data.videoUrl}"><img src="${data.gifUrl}" alt="tik-test review" width="360" /></a>`
+    // Fallback: <video> tag (may degrade to a download link depending on GitHub rendering rules for release assets).
+    : `<video src="${data.videoUrl}" controls width="480"></video>`;
+
   const body = [
     `### 🎬 tik-test review — ${emoji} ${status}`,
     ``,
     `**${data.plan}** — ${passed}/${data.events.length} steps passed in ${(data.totalMs / 1000).toFixed(1)}s.`,
     ``,
-    `<video src="${data.videoUrl}" controls width="480"></video>`,
+    preview,
     ``,
-    `[Download MP4](${data.videoUrl})`,
+    `_The preview above loops silently — open the MP4 for the narrated version._`,
+    ``,
+    `▶ [Play full video (MP4, with voice-over)](${data.videoUrl})`,
     ``,
     `<details><summary>Test steps</summary>`,
     ``,
@@ -268,7 +302,7 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
     `</details>`,
     ``,
     `---`,
-    `Generated by [tik-test](https://github.com/marcushyett/tik-test). Reply with \`/tik-test rerun\` to try again.`,
+    `Generated by [tik-test](https://github.com/marcushyett/tik-test). Re-run with \`tik-test pr ${ref.number}\`.`,
   ].join("\n");
 
   await ghOrThrow([

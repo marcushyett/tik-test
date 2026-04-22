@@ -543,3 +543,34 @@ export async function editHighlightReel({ artifacts, outPath, musicPath, voice =
   }
   return outPath;
 }
+
+/**
+ * Generate a compressed animated preview from the highlight MP4 that renders
+ * inline on GitHub. GitHub renders release-asset GIFs inline via ![]() but
+ * mp4 <video> tags from release assets fall back to a download link, so a
+ * companion GIF is what makes the PR comment actually play.
+ *
+ * Two-pass ffmpeg: first generate an optimised 256-colour palette, then apply
+ * it. Caps the GIF at ~45 seconds by speeding it up slightly — keeps it under
+ * the GitHub 10MB attachment ceiling for typical run lengths.
+ */
+export async function renderPreviewGif(mp4Path: string, gifPath: string): Promise<void> {
+  const probeDur = await ffprobeDuration(mp4Path);
+  // Compress aggressively so GitHub will load it inline even for private repos on slower connections.
+  // Target ~20–25 seconds; 10fps; 420px wide; 128-colour palette.
+  const speedMultiplier = probeDur > 26 ? probeDur / 22 : 1;
+  const palettePath = gifPath.replace(/\.gif$/i, ".palette.png");
+  const vf = `setpts=${(1 / speedMultiplier).toFixed(4)}*PTS,fps=10,scale=420:-2:flags=lanczos`;
+  await runFfmpeg([
+    "-i", mp4Path,
+    "-vf", `${vf},palettegen=stats_mode=diff:max_colors=128`,
+    "-y", palettePath,
+  ]);
+  await runFfmpeg([
+    "-i", mp4Path,
+    "-i", palettePath,
+    "-lavfi", `${vf} [x]; [x][1:v] paletteuse=dither=sierra2_4a`,
+    "-y", gifPath,
+  ]);
+  await rm(palettePath, { force: true });
+}
