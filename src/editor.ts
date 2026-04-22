@@ -228,12 +228,13 @@ async function renderSegment(
       await writeFile(files.meta, metaText);
       const color = ev.outcome === "failure" ? "0xff8888" : "0xa0ffcd";
       parts.push(
-        `[${lastNode}]drawtext=${fontOpt}:textfile=${ffEscapePath(files.meta)}:fontcolor=${color}:fontsize=40:x=(w-text_w)/2:y=${OUT_H - 160}:line_spacing=6:borderw=2:bordercolor=0x000000[out]`,
+        `[${lastNode}]drawtext=${fontOpt}:textfile=${ffEscapePath(files.meta)}:fontcolor=${color}:fontsize=40:x=(w-text_w)/2:y=${OUT_H - 160}:line_spacing=6:borderw=2:bordercolor=0x000000[meta]`,
       );
-      lastNode = "out";
+      lastNode = "meta";
     }
   }
-  if (lastNode !== "out") parts.push(`[${lastNode}]null[out]`);
+  // Force stable SAR + pixel format so concat_filter won't reject mismatched segments.
+  parts.push(`[${lastNode}]setsar=1,format=yuv420p[out]`);
 
   const finalArgs: string[] = ["-i", raw];
   const hasVoice = !!(voice && voiceDur > 0);
@@ -280,7 +281,7 @@ function buildZoomFilter(target: ReturnType<typeof computeZoomTarget>, segDur: n
   const zExpr = `if(lt(on,${holdFrame}),1+(${(targetZ - 1).toFixed(4)})*(on/${holdFrame}),${targetZ.toFixed(4)})`;
   const xExpr = `'${cx.toFixed(2)}-iw/zoom/2'`;
   const yExpr = `'${cy.toFixed(2)}-ih/zoom/2'`;
-  return `[v0]zoompan=z='${zExpr}':x=${xExpr}:y=${yExpr}:d=1:s=${vw}x${vh}:fps=${FPS}[zoomed]`;
+  return `[v0]zoompan=z='${zExpr}':x=${xExpr}:y=${yExpr}:d=1:s=${vw}x${vh}:fps=${FPS},setsar=1[zoomed]`;
 }
 
 async function renderTitleCard(outFile: string, title: string, subtitle: string, font: string | null, textDir: string, voice: string | null): Promise<void> {
@@ -301,7 +302,7 @@ async function renderTitleCard(outFile: string, title: string, subtitle: string,
     parts.push(
       `[bg]drawtext=${fontOpt}:textfile=${ffEscapePath(files.brand)}:fontcolor=0x00e5a0:fontsize=84:x=(w-text_w)/2:y=${OUT_H / 2 - 420}[t1]`,
       `[t1]drawtext=${fontOpt}:textfile=${ffEscapePath(files.title)}:fontcolor=white:fontsize=120:x=(w-text_w)/2:y=${OUT_H / 2 - 280}:line_spacing=18:borderw=4:bordercolor=0x000000[t2]`,
-      `[t2]drawtext=${fontOpt}:textfile=${ffEscapePath(files.sub)}:fontcolor=0xb0b8c4:fontsize=52:x=(w-text_w)/2:y=${OUT_H / 2 + 120}:line_spacing=12[out]`,
+      `[t2]drawtext=${fontOpt}:textfile=${ffEscapePath(files.sub)}:fontcolor=0xb0b8c4:fontsize=52:x=(w-text_w)/2:y=${OUT_H / 2 + 120}:line_spacing=12,setsar=1,format=yuv420p[out]`,
     );
   } else {
     parts.push(`[bg]null[out]`);
@@ -377,7 +378,7 @@ async function renderSummaryCard(outFile: string, artifacts: RunArtifacts, font:
       `[h2]drawtext=${fontOpt}:textfile=${ffEscapePath(files.name)}:fontcolor=white:fontsize=80:x=(w-text_w)/2:y=560:line_spacing=14:borderw=4:bordercolor=0x000000[h3]`,
       `[h3]drawtext=${fontOpt}:textfile=${ffEscapePath(files.counts)}:fontcolor=0xcccccc:fontsize=48:x=(w-text_w)/2:y=${OUT_H / 2 + 80}[h4]`,
       `[h4]drawtext=${fontOpt}:textfile=${ffEscapePath(files.dur)}:fontcolor=0x888888:fontsize=40:x=(w-text_w)/2:y=${OUT_H / 2 + 160}[h5]`,
-      `[h5]drawtext=${fontOpt}:textfile=${ffEscapePath(files.cta)}:fontcolor=0x00e5a0:fontsize=48:x=(w-text_w)/2:y=${OUT_H - 360}:line_spacing=12[out]`,
+      `[h5]drawtext=${fontOpt}:textfile=${ffEscapePath(files.cta)}:fontcolor=0x00e5a0:fontsize=48:x=(w-text_w)/2:y=${OUT_H - 360}:line_spacing=12,setsar=1,format=yuv420p[out]`,
     );
   } else {
     parts.push(`[bg]null[out]`);
