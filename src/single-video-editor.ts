@@ -374,10 +374,10 @@ export async function editSingleVideo({
   const skipped = artifacts.events.filter((e) => e.outcome === "skipped").length;
   const stats = { passed, failed, skipped, total: artifacts.events.length, durS: artifacts.totalMs / 1000 };
 
-  const introLine = story?.intro ?? `Alright — here's a new build of ${artifacts.plan.name}. Walk with me.`;
+  const introLine = story?.intro ?? `Here's a walk-through of the ${artifacts.plan.name} change. Let me know what you think as I go.`;
   const outroLine = story?.outro ?? (failed > 0
-    ? `${failed} step${failed === 1 ? "" : "s"} failed. ${passed} of ${artifacts.events.length} passed.`
-    : `All ${artifacts.events.length} steps passed. This one ships.`);
+    ? `${failed} step${failed === 1 ? "" : "s"} didn't behave as expected — curious if you see the same.`
+    : `That's the flow — keen for your feedback on anything that feels off.`);
   let introVoiceSrc: string | undefined;
   let introVoiceDurS = 0;
   let outroVoiceSrc: string | undefined;

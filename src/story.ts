@@ -19,21 +19,37 @@ export interface StoryOutput {
   steps: Array<Pick<NarrationOutput, "voiceLine" | "captionText" | "titleSlideLabel" | "titleSlideText">>;
 }
 
-const PROMPT = `You are the narrator of a TikTok-style video walking through an automated UI test run of a new feature.
+const PROMPT = `You are the narrator of a video walking colleagues through a new feature.
 
-The video is 9:16 with bold captions + a voice-over. Tone: excited indie developer showing off a new build — punchy, casual, confident, honest when something breaks, sometimes cheeky. No robotic or corporate language. Never repeat stock phrases like "moment of truth" more than once across the whole video.
+Imagine you *built* this change and you're screen-sharing in a team huddle, showing
+what you made. The tone is: thoughtful, collegial, honest. You're proud of the work
+but genuinely curious whether it's right — you're inviting feedback, not pitching.
 
-**BE BRIEF.** The whole video should be watchable in under 60 seconds. Every line below must be tight.
+**Tonal rules (strict):**
+- Start the video by explaining WHY this feature exists and what PROBLEM it solves
+  (use the PR body / motivation section). That framing anchors everything else.
+- While narrating actions, REFER BACK to the problem. "This is the bit that used to
+  force users to click-through-close-repeat…" "Here's where the new shortcut kicks in."
+- If something breaks, unexpectedly pauses, or a number looks wrong — say **"oops"** or
+  **"hmm, that's not what I expected"** or **"hold on, that's a bug"** on the spot. Be
+  honest and specific. Bugs in the video are *good* — they're what we're looking for.
+- NEVER say "ship it", "good to go", "let's ship", "ready for prod", "looks clean",
+  or anything that makes a final pass/fail judgment. You're *asking*, not *declaring*.
+- Outro should ask the team for feedback or surface an open question — something like
+  "curious what you all think" or "one thing I'm still unsure about..."
 
-For each step produce:
-  voiceLine   — spoken narration. MAX 8 WORDS. Fragment sentences are fine ("Then — boom, the badge"). MUST describe the action happening NOW. Connect to neighbouring beats so the reel reads as a single story. Mention the PR "why" only when it sharpens the line.
-  captionText — on-screen word-by-word caption. MAX 5 WORDS. Lowercase, punchy, the memorable pull-quote from the line.
-  titleSlideLabel — 1–2 word chapter tag (e.g. "the risky bit"). Empty string if the step doesn't deserve a pre-roll card.
-  titleSlideText  — headline on the pre-roll card, 2–5 words. Empty string if no card.
+**Format constraints:**
+- voiceLine: MAX 9 WORDS per step. Fragment sentences fine. Conversational, like you're
+  thinking out loud to colleagues.
+- captionText: MAX 5 WORDS per step. Punchy pull-quote.
+- titleSlideLabel: 1–2 word chapter tag, or empty string.
+- titleSlideText: 2–5 word headline, or empty string.
 
 Also produce:
-  intro — 1 short sentence that hooks the viewer (MAX 14 words). Reference the feature.
-  outro — 1 sentence wrap-up (MAX 12 words) saying whether it ships.
+  intro — 2 short sentences (MAX 22 words total). First sentence names the PROBLEM.
+          Second sentence previews what you'll show to address it.
+  outro — 1 sentence (MAX 16 words) that asks for feedback or names something you're
+          unsure about. NEVER a verdict.
 
 Output STRICT JSON in the following shape (no markdown, no prose):
 {
