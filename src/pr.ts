@@ -20,6 +20,8 @@ export interface PROptions {
   skipComment?: boolean;     // render the video but don't post to the PR
   vercelBypass?: string;     // VERCEL_AUTOMATION_BYPASS_SECRET for protected previews
   quick?: boolean;
+  requirePass?: boolean;     // exit non-zero if any step failed (CI gating)
+  review?: "none" | "approve-on-pass" | "request-changes-on-fail" | "always"; // post a formal PR review
 }
 
 export async function runForPR(prInput: string, opts: PROptions): Promise<void> {
@@ -113,6 +115,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     await renderPreviewGif(outPath, gifPath);
     console.log(chalk.green(`     ✓ ${gifPath}`));
 
+    const failedCount = artifacts.events.filter((e) => e.outcome === "failure").length;
     if (!opts.skipComment) {
       console.log(chalk.bold("\n4/4  uploading + commenting on PR"));
       const assetRepo = opts.assetRepo ?? `${ref.owner}/${ref.repo}`;
@@ -125,8 +128,33 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
         totalMs: artifacts.totalMs,
       });
       console.log(chalk.green(`     ✓ commented on ${ref.url}`));
+
+      // Formal PR review for CI gating — asks for changes when tik-test flagged failures.
+      const reviewMode = opts.review ?? "request-changes-on-fail";
+      if (reviewMode !== "none") {
+        const passed = artifacts.events.length - failedCount;
+        const shouldApprove = failedCount === 0 && (reviewMode === "approve-on-pass" || reviewMode === "always");
+        const shouldRequestChanges = failedCount > 0 && (reviewMode === "request-changes-on-fail" || reviewMode === "always");
+        if (shouldApprove || shouldRequestChanges) {
+          const reviewBody = shouldApprove
+            ? `🎬 tik-test approved — ${passed}/${artifacts.events.length} steps green. See the video above for the walk-through.`
+            : `🎬 tik-test flagged ${failedCount} regression${failedCount === 1 ? "" : "s"} in the video above. Passing ${passed}/${artifacts.events.length} isn't enough — please review the "oops" moments before merging.`;
+          const reviewEvent = shouldApprove ? "APPROVE" : "REQUEST_CHANGES";
+          const { code } = await gh([
+            "pr", "review", String(ref.number),
+            "--repo", `${ref.owner}/${ref.repo}`,
+            shouldApprove ? "--approve" : "--request-changes",
+            "--body", reviewBody,
+          ]);
+          if (code === 0) console.log(chalk.green(`     ✓ review ${reviewEvent} posted`));
+          else console.log(chalk.yellow(`     ! couldn't post review (missing pull-requests:write perm?)`));
+        }
+      }
     } else {
       console.log(chalk.dim("\n  --skip-comment set — video not posted"));
+    }
+    if (opts.requirePass && failedCount > 0) {
+      throw new Error(`tik-test found ${failedCount} failing step${failedCount === 1 ? "" : "s"} — exiting non-zero for CI gating`);
     }
   } finally {
     if (serverProc) serverProc.kill();

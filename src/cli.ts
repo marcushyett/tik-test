@@ -99,6 +99,8 @@ program
   .option("--skip-comment", "render the video but don't post a PR comment")
   .option("--vercel-bypass <secret>", "Vercel Protection Bypass secret (also: VERCEL_AUTOMATION_BYPASS_SECRET env)")
   .option("--quick", "low-resolution draft render")
+  .option("--require-pass", "exit non-zero if any test step failed (for CI gating)")
+  .option("--review <mode>", "post a formal PR review: none | approve-on-pass | request-changes-on-fail | always", "request-changes-on-fail")
   .action(async (pr, opts) => {
     const voice = opts.voice === false ? null : (opts.voice as string);
     await runForPR(pr, {
@@ -111,6 +113,8 @@ program
       skipComment: !!opts.skipComment,
       vercelBypass: opts.vercelBypass,
       quick: !!opts.quick,
+      requirePass: !!opts.requirePass,
+      review: opts.review,
     });
   });
 
