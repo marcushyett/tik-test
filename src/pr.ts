@@ -26,7 +26,7 @@ export interface PROptions {
 
 export async function runForPR(prInput: string, opts: PROptions): Promise<void> {
   const ref = await resolveRef(prInput);
-  console.log(chalk.bold(`\n🎬 tik-test pr  ${chalk.cyan(`${ref.owner}/${ref.repo}#${ref.number}`)}`));
+  console.log(chalk.bold(`\n▸ tik-test pr  ${chalk.cyan(`${ref.owner}/${ref.repo}#${ref.number}`)}`));
 
   // Fetch PR metadata — we need the head repo/branch, author, and previews.
   const meta = await fetchPRMeta(ref);
@@ -137,8 +137,8 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
         const shouldRequestChanges = failedCount > 0 && (reviewMode === "request-changes-on-fail" || reviewMode === "always");
         if (shouldApprove || shouldRequestChanges) {
           const reviewBody = shouldApprove
-            ? `🎬 tik-test approved — ${passed}/${artifacts.events.length} steps green. See the video above for the walk-through.`
-            : `🎬 tik-test flagged ${failedCount} regression${failedCount === 1 ? "" : "s"} in the video above. Passing ${passed}/${artifacts.events.length} isn't enough — please review the "oops" moments before merging.`;
+            ? `tik-test approved — ${passed}/${artifacts.events.length} steps green. See the video above for the walk-through.`
+            : `tik-test flagged ${failedCount} regression${failedCount === 1 ? "" : "s"} in the video above. Passing ${passed}/${artifacts.events.length} isn't enough — please review the "oops" moments before merging.`;
           const reviewEvent = shouldApprove ? "APPROVE" : "REQUEST_CHANGES";
           const { code } = await gh([
             "pr", "review", String(ref.number),
@@ -353,13 +353,12 @@ function buildTikTestMarker(data: CommentData, meta: { prRef: string; ts: string
 async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
   const failed = data.events.filter((e) => e.outcome === "failure");
   const passed = data.events.length - failed.length - data.events.filter((e) => e.outcome === "skipped").length;
-  const emoji = failed.length === 0 ? "✅" : "⚠️";
   const status = failed.length === 0 ? "All green" : `${failed.length} step${failed.length === 1 ? "" : "s"} failed`;
 
   const bulletFor = (e: CommentData["events"][number], i: number) => {
-    const mark = e.outcome === "failure" ? "❌" : e.outcome === "skipped" ? "·" : (e.importance === "critical" ? "⭐" : e.importance === "high" ? "✨" : "✓");
+    const mark = e.outcome === "failure" ? "FAIL" : e.outcome === "skipped" ? "skip" : (e.importance === "critical" || e.importance === "high") ? "PASS" : "ok";
     const err = e.error ? ` — \`${e.error}\`` : "";
-    return `- ${mark} **${String(i + 1).padStart(2, "0")}** ${e.description}${err}`;
+    return `- \`${mark.padEnd(4)}\` **${String(i + 1).padStart(2, "0")}** ${e.description}${err}`;
   };
   const stepsMd = data.events.map(bulletFor).join("\n");
 
@@ -377,7 +376,7 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
   const body = [
     marker,
     ``,
-    `### 🎬 tik-test review — ${emoji} ${status}`,
+    `### tik-test review — ${status}`,
     ``,
     `**${data.plan}** — ${passed}/${data.events.length} steps passed in ${(data.totalMs / 1000).toFixed(1)}s.`,
     ``,
@@ -385,7 +384,7 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
     ``,
     `_The preview above loops silently — open the MP4 for the narrated version._`,
     ``,
-    `▶ [Play full video (MP4, with voice-over)](${data.videoUrl})`,
+    `**[Play full video (MP4, with voice-over)](${data.videoUrl})**`,
     ``,
     `<details><summary>Test steps</summary>`,
     ``,

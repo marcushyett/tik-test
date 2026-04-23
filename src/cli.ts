@@ -38,7 +38,7 @@ program
     const runDir = path.resolve(opts.outDir, runId);
     await mkdir(runDir, { recursive: true });
 
-    console.log(chalk.bold(`\n🎬 tik-test  ${chalk.dim(runId)}`));
+    console.log(chalk.bold(`\n▸ tik-test  ${chalk.dim(runId)}`));
     console.log(chalk.dim(`  target: ${cfg.url}`));
 
     console.log(chalk.bold("\n1/3  generating test plan"));
@@ -75,7 +75,7 @@ program
     }
     console.log(chalk.green(`     ✓ ${path.relative(process.cwd(), outPath)}`));
 
-    console.log(chalk.bold("\n✨ done"));
+    console.log(chalk.bold("\n✓ done"));
     console.log(`  video:  ${chalk.underline(outPath)}`);
     console.log(`  events: ${chalk.underline(artifacts.eventsJsonPath)}`);
 
