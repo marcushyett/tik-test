@@ -35,6 +35,9 @@ export interface SingleVideoInput {
   introVoiceDurS?: number;
   outroVoiceSrc?: string;
   outroVoiceDurS?: number;
+  /** Persistent version badge (e.g. "v0.2.0 · 6590731") — rendered top-right
+   *  so a reviewer can tell at a glance which CLI build produced this video. */
+  versionTag?: string;
 }
 
 export function computeSingleVideoDuration(input: SingleVideoInput, fps: number): number {
@@ -73,9 +76,38 @@ export const SingleVideoReel: React.FC<SingleVideoInput> = (props) => {
           voiceDurS={props.outroVoiceDurS}
         />
       </Sequence>
+
+      {/* Persistent version badge — tiny, semi-transparent, top-right corner.
+          Tells a reviewer which CLI commit produced the video so old and new
+          videos in the feed are distinguishable at a glance. */}
+      {props.versionTag && <VersionBadge tag={props.versionTag} />}
     </AbsoluteFill>
   );
 };
+
+const VersionBadge: React.FC<{ tag: string }> = ({ tag }) => (
+  <div
+    style={{
+      position: "absolute",
+      top: 28,
+      right: 28,
+      padding: "8px 14px",
+      borderRadius: 999,
+      background: "rgba(10, 12, 18, 0.55)",
+      color: "rgba(255,255,255,0.85)",
+      fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, monospace",
+      fontSize: 22,
+      fontWeight: 600,
+      letterSpacing: "0.08em",
+      border: "1px solid rgba(255,255,255,0.12)",
+      backdropFilter: "blur(4px)",
+      pointerEvents: "none",
+      zIndex: 2000,
+    }}
+  >
+    {tag}
+  </div>
+);
 
 const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   const frame = useCurrentFrame();

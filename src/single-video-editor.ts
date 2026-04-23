@@ -1,4 +1,5 @@
 import { mkdir, writeFile, rm, stat } from "node:fs/promises";
+import { execSync } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,30 @@ const __dirname = path.dirname(__filename);
 const REMOTION_ENTRY = path.resolve(__dirname, "..", "remotion", "index.ts");
 
 const FPS = 30;
+
+/**
+ * Produce a short "v{pkg} · {sha}" string for the on-video badge so a
+ * reviewer can tell at a glance which CLI commit produced a given video.
+ * Resolved lazily and cached — runs at render time, not at module load, so
+ * unit tests and imports don't execute git. We resolve once per process.
+ */
+let cachedVersionTag: string | null = null;
+function getVersionTag(): string {
+  if (cachedVersionTag) return cachedVersionTag;
+  let pkgVer = "0.1.0";
+  try {
+    const pkgPath = path.resolve(__dirname, "..", "package.json");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    pkgVer = JSON.parse(require("node:fs").readFileSync(pkgPath, "utf8")).version ?? pkgVer;
+  } catch {}
+  let sha = "";
+  try {
+    sha = execSync("git rev-parse --short=7 HEAD", { cwd: path.resolve(__dirname, ".."), stdio: ["ignore", "pipe", "ignore"] })
+      .toString().trim();
+  } catch {}
+  cachedVersionTag = sha ? `v${pkgVer} · ${sha}` : `v${pkgVer}`;
+  return cachedVersionTag;
+}
 
 export interface SingleVideoEvent {
   index: number;
@@ -55,6 +80,7 @@ export interface SingleVideoInput {
   introVoiceDurS?: number;
   outroVoiceSrc?: string;
   outroVoiceDurS?: number;
+  versionTag?: string;
 }
 
 function sanitiseForSpeech(s: string): string {
@@ -423,6 +449,7 @@ export async function editSingleVideo({
     introVoiceDurS: introVoiceDurS || undefined,
     outroVoiceSrc,
     outroVoiceDurS: outroVoiceDurS || undefined,
+    versionTag: getVersionTag(),
   };
   await writeFile(path.join(runDir, "reel-input.json"), JSON.stringify(input, null, 2));
 
