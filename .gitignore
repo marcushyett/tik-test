@@ -7,3 +7,5 @@ runs/
 .env.local
 playwright-report/
 .playwright/
+.claude/
+
