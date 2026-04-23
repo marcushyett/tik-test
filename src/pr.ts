@@ -65,6 +65,18 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     // Use the PR body as focus context for test plan generation.
     cfg.focus = `PR #${ref.number}: ${meta.title}\n\n${meta.body}`;
   }
+  // Feed the PR diff to the plan generator so it can target the exact files
+  // and selectors the PR touches — "read the code" exhaustiveness, not just
+  // "read the PR body" surface guessing. Truncated to keep us inside the
+  // plan-gen context window.
+  if (!cfg.diff && !cfg.plan) {
+    try {
+      const diff = await fetchPRDiff(ref, 18_000);
+      if (diff) cfg.diff = diff;
+    } catch (e) {
+      console.log(chalk.yellow(`  couldn't fetch PR diff (${(e as Error).message.split("\n")[0]}) — planning from PR body only`));
+    }
+  }
 
   // If URL still missing, bail with guidance.
   if (!cfg.url) {
@@ -201,6 +213,30 @@ async function fetchPRMeta(ref: PRRef): Promise<PRMeta> {
     headRepo,
     previewUrl,
   };
+}
+
+/**
+ * Fetch the PR's diff and truncate it to a prompt-safe budget. Large diffs
+ * (dependency bumps, generated files) get summarised via a header; we keep
+ * the human-authored hunks. Returns `undefined` if the diff is empty or the
+ * gh CLI doesn't have diff access.
+ */
+async function fetchPRDiff(ref: PRRef, maxChars: number): Promise<string | undefined> {
+  const { code, stdout } = await gh([
+    "pr", "diff", String(ref.number),
+    "--repo", `${ref.owner}/${ref.repo}`,
+  ]);
+  if (code !== 0 || !stdout) return undefined;
+  const raw = stdout.trim();
+  if (!raw) return undefined;
+  if (raw.length <= maxChars) return raw;
+  // Truncate but keep the diff valid-looking: cut at a `diff --git` boundary so
+  // we don't feed a half-hunk to Claude.
+  const truncated = raw.slice(0, maxChars);
+  const lastHunk = truncated.lastIndexOf("\ndiff --git ");
+  const cut = lastHunk > maxChars * 0.4 ? lastHunk : truncated.length;
+  const dropped = raw.length - cut;
+  return `${raw.slice(0, cut)}\n\n[... ${dropped.toLocaleString()} more characters of diff omitted — consider testing the omitted files manually if they're user-facing]`;
 }
 
 function extractPreviewUrl(body: string): string | undefined {

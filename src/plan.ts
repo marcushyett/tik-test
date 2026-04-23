@@ -29,14 +29,18 @@ Output ONLY a single JSON object (no prose, no markdown fences) matching:
 }
 
 PLAN GUIDANCE — follow all of these:
-1. **Every interactive surface in the focus area should be clicked at least once.** Go beyond the one primary path.
-2. **Repeat critical actions** — add the same kind of task 2-3x, toggle filters multiple times, click back-and-forth between tabs. Bugs hide in repetition.
-3. **Try edge cases** — empty inputs, very long inputs, special characters, double-clicks, clicking the same button twice, navigating back/forward.
-4. **Check counts and aggregates** after changes — if the UI shows "N/M done", assert the numbers are right after each relevant action.
-5. **Regression-probe related features** that share code with the change (e.g. if the PR touches a filter, test ALL filters, not just the new one).
-6. **Mark risky steps** with importance "high" or "critical" — the video editor slow-mos those.
-7. **Plan for failure visibility** — include an assert immediately after any action whose correctness matters; if the assert fails, the video lands on it and narrates "oops".
-8. **Aim for 15-28 steps.** A short plan is under-testing.
+1. **If a code diff is provided, let it DRIVE the plan.** Identify the specific
+   files, components, event handlers, selectors, and data-testids that changed.
+   The plan should exercise every one of them in the order a user would. A
+   diff-driven plan that misses the new code is a failure.
+2. **Every interactive surface in the focus area should be clicked at least once.** Go beyond the one primary path.
+3. **Repeat critical actions** — add the same kind of task 2-3x, toggle filters multiple times, click back-and-forth between tabs. Bugs hide in repetition.
+4. **Try edge cases** — empty inputs, very long inputs, special characters, double-clicks, clicking the same button twice, navigating back/forward.
+5. **Check counts and aggregates** after changes — if the UI shows "N/M done", assert the numbers are right after each relevant action.
+6. **Regression-probe related features** that share code with the change (e.g. if the PR touches a filter, test ALL filters, not just the new one).
+7. **Mark risky steps** with importance "high" or "critical" — the video editor slow-mos those.
+8. **Plan for failure visibility** — include an assert immediately after any action whose correctness matters; if the assert fails, the video lands on it and narrates "oops".
+9. **Aim for 15-28 steps.** A short plan is under-testing.
 
 Selectors: prefer text=, role=, [data-testid]. Avoid nth-child chains.
 

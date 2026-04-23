@@ -72,6 +72,13 @@ export interface Config {
   setup?: string;
   login?: string;
   focus?: string;
+  /**
+   * Raw PR diff, truncated to a prompt-safe size. Populated by `tik-test pr`
+   * from `gh pr diff`, not by human-written claude.md files. Lets the plan
+   * generator target the specific files/lines a PR touches instead of
+   * guessing from the PR body alone.
+   */
+  diff?: string;
   plan?: TestPlan;
   music?: string;
 }

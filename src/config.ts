@@ -84,5 +84,6 @@ export function configToPromptContext(cfg: Config): string {
   if (cfg.focus) parts.push(`Focus / changes:\n${cfg.focus}`);
   if (cfg.setup) parts.push(`Setup notes:\n${cfg.setup}`);
   if (cfg.login) parts.push(`Login:\n${cfg.login}`);
+  if (cfg.diff) parts.push(`PR code diff (authoritative — test the surfaces these hunks touch):\n${cfg.diff}`);
   return parts.join("\n\n");
 }
