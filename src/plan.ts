@@ -3,7 +3,12 @@ import chalk from "chalk";
 import type { Config, TestPlan } from "./types.js";
 import { configToPromptContext } from "./config.js";
 
-const PLAN_PROMPT = `You are generating an end-to-end UI test plan for a web application.
+const PLAN_PROMPT = `You are generating an EXHAUSTIVE, EXPLORATORY UI test plan for a web application.
+
+Your job is **to expose bugs**, not to prove the happy path works. A minimum-coverage
+sanity pass is a failure of this task. Behave like a thorough QA engineer who clicks
+through the whole surface, repeats actions, tries things in weird orders, and deliberately
+probes edge cases.
 
 Output ONLY a single JSON object (no prose, no markdown fences) matching:
 
@@ -17,19 +22,23 @@ Output ONLY a single JSON object (no prose, no markdown fences) matching:
     "kind": "navigate"|"click"|"fill"|"press"|"hover"|"wait"|"assert-visible"|"assert-text"|"screenshot"|"script",
     "description": string,            // concise, caption-ready, <=80 chars
     "target"?: string,                 // CSS/Playwright selector, URL for navigate, or "role=button[name=...]"
-    "value"?: string,                  // text for fill; key for press; ms for wait; text for assert-text
+    "value"?: string,
     "importance"?: "low"|"normal"|"high"|"critical",
     "optional"?: boolean
   }>
 }
 
-Guidance:
-- Cover the main user flows AND explicit edge/failure cases for the focus areas.
-- Mark critical/risky steps with importance "high" or "critical" so they're emphasised in the highlight reel.
-- Prefer robust selectors: text=, role=, [data-testid], aria labels — avoid nth-child chains.
-- For navigations, set target = absolute URL (use the startUrl host for relative paths).
-- Include explicit assert-visible / assert-text steps to confirm success after actions.
-- Aim for 8-16 steps for a focused feature review.
+PLAN GUIDANCE — follow all of these:
+1. **Every interactive surface in the focus area should be clicked at least once.** Go beyond the one primary path.
+2. **Repeat critical actions** — add the same kind of task 2-3x, toggle filters multiple times, click back-and-forth between tabs. Bugs hide in repetition.
+3. **Try edge cases** — empty inputs, very long inputs, special characters, double-clicks, clicking the same button twice, navigating back/forward.
+4. **Check counts and aggregates** after changes — if the UI shows "N/M done", assert the numbers are right after each relevant action.
+5. **Regression-probe related features** that share code with the change (e.g. if the PR touches a filter, test ALL filters, not just the new one).
+6. **Mark risky steps** with importance "high" or "critical" — the video editor slow-mos those.
+7. **Plan for failure visibility** — include an assert immediately after any action whose correctness matters; if the assert fails, the video lands on it and narrates "oops".
+8. **Aim for 15-28 steps.** A short plan is under-testing.
+
+Selectors: prefer text=, role=, [data-testid]. Avoid nth-child chains.
 
 Context:
 {{CONTEXT}}
