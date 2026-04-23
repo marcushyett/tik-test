@@ -446,7 +446,12 @@ export async function editSingleVideo({
     audioCodec: "aac",
     enforceAudioTrack: true,
     concurrency,
-    jpegQuality: quick ? 70 : 82,
+    jpegQuality: quick ? 70 : 88,
+    // Explicit bitrate: Remotion's h264 defaults are middling on mobile at
+    // 1080×1920. Bump to ~6 Mbps for the full-res render so text stays crisp
+    // on phone screens. Quick mode keeps it lean so drafts render fast.
+    videoBitrate: quick ? "1200k" : "6000k",
+    audioBitrate: "160k",
     onProgress: ({ progress, renderedFrames, encodedFrames }) => {
       const pct = Math.floor(progress * 100);
       if (pct >= lastReportedPct + 2 || pct === 100) {

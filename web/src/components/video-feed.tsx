@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronUp, Keyboard, PlayCircle } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronUp, Keyboard, PlayCircle, Volume2, VolumeX } from "lucide-react";
 import { Button } from "./ui/button";
 import { PRHeader } from "./pr-header";
 import { DecisionForm } from "./decision-form";
@@ -23,6 +23,11 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [posted, setPosted] = useState(false);
+  // Mobile browsers refuse to autoplay videos with sound — the <video> tag
+  // only starts playing if `muted` is true on first mount. We start every
+  // mount muted, expose a tap-to-unmute chip, and remember the user's choice
+  // across feed navigations so they don't have to re-tap on every PR.
+  const [muted, setMuted] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const current = items[idx];
@@ -39,11 +44,26 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
     setIdx((i) => Math.max(0, i - 1));
   }, []);
 
+  const toggleMute = useCallback(() => {
+    setMuted((m) => {
+      const next = !m;
+      const v = videoRef.current;
+      if (v) {
+        v.muted = next;
+        // Calling play() inside the same user-gesture callback satisfies the
+        // autoplay policy and lets the now-unmuted track start producing audio.
+        if (!next) void v.play().catch(() => {});
+      }
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
       if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); goNext(); }
       else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); goPrev(); }
+      else if (e.key === "m" || e.key === "M") { e.preventDefault(); toggleMute(); }
       else if (e.key === " ") {
         e.preventDefault();
         const v = videoRef.current; if (!v) return;
@@ -52,7 +72,7 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [goNext, goPrev]);
+  }, [goNext, goPrev, toggleMute]);
 
   if (items.length === 0) return <EmptyState repo={repo} />;
   if (idx >= items.length) return <InboxZero onRestart={() => setIdx(0)} />;
@@ -101,6 +121,8 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
             poster={gifSrc}
             playing={playing}
             setPlaying={setPlaying}
+            muted={muted}
+            onToggleMute={toggleMute}
             onPrev={goPrev}
             onNext={goNext}
             aspect="9/16"
@@ -119,13 +141,15 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
           poster={gifSrc}
           playing={playing}
           setPlaying={setPlaying}
+          muted={muted}
+          onToggleMute={toggleMute}
           onPrev={goPrev}
           onNext={goNext}
           aspect="fill"
         />
 
         {/* Top overlay with counter — doesn't obscure the app UI in the video. */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 via-black/30 to-transparent p-4 text-xs text-white/90">
+        <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 via-black/30 to-transparent p-4 pt-[max(1rem,env(safe-area-inset-top))] text-xs text-white/90">
           <span className="font-mono tracking-widest">
             {idx + 1}/{items.length}
           </span>
@@ -134,10 +158,37 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
           </span>
         </div>
 
+        {/* Tap-to-unmute chip — mobile needs this hard. Browsers block autoplay
+            with sound, so our only option is to mount muted and let the user
+            turn audio on with one tap. Anchored top-center so it's visible the
+            instant the video starts. */}
+        {muted && (
+          <button
+            type="button"
+            onClick={toggleMute}
+            className="absolute left-1/2 top-14 z-20 -translate-x-1/2 rounded-full border border-white/20 bg-black/70 px-4 py-2 text-xs font-medium text-white shadow-lg backdrop-blur-md transition active:scale-95"
+            aria-label="Unmute audio"
+          >
+            <span className="inline-flex items-center gap-2">
+              <VolumeX className="h-4 w-4" />
+              Tap to unmute
+            </span>
+          </button>
+        )}
+
         {/* Right-edge swipe buttons (always reachable with the thumb). */}
         <div className="absolute right-2 top-1/2 flex -translate-y-1/2 flex-col gap-2">
           <Button size="icon" variant="secondary" className="h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80" onClick={goPrev} aria-label="Previous PR">
             <ChevronUp className="h-5 w-5" />
+          </Button>
+          <Button
+            size="icon"
+            variant="secondary"
+            className="h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80"
+            onClick={toggleMute}
+            aria-label={muted ? "Unmute" : "Mute"}
+          >
+            {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
           </Button>
           <Button size="icon" variant="secondary" className="h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80" onClick={goNext} aria-label="Next PR">
             <ChevronDown className="h-5 w-5" />
@@ -166,12 +217,14 @@ function FeedCounter({ idx, total, video }: { idx: number; total: number; video:
 const VideoFrame = (() => {
   const Inner = (
     {
-      src, poster, playing, setPlaying, onPrev, onNext, aspect,
+      src, poster, playing, setPlaying, muted, onToggleMute, onPrev, onNext, aspect,
     }: {
       src: string;
       poster?: string;
       playing: boolean;
       setPlaying: (v: boolean) => void;
+      muted: boolean;
+      onToggleMute: () => void;
       onPrev: () => void;
       onNext: () => void;
       aspect: "9/16" | "fill";
@@ -184,7 +237,7 @@ const VideoFrame = (() => {
       if (v.paused) { v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
     };
     const wrapClass = aspect === "9/16"
-      ? "relative flex-1 min-h-0 overflow-hidden rounded-2xl border border-border bg-black shadow-lift"
+      ? "group relative flex-1 min-h-0 overflow-hidden rounded-2xl border border-border bg-black shadow-lift"
       : "absolute inset-0 bg-black";
     return (
       <div className={wrapClass} style={aspect === "9/16" ? { aspectRatio: "9 / 16" } : undefined} onClick={togglePlay}>
@@ -195,8 +248,9 @@ const VideoFrame = (() => {
           autoPlay
           playsInline
           loop
-          muted={false}
+          muted={muted}
           controls={false}
+          preload="auto"
           className="h-full w-full object-contain"
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
@@ -206,16 +260,27 @@ const VideoFrame = (() => {
             <PlayCircle className="h-16 w-16 text-white/90 drop-shadow-2xl" />
           </div>
         )}
-        {/* Desktop hover chevrons */}
+        {/* Desktop-only controls: hover chevrons + persistent mute toggle. */}
         {aspect === "9/16" && (
-          <div className="pointer-events-none absolute inset-y-0 right-0 hidden flex-col items-center justify-center gap-2 pr-2 opacity-0 transition-opacity hover:opacity-100 md:flex md:group-hover:opacity-100">
-            <Button size="icon" variant="secondary" className="pointer-events-auto h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80" onClick={(e) => { e.stopPropagation(); onPrev(); }} aria-label="Previous PR">
-              <ChevronUp className="h-5 w-5" />
+          <>
+            <div className="pointer-events-none absolute inset-y-0 right-0 hidden flex-col items-center justify-center gap-2 pr-2 opacity-0 transition-opacity group-hover:opacity-100 md:flex">
+              <Button size="icon" variant="secondary" className="pointer-events-auto h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80" onClick={(e) => { e.stopPropagation(); onPrev(); }} aria-label="Previous PR">
+                <ChevronUp className="h-5 w-5" />
+              </Button>
+              <Button size="icon" variant="secondary" className="pointer-events-auto h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80" onClick={(e) => { e.stopPropagation(); onNext(); }} aria-label="Next PR">
+                <ChevronDown className="h-5 w-5" />
+              </Button>
+            </div>
+            <Button
+              size="icon"
+              variant="secondary"
+              className="pointer-events-auto absolute bottom-3 right-3 hidden h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80 md:inline-flex"
+              onClick={(e) => { e.stopPropagation(); onToggleMute(); }}
+              aria-label={muted ? "Unmute" : "Mute"}
+            >
+              {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
             </Button>
-            <Button size="icon" variant="secondary" className="pointer-events-auto h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80" onClick={(e) => { e.stopPropagation(); onNext(); }} aria-label="Next PR">
-              <ChevronDown className="h-5 w-5" />
-            </Button>
-          </div>
+          </>
         )}
       </div>
     );
@@ -231,7 +296,7 @@ function KeyboardHint({ onSkip }: { onSkip: () => void }) {
     <div className="flex items-center justify-between text-[11px] text-muted-foreground">
       <span className="inline-flex items-center gap-1.5">
         <Keyboard className="h-3.5 w-3.5" />
-        <Kbd>↑</Kbd><Kbd>↓</Kbd> navigate · <Kbd>space</Kbd> pause
+        <Kbd>↑</Kbd><Kbd>↓</Kbd> navigate · <Kbd>space</Kbd> pause · <Kbd>m</Kbd> mute
       </span>
       <Button variant="ghost" size="sm" onClick={onSkip}>Skip →</Button>
     </div>
