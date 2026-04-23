@@ -238,7 +238,9 @@ export async function editSingleVideo({
 
   const stepsMap = new Map<string, PlanStep>(artifacts.plan.steps.map((s) => [s.id, s]));
   const viewport = artifacts.plan.viewport ?? { width: 1280, height: 800 };
-  const ttsBackend: TTSBackend = resolveBackend(voice);
+  // Seed voice variation from the plan name (so two renders of the same PR
+  // keep the same voice, but different PRs alternate across the feed).
+  const ttsBackend: TTSBackend = resolveBackend(voice, artifacts.plan.name);
   console.log(chalk.dim(`  voice-over: ${describeBackend(ttsBackend)}`));
 
   // 2. Visible events.

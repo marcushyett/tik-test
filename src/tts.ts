@@ -7,13 +7,29 @@ export type TTSBackend =
   | { kind: "say"; voice: string }
   | null;
 
-export function resolveBackend(preferred: string | null | undefined): TTSBackend {
+// OpenAI voices that pair well with the tech-bro demo tone — all clear,
+// non-chirpy, with enough edge to land a punchline. We rotate through these so
+// binge-watching the feed doesn't feel like one narrator doing every PR.
+// The seed can be stable (runId) so a given video always uses the same voice,
+// but varies across videos.
+const VARIANT_VOICES = ["ash", "ballad", "coral", "verse", "onyx", "sage"];
+
+function pickVoice(seed: string | undefined): string {
+  if (!seed) return VARIANT_VOICES[Math.floor(Math.random() * VARIANT_VOICES.length)];
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = ((h << 5) - h + seed.charCodeAt(i)) | 0;
+  return VARIANT_VOICES[Math.abs(h) % VARIANT_VOICES.length];
+}
+
+export function resolveBackend(preferred: string | null | undefined, seed?: string): TTSBackend {
   if (preferred === null) return null;
   if (process.env.OPENAI_API_KEY) {
+    // An explicit TIK_TTS_VOICE pins the voice; otherwise we vary per-video
+    // using a hash of `seed` (runId, PR title, etc.) so the same PR always
+    // reads in the same voice but the feed as a whole has variety.
     return {
       kind: "openai",
-      // `ash` is the confident, slightly-cheeky modern male voice that sells the tech-bro vibe.
-      voice: process.env.TIK_TTS_VOICE ?? "ash",
+      voice: process.env.TIK_TTS_VOICE ?? pickVoice(seed),
       model: process.env.TIK_TTS_MODEL ?? "gpt-4o-mini-tts",
       apiKey: process.env.OPENAI_API_KEY,
     };

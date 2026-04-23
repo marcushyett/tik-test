@@ -137,7 +137,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
         const shouldRequestChanges = failedCount > 0 && (reviewMode === "request-changes-on-fail" || reviewMode === "always");
         if (shouldApprove || shouldRequestChanges) {
           const reviewBody = shouldApprove
-            ? `tik-test approved — ${passed}/${artifacts.events.length} steps green. See the video above for the walk-through.`
+            ? `tik-test approved — ${passed}/${artifacts.events.length} checks green. See the video above for the walk-through.`
             : `tik-test flagged ${failedCount} regression${failedCount === 1 ? "" : "s"} in the video above. Passing ${passed}/${artifacts.events.length} isn't enough — please review the "oops" moments before merging.`;
           const reviewEvent = shouldApprove ? "APPROVE" : "REQUEST_CHANGES";
           const { code } = await gh([
@@ -378,7 +378,7 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
     ``,
     `### tik-test review — ${status}`,
     ``,
-    `**${data.plan}** — ${passed}/${data.events.length} steps passed in ${(data.totalMs / 1000).toFixed(1)}s.`,
+    `**${data.plan}** — ${passed}/${data.events.length} checks passed in ${(data.totalMs / 1000).toFixed(1)}s.`,
     ``,
     preview,
     ``,
@@ -386,7 +386,7 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
     ``,
     `**[Play full video (MP4, with voice-over)](${data.videoUrl})**`,
     ``,
-    `<details><summary>Test steps</summary>`,
+    `<details><summary>Run transcript</summary>`,
     ``,
     stepsMd,
     ``,

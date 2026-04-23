@@ -119,7 +119,7 @@ export async function editHighlightReel({
 
   const stepsMap = new Map<string, PlanStep>(artifacts.plan.steps.map((s) => [s.id, s]));
   const viewport = artifacts.plan.viewport ?? { width: 1280, height: 800 };
-  const ttsBackend: TTSBackend = resolveBackend(voice);
+  const ttsBackend: TTSBackend = resolveBackend(voice, artifacts.plan.name);
   const voiceEnabled = !!ttsBackend;
   console.log(chalk.dim(`  voice-over: ${describeBackend(ttsBackend)}`));
 
