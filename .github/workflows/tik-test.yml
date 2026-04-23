@@ -1,11 +1,34 @@
-# Example GitHub Action that runs tik-test against this repo's PRs.
-# Drop this into a target repo's .github/workflows/ to get automatic TikTok-style
-# PR reviews on every open PR.
+#
+# Example: run tik-test automatically after a Vercel preview deploys,
+# post the video to the PR, and either approve or request-changes based
+# on whether any test step failed.
+#
+# Requirements (set these as repo secrets):
+#   CLAUDE_CODE_OAUTH_TOKEN   — from your Claude Code Max subscription.
+#                                Run `claude setup-token` locally once, then
+#                                paste the token into the repo secret.
+#   OPENAI_API_KEY            — for the Ash TTS voice (optional — falls back
+#                                to no voice if missing on Linux runners).
+#   VERCEL_AUTOMATION_BYPASS_SECRET — only if your preview uses Vercel
+#                                Protection (ssoProtection or password).
+#
+# Alternative auth: set ANTHROPIC_API_KEY instead of CLAUDE_CODE_OAUTH_TOKEN
+# to use pay-per-use API keys.
+#
+# Permissions: this workflow posts comments + formal PR reviews, so it needs
+# `pull-requests: write` (set below).
+#
 name: tik-test review
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  # Kick off after a Vercel (or any) preview deploy succeeds.
+  deployment_status:
+  # Manual re-runs from the Actions tab.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to review"
+        required: true
 
 permissions:
   contents: read
@@ -13,26 +36,58 @@ permissions:
 
 jobs:
   review:
+    # Only run when the deployment succeeded and we can correlate it to a PR,
+    # or when manually dispatched.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'deployment_status' && github.event.deployment_status.state == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout target PR
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.event.deployment.sha }}
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
+      - name: Resolve PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ -n "${{ github.event.inputs.pr_number }}" ]]; then
+            echo "number=${{ github.event.inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          else
+            SHA="${{ github.event.deployment.sha }}"
+            PR=$(gh pr list --search "$SHA" --state open --json number --jq '.[0].number')
+            echo "number=$PR" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Install tik-test
-        run: npx --yes tik-test@latest --version || git clone https://github.com/marcushyett/tik-test /tmp/tik-test && cd /tmp/tik-test && npm install && npm run build
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with: { node-version: "22" }
 
-      - name: Install ffmpeg + chromium
+      - name: Install ffmpeg + Playwright Chromium
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y ffmpeg fonts-dejavu
           npx playwright install chromium --with-deps
+
+      # Anthropic's official action — installs Claude Code and authenticates it
+      # against your Max subscription via the CLAUDE_CODE_OAUTH_TOKEN secret.
+      - name: Authenticate Claude Code (Max subscription)
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Uncomment for pay-per-use API keys instead:
+          # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Install tik-test from main
+        run: |
+          git clone --depth 1 https://github.com/marcushyett/tik-test /tmp/tik-test
+          cd /tmp/tik-test
+          npm ci --omit=dev || npm install
+          npm run build
 
       - name: Run tik-test PR review
         env:
@@ -40,6 +95,9 @@ jobs:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          node /tmp/tik-test/dist/cli.js pr ${{ github.event.pull_request.number }} \
-            --asset-repo ${{ github.repository }} \
+          node /tmp/tik-test/dist/cli.js pr "${{ steps.pr.outputs.number }}" \
+            --skip-clone \
+            --asset-repo "${{ github.repository }}" \
+            --review request-changes-on-fail \
+            --require-pass \
             --quick
