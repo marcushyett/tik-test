@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------- Palette ----------
+   A deeper, warmer take than the generic shadcn dark theme — closer to the
+   GitHub PRs + TikTok nighttime surface the target users already live in.
+   Backgrounds use tiny saturation shifts instead of pure neutral grey so the
+   surface feels composed, not flat. */
+:root {
+  --background: 220 15% 4%;
+  --foreground: 210 20% 98%;
+
+  --card: 220 14% 7.5%;
+  --card-foreground: 210 20% 98%;
+
+  --muted: 220 12% 11%;
+  --muted-foreground: 220 10% 64%;
+
+  --primary: 148 84% 52%;                 /* vivid GitHub-style green, slightly bumped */
+  --primary-foreground: 220 25% 6%;
+
+  --accent: 260 90% 70%;                  /* electric purple — the TikTok pop */
+  --accent-foreground: 220 25% 6%;
+
+  --destructive: 0 82% 64%;
+  --destructive-foreground: 210 20% 98%;
+
+  --border: 220 14% 14%;
+  --ring: 148 84% 52%;
+
+  --radius: 14px;
+
+  /* Soft noise texture so the dark surfaces have tactile depth without being loud. */
+  --noise-mask:
+    radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px) 0 0 / 3px 3px;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01", "ss03";
+  }
+
+  html, body, #__next { height: 100%; }
+
+  body {
+    @apply bg-background text-foreground;
+    background-image:
+      radial-gradient(1200px 500px at 50% -200px, rgba(88, 205, 130, 0.06), transparent 60%),
+      radial-gradient(900px 400px at 110% 120%, rgba(132, 96, 255, 0.05), transparent 60%);
+    background-attachment: fixed;
+  }
+
+  ::selection { background: hsl(var(--primary) / 0.35); color: hsl(var(--foreground)); }
+
+  * { border-color: hsl(var(--border)); }
+
+  h1, h2, h3, h4 { letter-spacing: -0.02em; }
+}
+
+@layer components {
+  /* Glass card — used for every primary surface. Borders lean on the palette
+     instead of a hard outline; the subtle inner highlight sells the depth. */
+  .glass {
+    background: linear-gradient(180deg, hsl(var(--card) / 0.92) 0%, hsl(var(--card) / 0.75) 100%);
+    border: 1px solid hsl(var(--border));
+    box-shadow:
+      0 1px 0 0 hsl(0 0% 100% / 0.04) inset,
+      0 0 0 1px hsl(0 0% 100% / 0.015) inset,
+      0 20px 60px -20px hsl(220 15% 2% / 0.6);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  .glass-muted {
+    background: linear-gradient(180deg, hsl(var(--muted) / 0.7) 0%, hsl(var(--muted) / 0.5) 100%);
+    border: 1px solid hsl(var(--border));
+  }
+
+  /* Focus ring treatment — modernised for 2026: thin, vivid, a little breathing room. */
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+
+  /* The tiny status pip used on PR headers + feed counters. */
+  .pip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: hsl(var(--muted-foreground));
+  }
+  .pip .dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-up { animation: fadeUp 260ms cubic-bezier(.22,1,.36,1) both; }
