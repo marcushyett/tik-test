@@ -1,57 +1,122 @@
 import Link from "next/link";
-import { signIn } from "@/auth";
-import { auth } from "@/auth";
+import { signIn, auth } from "@/auth";
 import { Button } from "@/components/ui/button";
 import { RepoPicker } from "@/components/repo-picker";
 import { listRepos } from "@/lib/github";
-import { PlayCircle, Github, Sparkles } from "lucide-react";
+import { ArrowRight, Github, PlayCircle, Sparkles } from "lucide-react";
 
 export default async function HomePage() {
   const session = await auth();
-  if (!session) {
-    return (
-      <main className="flex flex-1 items-center justify-center px-6 py-16">
-        <div className="flex max-w-md flex-col items-center text-center">
-          <div className="mb-6 flex items-center gap-2 rounded-full border bg-muted/30 px-3 py-1 text-xs uppercase tracking-widest text-muted-foreground">
-            <Sparkles className="h-3 w-3 text-primary" /> tik-test review
+  if (!session) return <Landing />;
+  const repos = await listRepos();
+  return <SignedIn login={(session as any).login} repos={repos} />;
+}
+
+function Landing() {
+  return (
+    <main className="relative flex min-h-screen flex-col">
+      {/* Ambient hero glow */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -z-10 overflow-hidden"
+      >
+        <div className="absolute left-1/2 top-[-10%] h-[540px] w-[540px] -translate-x-1/2 rounded-full bg-primary/10 blur-3xl" />
+        <div className="absolute right-[-10%] bottom-[-10%] h-[420px] w-[420px] rounded-full bg-accent/10 blur-3xl" />
+      </div>
+
+      <header className="flex items-center justify-between px-8 py-6">
+        <div className="flex items-center gap-2">
+          <PlayCircle className="h-5 w-5 text-primary" />
+          <span className="text-sm font-semibold tracking-tight">tik-test review</span>
+          <span className="rounded-full border border-border bg-muted/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            beta
+          </span>
+        </div>
+        <Link href="https://github.com/marcushyett/tik-test" className="text-xs text-muted-foreground hover:text-foreground" target="_blank" rel="noopener noreferrer">
+          github ↗
+        </Link>
+      </header>
+
+      <section className="flex flex-1 flex-col items-center justify-center px-6 pb-24">
+        <div className="mx-auto flex max-w-xl flex-col items-center text-center">
+          <div className="fade-up mb-6 inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-3 py-1.5 text-xs uppercase tracking-widest text-muted-foreground">
+            <Sparkles className="h-3 w-3 text-primary" />
+            PR reviews, as a swipe
           </div>
-          <h1 className="mb-3 text-4xl font-bold leading-tight">Review every PR in minutes.</h1>
-          <p className="mb-8 text-muted-foreground">
-            Sign in with GitHub, pick a repo, and swipe through TikTok-style videos of every open PR.
-            Approve, request changes, or drop a pill reaction — all posts a real PR review.
+
+          <h1 className="fade-up [animation-delay:60ms] bg-gradient-to-b from-foreground to-foreground/70 bg-clip-text text-5xl font-semibold leading-[0.98] tracking-[-0.04em] text-transparent sm:text-6xl">
+            Watch every open PR.
+            <br />
+            <span className="bg-gradient-to-br from-primary to-accent bg-clip-text text-transparent">Ship ten of them.</span>
+          </h1>
+
+          <p className="fade-up [animation-delay:120ms] mt-6 max-w-md text-balance text-base leading-relaxed text-muted-foreground">
+            Pick a repo. Swipe through the tik-test videos on every open pull request. Tap a pill, write a note, approve or request changes — the app posts a real GitHub review on your behalf. Zero backend; your token lives in a session cookie and nowhere else.
           </p>
-          <form action={async () => { "use server"; await signIn("github", { redirectTo: "/" }); }}>
-            <Button type="submit" size="lg">
-              <Github className="h-5 w-5" /> Sign in with GitHub
+
+          <form
+            action={async () => {
+              "use server";
+              await signIn("github", { redirectTo: "/" });
+            }}
+            className="fade-up [animation-delay:200ms] mt-10"
+          >
+            <Button type="submit" size="lg" className="h-12 px-6 text-[15px]">
+              <Github className="h-5 w-5" />
+              Sign in with GitHub
+              <ArrowRight className="h-4 w-4 opacity-70" />
             </Button>
           </form>
-          <p className="mt-6 text-xs text-muted-foreground">
-            We ask for the <code className="rounded bg-muted px-1">repo</code> scope so reviews post as you.
-            Nothing is stored server-side — this app has no database.
+          <p className="fade-up [animation-delay:260ms] mt-4 font-mono text-[11px] uppercase tracking-[0.14em] text-muted-foreground/80">
+            requests the <span className="text-foreground">repo</span> scope · posts reviews as you
           </p>
         </div>
-      </main>
-    );
-  }
 
-  const repos = await listRepos();
+        {/* Feature strip — understated, monospaced micro-type. */}
+        <div className="fade-up [animation-delay:320ms] mt-16 grid w-full max-w-3xl grid-cols-1 gap-px overflow-hidden rounded-2xl border border-border bg-border text-[13px] sm:grid-cols-3">
+          <FeatureCell title="TikTok-native nav" body="↑/↓/j/k, space, esc. Autoplay then decide." />
+          <FeatureCell title="GitHub-native review" body="Approve / Request Changes via real Reviews API." />
+          <FeatureCell title="No database" body="Just GitHub + your access token. Nothing stored." />
+        </div>
+      </section>
+    </main>
+  );
+}
 
+function FeatureCell({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="flex flex-col gap-1 bg-card/70 p-5">
+      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-primary">{title}</span>
+      <span className="text-sm text-foreground/80">{body}</span>
+    </div>
+  );
+}
+
+function SignedIn({ login, repos }: { login?: string; repos: any[] }) {
   return (
     <main className="flex flex-1 flex-col px-6 pb-16 pt-10">
-      <header className="mb-8 flex items-center justify-between">
+      <header className="mx-auto mb-10 flex w-full max-w-xl items-center justify-between">
         <div className="flex items-center gap-3">
           <PlayCircle className="h-6 w-6 text-primary" />
           <div>
-            <div className="text-lg font-semibold">tik-test review</div>
-            <div className="text-xs text-muted-foreground">Signed in as @{(session as any).login ?? "you"}</div>
+            <div className="text-sm font-semibold tracking-tight">tik-test review</div>
+            <div className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+              signed in as @{login ?? "you"}
+            </div>
           </div>
         </div>
-        <Link href={{ pathname: "/api/auth/signout" as any }} className="text-xs text-muted-foreground hover:text-foreground">Sign out</Link>
+        <Link href={{ pathname: "/api/auth/signout" as any }} className="text-xs text-muted-foreground hover:text-foreground">
+          sign out
+        </Link>
       </header>
 
-      <h2 className="mb-2 text-2xl font-semibold">Pick a repo</h2>
-      <p className="mb-6 text-sm text-muted-foreground">Sorted by most-recently-pushed. Only repos you can read show up.</p>
-      <RepoPicker repos={repos} />
+      <div className="mx-auto w-full max-w-xl">
+        <h2 className="text-2xl font-semibold tracking-tight">Pick a repo</h2>
+        <p className="mb-6 mt-1 text-sm text-muted-foreground">
+          Sorted by most-recently-pushed. Only repos you can read show up.
+        </p>
+        <RepoPicker repos={repos} />
+      </div>
     </main>
   );
 }
