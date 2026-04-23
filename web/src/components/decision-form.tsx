@@ -16,6 +16,8 @@ interface Props {
   prTitle: string;
   onDone: () => void;
   onSkip: () => void;
+  onPause?: () => void;    // fired when the reviewer starts typing — pause the video
+  isPosted?: boolean;      // hide the form with a success state after submit
 }
 
 /**
@@ -24,7 +26,14 @@ interface Props {
  * body along with the free-text note. Submit posts `pulls.createReview` as
  * the signed-in user.
  */
-export function DecisionForm({ repo, prNumber, prTitle, onDone, onSkip }: Props) {
+export function DecisionForm({ repo, prNumber, prTitle, onDone, onSkip, onPause, isPosted }: Props) {
+  if (isPosted) {
+    return (
+      <div className="fade-up glass rounded-2xl border-primary/40 bg-primary/10 p-4 text-sm text-primary">
+        Review posted. Cueing next PR…
+      </div>
+    );
+  }
   const [verdict, setVerdict] = useState<"approve" | "changes" | "comment" | null>(null);
   const [selectedPills, setSelectedPills] = useState<string[]>([]);
   const [body, setBody] = useState("");
@@ -113,8 +122,9 @@ export function DecisionForm({ repo, prNumber, prTitle, onDone, onSkip }: Props)
       <textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
-        placeholder="Anything specific? A nit, a rogue edge-case, the reason you're requesting changes."
-        className="mt-4 min-h-[84px] w-full resize-y rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm leading-relaxed placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
+        onFocus={onPause}
+        placeholder="Spotted something? Pause and type — the video stops automatically. (A nit, an edge-case, the reason you're requesting changes.)"
+        className="mt-4 min-h-[96px] w-full resize-y rounded-xl border border-border bg-muted/30 px-4 py-3 text-sm leading-relaxed placeholder:text-muted-foreground/60 focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
       />
 
       {error && (

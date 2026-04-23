@@ -13,6 +13,14 @@ export function formatDuration(seconds: number): string {
   return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, "0")}s`;
 }
 
+/**
+ * Wrap a GitHub release asset URL in the /api/media proxy so the `<video>`
+ * tag can fetch it with the signed-in user's token.
+ */
+export function proxyMedia(url: string): string {
+  return `/api/media?url=${encodeURIComponent(url)}`;
+}
+
 export function formatRelativeTime(iso: string): string {
   const then = new Date(iso).getTime();
   if (isNaN(then)) return "";
