@@ -44,10 +44,10 @@ export const Outro: React.FC<Props> = ({ title, stats, voiceSrc }) => {
             {stats.skipped > 0 && <Block label="skipped" value={stats.skipped} color="#94a3b8" />}
           </div>
           <div style={{ fontSize: 34, color: "#8b98a7", marginTop: 40, fontWeight: 600 }}>
-            {stats.durS.toFixed(1)}s · {stats.total} steps
+            {stats.durS.toFixed(1)}s · {stats.total} checks
           </div>
           <div style={{ fontSize: 30, color: "#6b7684", marginTop: 60, fontWeight: 500 }}>
-            Open the viewer → send feedback to Claude
+            Swipe → next review
           </div>
         </div>
       </AbsoluteFill>
