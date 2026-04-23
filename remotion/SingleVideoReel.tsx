@@ -85,6 +85,11 @@ export const SingleVideoReel: React.FC<SingleVideoInput> = (props) => {
   );
 };
 
+// Version badge: persistent across the whole video, but MUST be cheap to
+// render. Earlier versions used backdrop-filter: blur which forces a
+// composited layer per frame and halved the Remotion encode throughput
+// (6–10 fps → 3 fps). Solid opaque pill achieves the same legibility at
+// effectively zero cost per frame.
 const VersionBadge: React.FC<{ tag: string }> = ({ tag }) => (
   <div
     style={{
@@ -93,14 +98,13 @@ const VersionBadge: React.FC<{ tag: string }> = ({ tag }) => (
       right: 28,
       padding: "8px 14px",
       borderRadius: 999,
-      background: "rgba(10, 12, 18, 0.55)",
-      color: "rgba(255,255,255,0.85)",
+      background: "rgba(10, 12, 18, 0.78)",
+      color: "rgba(255,255,255,0.92)",
       fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, monospace",
       fontSize: 22,
       fontWeight: 600,
       letterSpacing: "0.08em",
-      border: "1px solid rgba(255,255,255,0.12)",
-      backdropFilter: "blur(4px)",
+      border: "1px solid rgba(255,255,255,0.14)",
       pointerEvents: "none",
       zIndex: 2000,
     }}
