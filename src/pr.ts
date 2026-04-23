@@ -318,6 +318,36 @@ interface CommentData {
   plan: string;
   events: Array<{ description: string; outcome: string; error?: string; importance: string; startMs: number; endMs: number }>;
   totalMs: number;
+  runId?: string;
+}
+
+/**
+ * Versioned HTML-comment marker that the review web app scans for.
+ * The app trusts a comment ONLY if:
+ *   1. The outer `<!-- tik-test-video:v1 … -->` wrapper is present AND parseable JSON.
+ *   2. The payload's videoUrl is a GitHub release-asset path (github.com/.../releases/download/...).
+ *   3. The outer comment author matches the bot / user who ran the action (checked on the client).
+ * Keeping this terse + versioned lets the schema evolve without breaking old comments.
+ */
+const MARKER_VERSION = "1";
+function buildTikTestMarker(data: CommentData, meta: { prRef: string; ts: string }): string {
+  const payload = {
+    v: MARKER_VERSION,
+    runId: data.runId ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    prRef: meta.prRef,
+    createdAt: meta.ts,
+    planName: data.plan,
+    videoUrl: data.videoUrl,
+    gifUrl: data.gifUrl,
+    totalMs: data.totalMs,
+    stats: {
+      total: data.events.length,
+      passed: data.events.filter((e) => e.outcome === "success").length,
+      failed: data.events.filter((e) => e.outcome === "failure").length,
+      skipped: data.events.filter((e) => e.outcome === "skipped").length,
+    },
+  };
+  return `<!-- tik-test-video:v${MARKER_VERSION} ${JSON.stringify(payload)} -->`;
 }
 
 async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
@@ -339,7 +369,14 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
     // Fallback: <video> tag (may degrade to a download link depending on GitHub rendering rules for release assets).
     : `<video src="${data.videoUrl}" controls width="480"></video>`;
 
+  const marker = buildTikTestMarker(data, {
+    prRef: `${ref.owner}/${ref.repo}#${ref.number}`,
+    ts: new Date().toISOString(),
+  });
+
   const body = [
+    marker,
+    ``,
     `### 🎬 tik-test review — ${emoji} ${status}`,
     ``,
     `**${data.plan}** — ${passed}/${data.events.length} steps passed in ${(data.totalMs / 1000).toFixed(1)}s.`,
