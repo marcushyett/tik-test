@@ -148,7 +148,10 @@
     let items = state.tasks;
     if (state.filter === "active") items = items.filter((t) => !t.done);
     else if (state.filter === "done") items = items.filter((t) => t.done);
-    else if (state.filter === "high") items = items.filter((t) => t.priority === "high");
+    // BUG #2 (for tik-test demo): "High priority" filter accidentally shows LOW
+    // priority tasks — a single-character string swap during a refactor. The
+    // classic "two things on the same page, wrong one wired up" regression.
+    else if (state.filter === "high") items = items.filter((t) => t.priority === "low");
 
     tasksEl.innerHTML = items.map((t) => `
       <li class="${t.done ? "done" : ""}" data-id="${t.id}" data-testid="task-${t.id}">

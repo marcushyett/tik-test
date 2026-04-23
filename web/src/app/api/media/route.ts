@@ -21,6 +21,33 @@ import { auth } from "@/auth";
 
 const ALLOWED = [/^https:\/\/github\.com\/[^/]+\/[^/]+\/releases\/download\//i];
 
+/**
+ * Parse `https://github.com/<owner>/<repo>/releases/download/<tag>/<asset>` into
+ * parts we can use to hit the GitHub API. The raw browser URL 404s for private
+ * repos even with a valid Bearer token; the authenticated path is the API
+ * endpoint `/repos/{o}/{r}/releases/assets/{id}` with
+ * `Accept: application/octet-stream`, which redirects to the signed CDN URL.
+ */
+function parseReleaseUrl(raw: string): { owner: string; repo: string; tag: string; asset: string } | null {
+  const m = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases\/download\/([^/]+)\/([^?]+)/i.exec(raw);
+  if (!m) return null;
+  return { owner: m[1], repo: m[2], tag: decodeURIComponent(m[3]), asset: decodeURIComponent(m[4]) };
+}
+
+async function resolveAssetApiUrl(
+  parts: { owner: string; repo: string; tag: string; asset: string },
+  token: string,
+): Promise<string | null> {
+  const res = await fetch(
+    `https://api.github.com/repos/${parts.owner}/${parts.repo}/releases/tags/${encodeURIComponent(parts.tag)}`,
+    { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "tik-test-review" } },
+  );
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null) as { assets?: Array<{ name: string; url: string }> } | null;
+  const asset = data?.assets?.find((a) => a.name === parts.asset);
+  return asset?.url ?? null;
+}
+
 export async function GET(req: Request) {
   const session = (await auth()) as any;
   const token: string | undefined = session?.accessToken;
@@ -32,23 +59,26 @@ export async function GET(req: Request) {
 
   const range = req.headers.get("range") ?? undefined;
 
-  // The GitHub API release-asset URL has the signing we need. Bare github.com
-  // release-asset URLs redirect to a short-lived objects.githubusercontent.com
-  // URL that already embeds authentication — BUT only when the initial
-  // 302 is followed by a client that sent a valid Bearer token. So we hit
-  // github.com/.../releases/download with the token and let fetch follow.
-  const upstream = await fetch(raw, {
+  // Resolve to the API-path URL so GitHub accepts the reviewer's Bearer token.
+  // If that fails (missing tag, unknown asset, or the reviewer's token can't
+  // read the repo), we surface the failure directly — the video is only
+  // viewable by reviewers who have access to the PR's repo, which is exactly
+  // the model we want.
+  const parts = parseReleaseUrl(raw);
+  const apiUrl = parts ? await resolveAssetApiUrl(parts, token) : null;
+  const upstreamUrl = apiUrl ?? raw;
+
+  const upstream = await fetch(upstreamUrl, {
     headers: {
       Authorization: `Bearer ${token}`,
-      // Asking for octet-stream nudges GitHub to redirect us to the signed
-      // download URL; without it we'd get the HTML landing page.
+      // Asking for octet-stream nudges the API to 302 us to the signed CDN
+      // URL; without it we'd get JSON metadata or an HTML landing page.
       Accept: "application/octet-stream",
       ...(range ? { Range: range } : {}),
       "User-Agent": "tik-test-review",
     },
-    // fetch follows the redirect automatically; the signed CDN URL doesn't
-    // need the Bearer token anymore, so the body streams through without
-    // leaking the PAT downstream.
+    // Follow the 302 to the signed URL; the signed URL has its own auth and
+    // doesn't need the Bearer token, so the PAT never leaves our fetch.
     redirect: "follow",
   });
 

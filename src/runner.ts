@@ -28,24 +28,66 @@ async function captureBBox(page: Page, locator: Locator, at: "before" | "after")
 }
 
 /**
- * Move the mouse from its current position to the centre of the element in ~18
- * stepped frames with an ease-out curve. Playwright's default `locator.click`
- * teleports the cursor — invisible in a recording — so we move by hand first.
+ * Track where we last put the cursor so humanMove can draw an eased path
+ * from there to the target instead of teleporting. Playwright's `steps`
+ * option fires N intermediate mousemove events but completes in ~zero wall
+ * time — so the synthetic cursor lerps to the target in a blur. We instead
+ * chunk the move into ~24 frames spread over ~640ms so the viewer's eye can
+ * follow the pointer.
  */
-async function humanMove(page: Page, box: { x: number; y: number; width: number; height: number }): Promise<void> {
-  const targetX = box.x + box.width / 2;
-  const targetY = box.y + box.height / 2;
-  const steps = 22;
-  await page.mouse.move(targetX, targetY, { steps });
+let lastCursor: { x: number; y: number } | null = null;
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
-async function humanJitter(page: Page): Promise<void> {
-  // Small wiggle so the pointer feels alive between actions.
-  const vp = page.viewportSize();
-  if (!vp) return;
-  const jitter = (v: number) => v + (Math.random() - 0.5) * 16;
-  // Nudge from wherever Playwright's cursor is — we can't read it, so pick a neutral spot.
-  await page.mouse.move(jitter(vp.width / 2), jitter(vp.height / 2), { steps: 12 });
+async function humanMove(page: Page, box: { x: number; y: number; width: number; height: number }): Promise<void> {
+  const vp = page.viewportSize() ?? { width: 1280, height: 800 };
+  const targetX = box.x + box.width / 2;
+  const targetY = box.y + box.height / 2;
+  const from = lastCursor ?? { x: vp.width / 2, y: vp.height * 0.62 };
+  const dx = targetX - from.x;
+  const dy = targetY - from.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  if (distance < 4) {
+    await page.mouse.move(targetX, targetY);
+    lastCursor = { x: targetX, y: targetY };
+    return;
+  }
+  // Longer paths take longer — roughly 0.9px/ms, clamped between 420ms and 1100ms.
+  const durationMs = Math.max(420, Math.min(1100, distance * 1.1));
+  const frames = 24;
+  const frameMs = Math.round(durationMs / frames);
+  // Perpendicular offset so the path arcs slightly — feels less robotic than a
+  // straight line. Magnitude scales with distance but caps at ~40px.
+  const arc = Math.min(40, distance * 0.18) * (Math.random() > 0.5 ? 1 : -1);
+  const perpX = -dy / distance;
+  const perpY = dx / distance;
+  for (let i = 1; i <= frames; i++) {
+    const t = easeInOutCubic(i / frames);
+    // sin(π t) peaks mid-path, so the arc bulges at 50% then relaxes.
+    const bulge = Math.sin(Math.PI * (i / frames)) * arc;
+    const x = from.x + dx * t + perpX * bulge + (Math.random() - 0.5) * 0.6;
+    const y = from.y + dy * t + perpY * bulge + (Math.random() - 0.5) * 0.6;
+    await page.mouse.move(x, y);
+    await page.waitForTimeout(frameMs);
+  }
+  lastCursor = { x: targetX, y: targetY };
+}
+
+/**
+ * "Look here" gesture — pulses a ring on the page without actually clicking.
+ * Used on assert-visible / assert-text so the viewer can see what the narrator
+ * is referring to ("look at the green toast"). The pan-zoom already tracks the
+ * bbox; this just draws attention within the frame.
+ */
+async function pulseFocus(page: Page, box: { x: number; y: number; width: number; height: number }): Promise<void> {
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  await page.evaluate(([x, y]) => {
+    const fn = (window as any).__tikPulse as undefined | ((x: number, y: number) => void);
+    if (fn) fn(x, y);
+  }, [cx, cy]);
 }
 
 async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ notes?: string; bbox?: BBox }> {
@@ -63,11 +105,11 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const locator = page.locator(resolveSelector(step.target)).first();
       await locator.waitFor({ state: "visible", timeout });
       const bbox = await captureBBox(page, locator, "before");
-      await page.waitForTimeout(650); // thinking beat
+      await page.waitForTimeout(850); // thinking beat
       if (bbox) await humanMove(page, bbox);
-      await page.waitForTimeout(300); // pointer hovers briefly before the click
+      await page.waitForTimeout(450); // pointer hovers briefly before the click
       await locator.click({ timeout });
-      await page.waitForTimeout(1300); // settle so the UI reaction is on-screen
+      await page.waitForTimeout(1600); // settle so the UI reaction is on-screen
       return { bbox };
     }
     case "fill": {
@@ -75,15 +117,15 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const locator = page.locator(resolveSelector(step.target)).first();
       await locator.waitFor({ state: "visible", timeout });
       const bbox = await captureBBox(page, locator, "before");
-      await page.waitForTimeout(400);
+      await page.waitForTimeout(500);
       if (bbox) await humanMove(page, bbox);
-      await page.waitForTimeout(200);
+      await page.waitForTimeout(300);
       await locator.click({ timeout });
       await page.keyboard.press("Meta+A").catch(() => {});
       await page.keyboard.press("Delete").catch(() => {});
       // Slower typing — the viewer should see letters appear, one by one.
-      await locator.type(step.value ?? "", { delay: 140 });
-      await page.waitForTimeout(900);
+      await locator.type(step.value ?? "", { delay: 185 });
+      await page.waitForTimeout(1100);
       return { bbox };
     }
     case "press": {
@@ -115,10 +157,13 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const locator = page.locator(resolveSelector(step.target)).first();
       await locator.waitFor({ state: "visible", timeout });
       const bbox = await captureBBox(page, locator, "after");
-      // POINT at what we're confirming so the video/pan-zoom tracks it.
+      // POINT at what we're confirming so the video/pan-zoom tracks it, and
+      // pulse a ring so the narration ("look — the toast") has something visual.
       if (bbox) {
         await humanMove(page, bbox);
-        await page.waitForTimeout(600);
+        await page.waitForTimeout(250);
+        await pulseFocus(page, bbox);
+        await page.waitForTimeout(850);
       }
       return { notes: "visible — ok", bbox };
     }
@@ -129,10 +174,13 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const text = (await locator.innerText()).trim();
       if (!text.includes(step.value)) throw new Error(`Expected text to include "${step.value}", got "${text.slice(0, 80)}"`);
       const bbox = await captureBBox(page, locator, "after");
-      // Hover on the asserted element so the viewer can see what the voice-over is talking about.
+      // Hover + pulse on the asserted element so the viewer can see what the
+      // voice-over is talking about.
       if (bbox) {
         await humanMove(page, bbox);
-        await page.waitForTimeout(700);
+        await page.waitForTimeout(250);
+        await pulseFocus(page, bbox);
+        await page.waitForTimeout(950);
       }
       return { notes: `contains: ${step.value}`, bbox };
     }
@@ -169,7 +217,8 @@ window.addEventListener('DOMContentLoaded', () => {
   cursor.style.cssText = [
     'position:fixed','z-index:2147483647','pointer-events:none',
     'width:28px','height:28px','top:0','left:0',
-    'transform:translate(-5px,-3px)','transition:transform 40ms linear',
+    // Slower lerp so the pointer glides instead of snapping.
+    'transform:translate(-5px,-3px)','transition:transform 60ms linear',
   ].join(';');
   cursor.innerHTML = \`
     <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
@@ -177,30 +226,42 @@ window.addEventListener('DOMContentLoaded', () => {
         fill="#ffffff" stroke="#0a0a0a" stroke-width="1.2" stroke-linejoin="round"/>
     </svg>\`;
   document.body.appendChild(cursor);
-  let vx = 0, vy = 0, tx = 0, ty = 0, raf = 0;
+  let vx = 0, vy = 0, tx = 0, ty = 0;
   function tick() {
-    vx += (tx - vx) * 0.28;
-    vy += (ty - vy) * 0.28;
+    // Softer lerp coefficient (0.17 vs 0.28) so the visible pointer trails the
+    // real mouse more — easier for a viewer to track.
+    vx += (tx - vx) * 0.17;
+    vy += (ty - vy) * 0.17;
     cursor.style.transform = \`translate(\${vx - 5}px, \${vy - 3}px)\`;
-    raf = requestAnimationFrame(tick);
+    requestAnimationFrame(tick);
   }
   tick();
   document.addEventListener('mousemove', (e) => { tx = e.clientX; ty = e.clientY; }, true);
-  // Click ripple.
-  document.addEventListener('click', (e) => {
+  function ripple(x, y, color) {
+    const c = color || '#00e5a0';
     const r = document.createElement('div');
     r.style.cssText = [
       'position:fixed','z-index:2147483646','pointer-events:none',
-      'left:' + e.clientX + 'px','top:' + e.clientY + 'px',
+      'left:' + x + 'px','top:' + y + 'px',
       'width:10px','height:10px','margin:-5px 0 0 -5px',
-      'border-radius:50%','border:3px solid #00e5a0','opacity:0.9',
-      'animation:tikRipple 500ms ease-out forwards','box-shadow:0 0 24px #00e5a0',
+      'border-radius:50%','border:3px solid ' + c,'opacity:0.9',
+      'animation:tikRipple 520ms ease-out forwards','box-shadow:0 0 28px ' + c,
     ].join(';');
     document.body.appendChild(r);
-    setTimeout(() => r.remove(), 520);
-  }, true);
+    setTimeout(function() { r.remove(); }, 560);
+  }
+  // Click ripple.
+  document.addEventListener('click', function(e) { ripple(e.clientX, e.clientY, '#00e5a0'); }, true);
+  // Non-click "look here" pulse — a warm amber ring so the viewer can see what
+  // we're asserting on even when the pointer is stationary. Triggered from the
+  // Playwright runner on assert steps.
+  (window).__tikPulse = function(x, y) {
+    ripple(x, y, '#ffb94a');
+    // Second, larger concentric ring for extra presence.
+    setTimeout(function() { ripple(x, y, '#ffb94a'); }, 160);
+  };
   const style = document.createElement('style');
-  style.textContent = '@keyframes tikRipple{from{transform:scale(1);opacity:0.9}to{transform:scale(9);opacity:0}}';
+  style.textContent = '@keyframes tikRipple{from{transform:scale(1);opacity:0.9}to{transform:scale(10);opacity:0}}';
   document.head.appendChild(style);
 });
 `;
