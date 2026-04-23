@@ -32,17 +32,28 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
 
   const current = items[idx];
 
+  // Pause the currently-mounted video before changing idx so that — even if
+  // React's unmount is slow — no audio leaks into the new video's playback.
+  const pauseCurrent = useCallback(() => {
+    const v = videoRef.current;
+    if (v) {
+      try { v.pause(); v.currentTime = 0; } catch {}
+    }
+  }, []);
+
   const goNext = useCallback(() => {
+    pauseCurrent();
     setPosted(false);
     setPlaying(true);
     setIdx((i) => Math.min(items.length, i + 1));
-  }, [items.length]);
+  }, [items.length, pauseCurrent]);
 
   const goPrev = useCallback(() => {
+    pauseCurrent();
     setPosted(false);
     setPlaying(true);
     setIdx((i) => Math.max(0, i - 1));
-  }, []);
+  }, [pauseCurrent]);
 
   const toggleMute = useCallback(() => {
     setMuted((m) => {
@@ -240,25 +251,35 @@ const VideoFrame = (() => {
       ? "group relative flex-1 min-h-0 overflow-hidden rounded-2xl border border-border bg-black shadow-lift"
       : "absolute inset-0 bg-black";
     return (
-      <div className={wrapClass} style={aspect === "9/16" ? { aspectRatio: "9 / 16" } : undefined} onClick={togglePlay}>
+      <div className={wrapClass} style={aspect === "9/16" ? { aspectRatio: "9 / 16" } : undefined}>
+        {/* key={src} forces React to unmount the previous video element when the
+            src changes. Without this, React reused the same element, the browser
+            would keep the old audio track alive while loading the new src, and
+            we'd get overlapping voices when scrolling quickly between PRs. */}
         <video
+          key={src}
           ref={ref}
           src={src}
           poster={poster}
           autoPlay
           playsInline
-          loop
           muted={muted}
-          controls={false}
+          controls
+          controlsList="nodownload"
           preload="auto"
           className="h-full w-full object-contain"
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
         />
         {!playing && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
+          <button
+            type="button"
+            aria-label="Play video"
+            onClick={togglePlay}
+            className="absolute inset-0 flex items-center justify-center bg-black/30 backdrop-blur-[2px] transition hover:bg-black/40"
+          >
             <PlayCircle className="h-16 w-16 text-white/90 drop-shadow-2xl" />
-          </div>
+          </button>
         )}
         {/* Desktop-only controls: hover chevrons + persistent mute toggle. */}
         {aspect === "9/16" && (
