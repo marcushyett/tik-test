@@ -39,9 +39,14 @@ but genuinely curious whether it's right — you're inviting feedback, not pitch
   "curious what you all think" or "one thing I'm still unsure about..."
 
 **Format constraints:**
-- voiceLine: MAX 9 WORDS per step. Fragment sentences fine. Conversational, like you're
+- voiceLine: MAX 14 WORDS per step. Natural spoken sentences. Conversational, like you're
   thinking out loud to colleagues.
-- captionText: MAX 5 WORDS per step. Punchy pull-quote.
+- captionText: **TV-style subtitle that MATCHES the voiceLine word-for-word**, minor
+  punctuation adjustments OK. The viewer should be able to read the captionText and get
+  the same information as hearing the voiceLine. Do NOT condense to a 3-word pull-quote
+  — that was the old behaviour, and it made the video hard to follow. Example: if voiceLine
+  is "Here's where we open the overlay — watch the URL update.", captionText is the same
+  thing minus the em-dash.
 - titleSlideLabel: 1–2 word chapter tag, or empty string.
 - titleSlideText: 2–5 word headline, or empty string.
 

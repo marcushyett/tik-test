@@ -1,4 +1,5 @@
-import { AbsoluteFill, Audio, OffthreadVideo, Sequence, useCurrentFrame, useVideoConfig, interpolate, Easing, staticFile } from "remotion";
+import { AbsoluteFill, Audio, Sequence, useCurrentFrame, useVideoConfig, interpolate, Easing, staticFile } from "remotion";
+import { Video } from "@remotion/media";
 import { Background } from "./components/Background";
 import { Intro } from "./components/Intro";
 import { Outro } from "./components/Outro";
@@ -218,7 +219,7 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
             willChange: "transform",
           }}
         >
-          <OffthreadVideo
+          <Video
             src={staticFile(input.masterVideoSrc)}
             muted
             style={{ width: "100%", height: "100%", objectFit: "contain" }}

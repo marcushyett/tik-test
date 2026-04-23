@@ -1,4 +1,5 @@
-import { AbsoluteFill, Sequence, OffthreadVideo, Audio, useCurrentFrame, useVideoConfig, interpolate, Easing, staticFile } from "remotion";
+import { AbsoluteFill, Sequence, Audio, useCurrentFrame, useVideoConfig, interpolate, Easing, staticFile } from "remotion";
+import { Video } from "@remotion/media";
 import { StepIntroCard } from "./StepIntroCard";
 import { Background } from "./Background";
 import { WordCaption } from "./WordCaption";
@@ -68,7 +69,7 @@ const StepClip: React.FC<ClipProps> = ({ step, viewport, accent }) => {
     <AbsoluteFill style={{ opacity }}>
       {/* Pre-baked clip fills the full canvas. Zoom, pan, motion blur, and centring
           on the target were all baked in by ffmpeg, so Remotion just composites. */}
-      <OffthreadVideo
+      <Video
         src={clipUrl}
         playbackRate={step.playbackRate}
         muted

@@ -71,6 +71,10 @@ export interface Config {
   viewport?: { width: number; height: number };
   setup?: string;
   login?: string;
+  /** README "TikTest" section — natural-language login / pre-test setup
+   *  instructions. Executed before plan generation so the rest of the run
+   *  assumes an already-authed, test-ready page. */
+  tiktestSetup?: string;
   focus?: string;
   /**
    * Raw PR diff, truncated to a prompt-safe size. Populated by `tik-test pr`

@@ -1,4 +1,4 @@
-export const FPS = 30;
+export const FPS = 24;
 export const OUT_W = 1080;
 export const OUT_H = 1920;
 

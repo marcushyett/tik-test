@@ -16,7 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REMOTION_ENTRY = path.resolve(__dirname, "..", "remotion", "index.ts");
 
-const FPS = 30;
+const FPS = 24;
 // Clip canvas delivered to Remotion — we bake the zoom at this size so Remotion only
 // has to composite, never re-scale. Choosing 540x960 keeps file sizes small for the
 // default path; quick-mode uses these dimensions straight through.
@@ -421,6 +421,11 @@ export async function editHighlightReel({
     enforceAudioTrack: true,
     concurrency,
     jpegQuality: quick ? 70 : 82,
+    chromiumOptions: {
+      gl: (process.env.TIK_REMOTION_GL as any)
+        ?? (process.platform === "darwin" ? "angle" : "angle-egl"),
+    },
+    offthreadVideoCacheSizeInBytes: 512 * 1024 * 1024,
     onProgress: ({ progress, renderedFrames, encodedFrames }) => {
       const pct = Math.floor(progress * 100);
       // Emit a full line every 2% (or when encodedFrames tick) so progress survives pipe buffering.

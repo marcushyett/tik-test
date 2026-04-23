@@ -65,6 +65,18 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     // Use the PR body as focus context for test plan generation.
     cfg.focus = `PR #${ref.number}: ${meta.title}\n\n${meta.body}`;
   }
+
+  // Read the repo's README for a "TikTest" section — pre-test setup/login
+  // instructions. This is the dedicated place repos declare how tik-test
+  // should authenticate. We require it: no silent fallback to claude.md login.
+  const tiktestSetup = await findTiktestSection(workDir);
+  if (tiktestSetup) {
+    cfg.tiktestSetup = tiktestSetup;
+    console.log(chalk.dim(`  tiktest setup: ${tiktestSetup.split("\n")[0].slice(0, 80)}…`));
+  } else {
+    console.log(chalk.yellow(`  no "## TikTest" section found in README — running without pre-test setup`));
+    console.log(chalk.dim(`    add a "## TikTest Instructions" section to README.md with login steps so the runner can auth itself.`));
+  }
   // Feed the PR diff to the plan generator so it can target the exact files
   // and selectors the PR touches — "read the code" exhaustiveness, not just
   // "read the PR body" surface guessing. Truncated to keep us inside the
@@ -105,7 +117,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     const bypass = opts.vercelBypass ?? process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
     const { extraHTTPHeaders, cookies } = buildVercelBypass(bypass, plan.startUrl);
     if (bypass) console.log(chalk.dim("  vercel protection bypass enabled"));
-    const artifacts = await runPlan({ plan, runDir, extraHTTPHeaders, cookies });
+    const artifacts = await runPlan({ plan, runDir, extraHTTPHeaders, cookies, setupInstructions: cfg.tiktestSetup });
     const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
     console.log(chalk.green(`     ✓ ${artifacts.events.length - failed}/${artifacts.events.length} passed`));
 
@@ -266,6 +278,43 @@ async function findConfig(workDir: string): Promise<string | null> {
       const s = await stat(full);
       if (s.isFile()) return full;
     } catch {}
+  }
+  return null;
+}
+
+/**
+ * Extract the "TikTest" (or similar) section from the repo's README. This is
+ * where the repo author documents how tik-test should sign in and prep the
+ * test environment — the instructions are natural language, and a pre-test
+ * setup phase translates them to Playwright actions.
+ *
+ * Returns the section body (without the heading) or null if no matching
+ * section was found.
+ */
+async function findTiktestSection(workDir: string): Promise<string | null> {
+  const candidates = ["README.md", "readme.md", "Readme.md"];
+  for (const rel of candidates) {
+    const full = path.join(workDir, rel);
+    let raw: string;
+    try { raw = await readFile(full, "utf8"); } catch { continue; }
+    const aliases = [
+      /^##\s+tik[- ]?test\s+instructions?\s*$/i,
+      /^##\s+tik[- ]?test\b.*$/i,
+      /^##\s+testing\s+with\s+tik[- ]?test\s*$/i,
+      /^##\s+tik[- ]?test\s+setup\s*$/i,
+    ];
+    const lines = raw.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+      if (aliases.some((re) => re.test(lines[i]))) {
+        const body: string[] = [];
+        for (let j = i + 1; j < lines.length; j++) {
+          if (/^##\s+/.test(lines[j])) break;
+          body.push(lines[j]);
+        }
+        const section = body.join("\n").trim();
+        if (section) return section;
+      }
+    }
   }
   return null;
 }

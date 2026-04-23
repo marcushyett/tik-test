@@ -16,7 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REMOTION_ENTRY = path.resolve(__dirname, "..", "remotion", "index.ts");
 
-const FPS = 30;
+const FPS = 24;
 
 /**
  * Produce a short "v{pkg} · {sha}" string for the on-video badge so a
@@ -500,53 +500,117 @@ export async function editSingleVideo({
     inputProps: input as any,
   });
 
-  // Concurrency trades render speed for peak disk use. With 12-18 step plans
-  // the frame count stays under ~3k and a fresh-disk machine is happy at 8;
-  // env override exists for CI or tight-disk runs. Even at 8 we stay off-peak
-  // in ENOSPC territory because Remotion streams JPEGs and cleans as it goes.
-  const concurrency = Math.max(2, Math.min(os.cpus().length, Number(process.env.TIK_RENDER_CONCURRENCY) || 8));
+  // Segment parallelism: split composition into N processes, render in
+  // parallel via frameRange, concat with ffmpeg. Remotion's own `concurrency`
+  // only parallelizes tabs in one process — segments parallelize ACROSS
+  // processes so render + encode of different parts overlap.
+  const totalFrames = composition.durationInFrames;
+  const segmentsCfg = Math.max(1, Math.min(4, Number(process.env.TIK_RENDER_SEGMENTS) || 3));
+  const segments = totalFrames < 240 ? 1 : segmentsCfg;
+  const perSegConcurrency = Math.max(2, Math.min(
+    Number(process.env.TIK_RENDER_CONCURRENCY) || 8,
+    Math.floor(os.cpus().length / Math.max(1, segments)),
+  ));
   const effectiveWidth = quick ? 540 : composition.width;
   const effectiveHeight = quick ? 960 : composition.height;
-  console.log(chalk.dim(`  rendering ${composition.durationInFrames} frames (${(composition.durationInFrames / FPS).toFixed(1)}s) at ${effectiveWidth}×${effectiveHeight} with concurrency ${concurrency}…`));
-  const renderStart = Date.now();
-  let lastReportedPct = -1;
-  await renderMedia({
-    composition: { ...composition, width: effectiveWidth, height: effectiveHeight },
+  console.log(chalk.dim(`  rendering ${totalFrames} frames (${(totalFrames / FPS).toFixed(1)}s) at ${effectiveWidth}×${effectiveHeight} — ${segments}× parallel segment${segments === 1 ? "" : "s"} · concurrency ${perSegConcurrency}…`));
+
+  const videoBitrate = (quick ? "1200k" : "6000k") as `${number}k`;
+  const audioBitrate: `${number}k` = "160k";
+  const glBackend = (process.env.TIK_REMOTION_GL as any)
+    ?? (process.platform === "darwin" ? "angle" : "angle-egl");
+  const sharedRenderOpts = {
     serveUrl: bundleOutput,
-    codec: "h264",
-    outputLocation: outPath,
+    codec: "h264" as const,
     inputProps: input as any,
-    audioCodec: "aac",
+    audioCodec: "aac" as const,
     enforceAudioTrack: true,
-    concurrency,
+    concurrency: perSegConcurrency,
     jpegQuality: quick ? 70 : 88,
-    // Explicit bitrate: Remotion's h264 defaults are middling on mobile at
-    // 1080×1920. Bump to ~6 Mbps for the full-res render so text stays crisp
-    // on phone screens. Quick mode keeps it lean so drafts render fast.
-    videoBitrate: quick ? "1200k" : "6000k",
-    audioBitrate: "160k",
-    // Hardware acceleration: on Apple Silicon / recent Intel Macs this swaps
-    // libx264 for `h264_videotoolbox`, which encodes ~2-4× faster at the cost
-    // of ~20% lower compression efficiency (we bump bitrate to compensate).
-    // "if-possible" falls back cleanly on hosts without HW support, so this
-    // is safe for CI without branching.
-    hardwareAcceleration: "if-possible",
-    // x264Preset is a libx264 hint; videotoolbox ignores it, but it's the
-    // fallback speed when hardware isn't available.
-    x264Preset: "veryfast",
-    onProgress: ({ progress, renderedFrames, encodedFrames }) => {
-      const pct = Math.floor(progress * 100);
+    chromiumOptions: { gl: glBackend },
+    offthreadVideoCacheSizeInBytes: 512 * 1024 * 1024,
+    videoBitrate,
+    audioBitrate,
+    hardwareAcceleration: "if-possible" as const,
+    x264Preset: "veryfast" as const,
+    overwrite: true,
+    logLevel: (process.env.TIK_REMOTION_DEBUG ? "verbose" : "error") as "verbose" | "error",
+  };
+
+  const renderStart = Date.now();
+  if (segments === 1) {
+    let lastReportedPct = -1;
+    await renderMedia({
+      ...sharedRenderOpts,
+      composition: { ...composition, width: effectiveWidth, height: effectiveHeight },
+      outputLocation: outPath,
+      onProgress: ({ progress, renderedFrames, encodedFrames }) => {
+        const pct = Math.floor(progress * 100);
+        if (pct >= lastReportedPct + 2 || pct === 100) {
+          const elapsed = (Date.now() - renderStart) / 1000;
+          const fps = renderedFrames && elapsed > 0 ? (renderedFrames / elapsed).toFixed(1) : "—";
+          const eta = pct > 0 ? Math.round(elapsed * (100 - pct) / pct) : undefined;
+          console.log(chalk.dim(`    ${String(pct).padStart(3, " ")}%  rendered ${renderedFrames}/${totalFrames}  encoded ${encodedFrames}/${totalFrames}  ${fps} fps${eta != null ? ` · eta ${eta}s` : ""}`));
+          lastReportedPct = pct;
+        }
+      },
+    });
+  } else {
+    const chunkSize = Math.ceil(totalFrames / segments);
+    const partsDir = path.join(runDir, "parts");
+    await mkdir(partsDir, { recursive: true });
+    const ranges: Array<{ start: number; end: number; path: string }> = [];
+    for (let i = 0; i < segments; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(totalFrames - 1, (i + 1) * chunkSize - 1);
+      if (start > end) continue;
+      ranges.push({ start, end, path: path.join(partsDir, `part-${String(i).padStart(2, "0")}.mp4`) });
+    }
+
+    const perSegRendered = new Array(ranges.length).fill(0);
+    const perSegEncoded = new Array(ranges.length).fill(0);
+    let lastReportedPct = -1;
+    const reportProgress = () => {
+      const totalRendered = perSegRendered.reduce((a, b) => a + b, 0);
+      const totalEncoded = perSegEncoded.reduce((a, b) => a + b, 0);
+      const pct = Math.floor((totalRendered / totalFrames) * 100);
       if (pct >= lastReportedPct + 2 || pct === 100) {
         const elapsed = (Date.now() - renderStart) / 1000;
-        const fps = renderedFrames && elapsed > 0 ? (renderedFrames / elapsed).toFixed(1) : "—";
+        const fps = elapsed > 0 ? (totalRendered / elapsed).toFixed(1) : "—";
         const eta = pct > 0 ? Math.round(elapsed * (100 - pct) / pct) : undefined;
-        console.log(chalk.dim(`    ${String(pct).padStart(3, " ")}%  rendered ${renderedFrames}/${composition.durationInFrames}  encoded ${encodedFrames}/${composition.durationInFrames}  ${fps} fps${eta != null ? ` · eta ${eta}s` : ""}`));
+        console.log(chalk.dim(`    ${String(pct).padStart(3, " ")}%  rendered ${totalRendered}/${totalFrames}  encoded ${totalEncoded}/${totalFrames}  ${fps} fps${eta != null ? ` · eta ${eta}s` : ""}`));
         lastReportedPct = pct;
       }
-    },
-    overwrite: true,
-    logLevel: process.env.TIK_REMOTION_DEBUG ? "verbose" : "error",
-  });
+    };
+    await Promise.all(ranges.map((r, i) => renderMedia({
+      ...sharedRenderOpts,
+      composition: { ...composition, width: effectiveWidth, height: effectiveHeight },
+      outputLocation: r.path,
+      frameRange: [r.start, r.end],
+      onProgress: ({ renderedFrames, encodedFrames }) => {
+        perSegRendered[i] = renderedFrames;
+        perSegEncoded[i] = encodedFrames;
+        reportProgress();
+      },
+    })));
+
+    console.log(chalk.dim(`  stitching ${ranges.length} segments…`));
+    const listPath = path.join(partsDir, "concat.txt");
+    const listContent = ranges.map((r) => `file '${r.path.replace(/'/g, "'\\''")}'`).join("\n");
+    await writeFile(listPath, listContent);
+    await runFfmpeg([
+      "-f", "concat",
+      "-safe", "0",
+      "-i", listPath,
+      "-c", "copy",
+      "-movflags", "+faststart",
+      "-y",
+      outPath,
+    ]);
+    if (!process.env.TIK_KEEP_PARTS) {
+      await rm(partsDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 
   if (!process.env.TIK_KEEP_PUBLIC) {
     await rm(publicDir, { recursive: true, force: true }).catch(() => {});

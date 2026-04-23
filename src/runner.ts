@@ -3,6 +3,7 @@ import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page, type Locator } from "playwright";
 import chalk from "chalk";
 import type { BBox, PlanStep, RunArtifacts, StepEvent, TestPlan } from "./types.js";
+import { runSetup } from "./setup.js";
 
 function resolveSelector(target: string): string {
   const t = target.trim();
@@ -54,9 +55,11 @@ async function humanMove(page: Page, box: { x: number; y: number; width: number;
     lastCursor = { x: targetX, y: targetY };
     return;
   }
-  // Longer paths take longer — roughly 0.9px/ms, clamped between 420ms and 1100ms.
-  const durationMs = Math.max(420, Math.min(1100, distance * 1.1));
-  const frames = 24;
+  // Slower motion — the viewer needs to follow the pointer to the target,
+  // so paths run 700-1500ms regardless of distance. Short paths no longer
+  // teleport; long paths don't overshoot but give the eye time to track.
+  const durationMs = Math.max(700, Math.min(1500, distance * 1.4));
+  const frames = 28;
   const frameMs = Math.round(durationMs / frames);
   // Perpendicular offset so the path arcs slightly — feels less robotic than a
   // straight line. Magnitude scales with distance but caps at ~40px.
@@ -97,7 +100,11 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const url = step.target
         ? (step.target.startsWith("http") ? step.target : new URL(step.target, startUrl).toString())
         : startUrl;
+      // domcontentloaded fires before images/videos finish — that's why ad
+      // thumbnails and video previews were blank in the recording. Wait for
+      // networkidle (or cap at 10s) so the async media has a chance to land.
       await page.goto(url, { waitUntil: "domcontentloaded", timeout });
+      await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
       return {};
     }
     case "click": {
@@ -105,11 +112,11 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const locator = page.locator(resolveSelector(step.target)).first();
       await locator.waitFor({ state: "visible", timeout });
       const bbox = await captureBBox(page, locator, "before");
-      await page.waitForTimeout(850); // thinking beat
+      await page.waitForTimeout(1350); // "thinking" beat — reader locates the button first
       if (bbox) await humanMove(page, bbox);
-      await page.waitForTimeout(450); // pointer hovers briefly before the click
+      await page.waitForTimeout(750); // pointer hovers briefly before the click
       await locator.click({ timeout });
-      await page.waitForTimeout(1600); // settle so the UI reaction is on-screen
+      await page.waitForTimeout(2400); // let the UI reaction play out on-screen
       return { bbox };
     }
     case "fill": {
@@ -117,15 +124,15 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const locator = page.locator(resolveSelector(step.target)).first();
       await locator.waitFor({ state: "visible", timeout });
       const bbox = await captureBBox(page, locator, "before");
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(900);
       if (bbox) await humanMove(page, bbox);
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(500);
       await locator.click({ timeout });
       await page.keyboard.press("Meta+A").catch(() => {});
       await page.keyboard.press("Delete").catch(() => {});
-      // Slower typing — the viewer should see letters appear, one by one.
-      await locator.type(step.value ?? "", { delay: 185 });
-      await page.waitForTimeout(1100);
+      // Visible typing — each key is a distinct frame for the viewer to read.
+      await locator.type(step.value ?? "", { delay: 220 });
+      await page.waitForTimeout(1500);
       return { bbox };
     }
     case "press": {
@@ -171,7 +178,22 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       return { notes: "visible — ok", bbox };
     }
     case "assert-text": {
-      if (!step.target || !step.value) throw new Error("assert-text requires target and value");
+      if (!step.target) throw new Error("assert-text requires target");
+      // Claude sometimes emits assert-text without a value (mistakes it for
+      // assert-visible). Fall back to visibility check rather than fail the
+      // step for a plan-generator quirk.
+      if (!step.value) {
+        const locator = page.locator(resolveSelector(step.target)).first();
+        await locator.waitFor({ state: "visible", timeout });
+        const bbox = await captureBBox(page, locator, "after");
+        if (bbox) {
+          await humanMove(page, bbox);
+          await page.waitForTimeout(250);
+          await pulseFocus(page, bbox);
+          await page.waitForTimeout(750);
+        }
+        return { notes: "visible — ok (value missing, treated as assert-visible)", bbox };
+      }
       const locator = page.locator(resolveSelector(step.target)).first();
       await locator.waitFor({ state: "visible", timeout });
       const text = (await locator.innerText()).trim();
@@ -206,6 +228,10 @@ export interface RunOptions {
   extraHTTPHeaders?: Record<string, string>;
   cookies?: Array<{ name: string; value: string; domain?: string; path?: string; url?: string }>;
   storageStatePath?: string;
+  /** Natural-language pre-test setup/login instructions from the repo's
+   *  README "TikTest" section. Executed after initial navigation, before the
+   *  plan steps run, so the plan sees an already-authed app. */
+  setupInstructions?: string;
 }
 
 /**
@@ -269,7 +295,7 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 `;
 
-export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath }: RunOptions): Promise<RunArtifacts> {
+export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, setupInstructions }: RunOptions): Promise<RunArtifacts> {
   await mkdir(runDir, { recursive: true });
   const videoDir = path.join(runDir, "video");
   await mkdir(videoDir, { recursive: true });
@@ -309,12 +335,44 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   };
 
   try {
-    // Always start with initial navigation if first step isn't navigate
-    const first = plan.steps[0];
-    if (!first || first.kind !== "navigate") {
-      await page.goto(plan.startUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
+    // Always navigate to startUrl first so the setup phase has a valid page.
+    await page.goto(plan.startUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
+    // Let network settle so images/videos in the app UI render before we
+    // start recording interactions. Capped to keep a slow CDN from blocking
+    // the run indefinitely.
+    await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
+
+    // Pre-test setup: execute README's TikTest instructions (auth, seeding,
+    // etc.) so the plan runs against a prepared, logged-in app. Setup
+    // failures abort the run loudly — the whole point is to not waste a
+    // render on a stuck-at-login recording.
+    if (setupInstructions) {
+      try {
+        await runSetup(page, setupInstructions, plan.startUrl);
+      } catch (e) {
+        throw new Error(`TikTest setup (README) failed — aborting before plan run. ${(e as Error).message}`);
+      }
+      // After auth, the app likely redirected us to a dashboard. Re-navigate
+      // to the plan's start URL so the plan's first step is on the feature
+      // page (not wherever the post-auth redirect dropped us).
+      const postSetupUrl = page.url();
+      try {
+        const samePage = new URL(postSetupUrl).pathname === new URL(plan.startUrl).pathname;
+        if (!samePage) {
+          console.log(chalk.dim(`  returning to ${new URL(plan.startUrl).pathname} after setup (was ${new URL(postSetupUrl).pathname})`));
+          await page.goto(plan.startUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
+          await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
+          await page.waitForTimeout(800);
+        }
+      } catch {}
     }
-    for (const step of plan.steps) {
+
+    // If the first plan step is also a navigate to the same start URL, skip
+    // the duplicate hop — setup may have already moved us to a different URL.
+    const first = plan.steps[0];
+    const firstIsDupNav = first?.kind === "navigate" && (!first.target || first.target === plan.startUrl);
+    const stepsToRun = firstIsDupNav ? plan.steps.slice(1) : plan.steps;
+    for (const step of stepsToRun) {
       const t0 = performance.now();
       const startMs = Math.max(0, Math.round(t0 - runStart));
       let outcome: StepEvent["outcome"] = "success";

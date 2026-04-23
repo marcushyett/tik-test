@@ -40,6 +40,7 @@ PLAN GUIDANCE — follow all of these:
 6. **Plan for failure visibility** — include an assert immediately after any action whose correctness matters; if the assert fails, the video lands on it and narrates "oops".
 7. **NEVER use \`wait\` steps longer than 3000ms.** Cache revalidation, debounced refetches, etc. can be tested by asserting *after* the app settles naturally — don't burn 30 seconds of video waiting.
 8. **Keep it tight: 12-18 steps total.** The output is a 60-90 second review video — 30-step plans produce 5-minute slogs that nobody watches. Prefer breadth of coverage over repetition.
+9. **DO NOT plan any sign-in / login / auth steps.** A separate pre-test setup phase (driven by the repo's README TikTest section) handles all authentication before your plan runs. Start your plan from an already-logged-in state — go straight into exercising the diff's features.
 
 Selectors: prefer text=, role=, [data-testid]. Avoid nth-child chains.
 
