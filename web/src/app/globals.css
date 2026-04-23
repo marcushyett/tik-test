@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 4%;
+  --foreground: 0 0% 98%;
+  --card: 0 0% 7%;
+  --card-foreground: 0 0% 98%;
+  --muted: 0 0% 12%;
+  --muted-foreground: 220 8% 65%;
+  --primary: 162 100% 45%;
+  --primary-foreground: 0 0% 5%;
+  --accent: 250 80% 65%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 70% 55%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 0 0% 16%;
+  --ring: 162 100% 45%;
+}
+
+@layer base {
+  html, body, #__next { height: 100%; }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+  * { border-color: hsl(var(--border)); }
+}
