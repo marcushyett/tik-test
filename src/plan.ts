@@ -31,16 +31,15 @@ Output ONLY a single JSON object (no prose, no markdown fences) matching:
 PLAN GUIDANCE — follow all of these:
 1. **If a code diff is provided, let it DRIVE the plan.** Identify the specific
    files, components, event handlers, selectors, and data-testids that changed.
-   The plan should exercise every one of them in the order a user would. A
-   diff-driven plan that misses the new code is a failure.
-2. **Every interactive surface in the focus area should be clicked at least once.** Go beyond the one primary path.
-3. **Repeat critical actions** — add the same kind of task 2-3x, toggle filters multiple times, click back-and-forth between tabs. Bugs hide in repetition.
-4. **Try edge cases** — empty inputs, very long inputs, special characters, double-clicks, clicking the same button twice, navigating back/forward.
-5. **Check counts and aggregates** after changes — if the UI shows "N/M done", assert the numbers are right after each relevant action.
-6. **Regression-probe related features** that share code with the change (e.g. if the PR touches a filter, test ALL filters, not just the new one).
-7. **Mark risky steps** with importance "high" or "critical" — the video editor slow-mos those.
-8. **Plan for failure visibility** — include an assert immediately after any action whose correctness matters; if the assert fails, the video lands on it and narrates "oops".
-9. **Aim for 15-28 steps.** A short plan is under-testing.
+   The plan should exercise every one of them. A diff-driven plan that misses
+   the new code is a failure.
+2. **Every user-visible surface the diff touches should be clicked at least once.** Go beyond the one primary path.
+3. **Try 1-2 edge cases for critical actions** — click the same button twice, navigate back/forward, toggle a state off-then-on. Bugs hide in repetition, but don't pad the plan with repetitive clicks.
+4. **Check counts and aggregates** after changes — if the UI shows "N/M done", assert the numbers are right after each relevant action.
+5. **Mark risky steps** with importance "high" or "critical" — the video editor slow-mos those.
+6. **Plan for failure visibility** — include an assert immediately after any action whose correctness matters; if the assert fails, the video lands on it and narrates "oops".
+7. **NEVER use \`wait\` steps longer than 3000ms.** Cache revalidation, debounced refetches, etc. can be tested by asserting *after* the app settles naturally — don't burn 30 seconds of video waiting.
+8. **Keep it tight: 12-18 steps total.** The output is a 60-90 second review video — 30-step plans produce 5-minute slogs that nobody watches. Prefer breadth of coverage over repetition.
 
 Selectors: prefer text=, role=, [data-testid]. Avoid nth-child chains.
 

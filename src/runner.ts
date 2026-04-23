@@ -148,7 +148,10 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       return { bbox };
     }
     case "wait": {
-      const ms = Number(step.value ?? "800");
+      // Hard cap so a Claude-authored plan that asks for "wait 30000ms to let
+      // cache revalidate" doesn't balloon the video. Long settle times are
+      // covered by the editor's idle-compression anyway.
+      const ms = Math.min(3000, Number(step.value ?? "800"));
       await page.waitForTimeout(ms);
       return { notes: `waited ${ms}ms` };
     }
