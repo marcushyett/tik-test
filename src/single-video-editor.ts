@@ -83,6 +83,27 @@ export interface SingleVideoInput {
   versionTag?: string;
 }
 
+/**
+ * Run an async worker over `items` with at most `limit` in flight. Preserves
+ * the input order in the result array (so per-step voice indexes stay aligned
+ * with their events). Used to parallelize OpenAI TTS calls without hammering
+ * the endpoint beyond what a single API key comfortably sustains.
+ */
+async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const run = async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await worker(items[i], i);
+    }
+  };
+  const n = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: n }, run));
+  return results;
+}
+
 function sanitiseForSpeech(s: string): string {
   return s.replace(/[✓✗⚠✨📸🎬]/g, "").replace(/—/g, "—").replace(/·/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -299,6 +320,10 @@ export async function editSingleVideo({
   }
 
   // 4. Generate voice-over for every event up front so we know exact voice durations.
+  //    TTS is the classic "15 sequential network calls that don't depend on each
+  //    other" trap — we run them concurrently (bounded pool) so this stage
+  //    stops being 25s of twiddling thumbs per PR. OpenAI's speech endpoint is
+  //    happy with ~6 parallel requests.
   interface PreEvent {
     ev: StepEvent;
     voiceLine: string;
@@ -306,9 +331,7 @@ export async function editSingleVideo({
     voiceSrc?: string;
     voiceDurS: number;
   }
-  const preEvents: PreEvent[] = [];
-  for (let i = 0; i < visibleEvents.length; i++) {
-    const ev = visibleEvents[i];
+  const preStaged = visibleEvents.map((ev, i) => {
     const step = stepsMap.get(ev.stepId) ?? ({} as PlanStep);
     const tpl = narrate({
       step: { ...step, id: ev.stepId, kind: ev.kind, description: ev.description, importance: ev.importance } as PlanStep,
@@ -318,20 +341,21 @@ export async function editSingleVideo({
     const storied = story?.steps[i];
     const voiceLine = (storied?.voiceLine || tpl.voiceLine).trim();
     const caption = (storied?.captionText || tpl.captionText).trim();
-    let voiceSrc: string | undefined;
-    let voiceDurS = 0;
-    if (ttsBackend) {
-      const fileName = `voice-${String(i).padStart(3, "0")}.wav`;
-      try {
-        await synth(ttsBackend, sanitiseForSpeech(voiceLine), path.join(publicDir, fileName));
-        voiceDurS = await ffprobeDuration(path.join(publicDir, fileName));
-        voiceSrc = fileName;
-      } catch (e) {
-        console.log(chalk.yellow(`  voice skipped for step ${i}: ${(e as Error).message.split("\n")[0]}`));
-      }
+    return { i, ev, voiceLine, caption };
+  });
+
+  const preEvents: PreEvent[] = await runWithConcurrency(preStaged, 6, async ({ i, ev, voiceLine, caption }): Promise<PreEvent> => {
+    if (!ttsBackend) return { ev, voiceLine, caption, voiceSrc: undefined, voiceDurS: 0 };
+    const fileName = `voice-${String(i).padStart(3, "0")}.wav`;
+    try {
+      await synth(ttsBackend, sanitiseForSpeech(voiceLine), path.join(publicDir, fileName));
+      const voiceDurS = await ffprobeDuration(path.join(publicDir, fileName));
+      return { ev, voiceLine, caption, voiceSrc: fileName, voiceDurS };
+    } catch (e) {
+      console.log(chalk.yellow(`  voice skipped for step ${i}: ${(e as Error).message.split("\n")[0]}`));
+      return { ev, voiceLine, caption, voiceSrc: undefined, voiceDurS: 0 };
     }
-    preEvents.push({ ev, voiceLine, caption, voiceSrc, voiceDurS });
-  }
+  });
 
   // 5. Compute each event's raw-video active window — at least long enough for the voice line.
   // The window starts where the event begins (minus a 0.1s lead-in) and ends at max(natural end, start + voice + 0.25 tail).
@@ -420,16 +444,23 @@ export async function editSingleVideo({
   let outroVoiceSrc: string | undefined;
   let outroVoiceDurS = 0;
   if (ttsBackend) {
-    try {
-      await synth(ttsBackend, sanitiseForSpeech(introLine), path.join(publicDir, "intro.wav"));
-      introVoiceDurS = await ffprobeDuration(path.join(publicDir, "intro.wav"));
-      introVoiceSrc = "intro.wav";
-    } catch {}
-    try {
-      await synth(ttsBackend, sanitiseForSpeech(outroLine), path.join(publicDir, "outro.wav"));
-      outroVoiceDurS = await ffprobeDuration(path.join(publicDir, "outro.wav"));
-      outroVoiceSrc = "outro.wav";
-    } catch {}
+    // Intro + outro can synth in parallel (they're independent).
+    const [introResult, outroResult] = await Promise.all([
+      (async () => {
+        try {
+          await synth(ttsBackend, sanitiseForSpeech(introLine), path.join(publicDir, "intro.wav"));
+          return { src: "intro.wav", dur: await ffprobeDuration(path.join(publicDir, "intro.wav")) };
+        } catch { return null; }
+      })(),
+      (async () => {
+        try {
+          await synth(ttsBackend, sanitiseForSpeech(outroLine), path.join(publicDir, "outro.wav"));
+          return { src: "outro.wav", dur: await ffprobeDuration(path.join(publicDir, "outro.wav")) };
+        } catch { return null; }
+      })(),
+    ]);
+    if (introResult) { introVoiceSrc = introResult.src; introVoiceDurS = introResult.dur; }
+    if (outroResult) { outroVoiceSrc = outroResult.src; outroVoiceDurS = outroResult.dur; }
   }
 
   const introDurFrames = Math.max(Math.round(FPS * 3.4), Math.round((introVoiceDurS + 0.6) * FPS));
@@ -469,7 +500,11 @@ export async function editSingleVideo({
     inputProps: input as any,
   });
 
-  const concurrency = Math.max(2, Math.min(os.cpus().length, 12));
+  // Concurrency trades render speed for peak disk use. With 12-18 step plans
+  // the frame count stays under ~3k and a fresh-disk machine is happy at 8;
+  // env override exists for CI or tight-disk runs. Even at 8 we stay off-peak
+  // in ENOSPC territory because Remotion streams JPEGs and cleans as it goes.
+  const concurrency = Math.max(2, Math.min(os.cpus().length, Number(process.env.TIK_RENDER_CONCURRENCY) || 8));
   const effectiveWidth = quick ? 540 : composition.width;
   const effectiveHeight = quick ? 960 : composition.height;
   console.log(chalk.dim(`  rendering ${composition.durationInFrames} frames (${(composition.durationInFrames / FPS).toFixed(1)}s) at ${effectiveWidth}×${effectiveHeight} with concurrency ${concurrency}…`));
@@ -490,6 +525,11 @@ export async function editSingleVideo({
     // on phone screens. Quick mode keeps it lean so drafts render fast.
     videoBitrate: quick ? "1200k" : "6000k",
     audioBitrate: "160k",
+    // x264 preset controls the encoder speed/compression tradeoff. `medium`
+    // (the default) is slow; `veryfast` cuts encode time ~25% for ~10-15%
+    // larger files — at 6 Mbps target bitrate the file size is bounded
+    // anyway, so this is a near-free speedup.
+    x264Preset: "veryfast",
     onProgress: ({ progress, renderedFrames, encodedFrames }) => {
       const pct = Math.floor(progress * 100);
       if (pct >= lastReportedPct + 2 || pct === 100) {
