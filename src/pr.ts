@@ -7,6 +7,7 @@ import { gh, ghOrThrow, parsePRRef, type PRRef } from "./gh.js";
 import { loadConfig } from "./config.js";
 import { generatePlan } from "./plan.js";
 import { runPlan } from "./runner.js";
+import { editSingleVideo } from "./single-video-editor.js";
 import { editHighlightReel, renderPreviewGif } from "./editor.js";
 
 export interface PROptions {
@@ -14,9 +15,11 @@ export interface PROptions {
   voice: string | null;
   music?: string;
   urlOverride?: string;
-  assetRepo?: string;       // owner/repo where to upload the video asset (defaults to PR repo)
-  skipClone?: boolean;      // run against current working directory (useful for testing locally)
-  skipComment?: boolean;    // render the video but don't post to the PR
+  assetRepo?: string;        // owner/repo where to upload the video asset (defaults to PR repo)
+  skipClone?: boolean;       // run against current working directory (useful for testing locally)
+  skipComment?: boolean;     // render the video but don't post to the PR
+  vercelBypass?: string;     // VERCEL_AUTOMATION_BYPASS_SECRET for protected previews
+  quick?: boolean;
 }
 
 export async function runForPR(prInput: string, opts: PROptions): Promise<void> {
@@ -85,13 +88,23 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     console.log(chalk.green(`     ✓ plan: ${plan.steps.length} steps — ${plan.name}`));
 
     console.log(chalk.bold("\n2/3  running tests"));
-    const artifacts = await runPlan({ plan, runDir });
+    const bypass = opts.vercelBypass ?? process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    const { extraHTTPHeaders, cookies } = buildVercelBypass(bypass, plan.startUrl);
+    if (bypass) console.log(chalk.dim("  vercel protection bypass enabled"));
+    const artifacts = await runPlan({ plan, runDir, extraHTTPHeaders, cookies });
     const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
     console.log(chalk.green(`     ✓ ${artifacts.events.length - failed}/${artifacts.events.length} passed`));
 
     console.log(chalk.bold("\n3/3  editing highlight reel"));
     const outPath = path.join(runDir, "highlights.mp4");
-    await editHighlightReel({ artifacts, outPath, musicPath: cfg.music ?? opts.music, voice: opts.voice });
+    await editSingleVideo({
+      artifacts, outPath,
+      voice: opts.voice,
+      quick: opts.quick,
+      prTitle: meta.title,
+      prBody: meta.body,
+      focus: cfg.focus,
+    });
     console.log(chalk.green(`     ✓ ${outPath}`));
 
     // Build the inline-renderable GIF preview alongside the MP4.
@@ -191,6 +204,20 @@ async function findConfig(workDir: string): Promise<string | null> {
     } catch {}
   }
   return null;
+}
+
+function buildVercelBypass(secret: string | undefined, url: string): { extraHTTPHeaders?: Record<string, string>; cookies?: Array<any> } {
+  if (!secret) return {};
+  let host: string | undefined;
+  try { host = new URL(url).hostname; } catch {}
+  const cookies = host ? [
+    { name: "__vercel_protection_bypass", value: secret, domain: host, path: "/" },
+    { name: "x-vercel-protection-bypass", value: secret, domain: host, path: "/" },
+  ] : undefined;
+  return {
+    extraHTTPHeaders: { "x-vercel-protection-bypass": secret, "x-vercel-set-bypass-cookie": "samesitenone" },
+    cookies,
+  };
 }
 
 function runGit(cwd: string, args: string[]): Promise<void> {

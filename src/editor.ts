@@ -1,563 +1,623 @@
-import { mkdir, writeFile, rm, stat } from "node:fs/promises";
+import { mkdir, writeFile, rm, stat, copyFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import os from "node:os";
+import { fileURLToPath } from "node:url";
 import chalk from "chalk";
+import { bundle } from "@remotion/bundler";
+import { renderMedia, selectComposition } from "@remotion/renderer";
 import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
 import { narrate } from "./narrator.js";
+import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.js";
+import { generateStory, type StoryOutput } from "./story.js";
 import type { RunArtifacts, StepEvent, PlanStep, BBox } from "./types.js";
 
-// Output canvas (TikTok / Reels)
-const OUT_W = 1080;
-const OUT_H = 1920;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const REMOTION_ENTRY = path.resolve(__dirname, "..", "remotion", "index.ts");
+
 const FPS = 30;
+// Clip canvas delivered to Remotion — we bake the zoom at this size so Remotion only
+// has to composite, never re-scale. Choosing 540x960 keeps file sizes small for the
+// default path; quick-mode uses these dimensions straight through.
+const OUT_W_CLIP = 540;
+const OUT_H_CLIP = 960;
 
-// The browser clip is laid out in a centered band of this width/height.
-const INNER_W = OUT_W - 40; // 1040
-const INNER_H_FOR_16_9 = Math.round(INNER_W * 9 / 16); // 585
-
-const FONT_CANDIDATES = [
-  "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-  "/System/Library/Fonts/Supplemental/Arial.ttf",
-  "/System/Library/Fonts/Helvetica.ttc",
-  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-];
-
-async function findFont(): Promise<string | null> {
-  for (const f of FONT_CANDIDATES) {
-    try {
-      await stat(f);
-      return f;
-    } catch {}
-  }
-  return null;
+interface ReelBBox {
+  x: number; y: number; width: number; height: number;
+  viewportWidth: number; viewportHeight: number;
 }
-
-function speedFor(ev: StepEvent): number {
-  if (ev.outcome === "failure") return 0.45;
-  if (ev.kind === "wait") return 2.0;
-  if (ev.importance === "critical") return 0.5;
-  if (ev.importance === "high") return 0.7;
-  if (ev.kind === "assert-visible" || ev.kind === "assert-text") return 0.85;
-  return 0.9;
+interface ReelStep {
+  id: string;
+  kind: string;
+  importance: "low" | "normal" | "high" | "critical";
+  outcome: "success" | "failure" | "skipped";
+  description: string;
+  caption: string;
+  titleSlideLabel: string;
+  titleSlideText: string;
+  // Pre-sliced per-step clip served via staticFile
+  clipSrc: string;
+  clipDurS: number;         // duration of the sliced clip on disk
+  playbackRate: number;     // how fast the clip plays in the composition
+  stepDurFrames: number;
+  introDurFrames: number;
+  prevCursor?: { x: number; y: number };
+  targetCursor?: { x: number; y: number };
+  clickFrame?: number;
+  isClick: boolean;
+  bbox?: ReelBBox;
+  voiceSrc?: string;
+  voiceDurS?: number;
+  error?: string;
 }
-
-function colorFor(ev: StepEvent): { primary: string; accent: string } {
-  if (ev.outcome === "failure") return { primary: "0xff4444", accent: "0xffffff" };
-  if (ev.outcome === "skipped") return { primary: "0xaaaaaa", accent: "0xffffff" };
-  if (ev.importance === "critical") return { primary: "0xffd04a", accent: "0x0a0a0a" };
-  if (ev.importance === "high") return { primary: "0x00e5a0", accent: "0x0a0a0a" };
-  return { primary: "0xffffff", accent: "0x0a0a0a" };
-}
-
-function wrapCaption(text: string, max: number): string {
-  const words = text.replace(/\s+/g, " ").trim().split(" ");
-  const lines: string[] = [];
-  let cur = "";
-  for (const w of words) {
-    if ((cur + " " + w).trim().length > max) {
-      if (cur) lines.push(cur);
-      cur = w;
-    } else {
-      cur = (cur + " " + w).trim();
-    }
-  }
-  if (cur) lines.push(cur);
-  return lines.join("\n");
-}
-
-function ffEscapePath(p: string): string {
-  const inner = p.replace(/\\/g, "\\\\").replace(/:/g, "\\:");
-  return `'${inner.replace(/'/g, "'\\''")}'`;
+interface ReelInput {
+  title: string;
+  summary: string;
+  viewport: { width: number; height: number };
+  steps: ReelStep[];
+  introDurFrames: number;
+  outroDurFrames: number;
+  stats: { passed: number; failed: number; skipped: number; total: number; durS: number };
+  introVoiceSrc?: string;
+  introVoiceDurS?: number;
+  outroVoiceSrc?: string;
+  outroVoiceDurS?: number;
 }
 
 function sanitiseForSpeech(s: string): string {
-  // Strip emoji/symbols that speech might say literally
   return s
-    .replace(/[✓✗⚠✨📸]/g, "")
-    .replace(/—/g, "-")
-    .replace(/·/g, " - ")
+    .replace(/[✓✗⚠✨📸🎬]/g, "")
+    .replace(/—/g, "—")
+    .replace(/·/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function runSay(text: string, outAiff: string, voice: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("say", ["-v", voice, "-o", outAiff, "--data-format=LEI16@22050", text], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let err = "";
-    child.stderr.on("data", (b) => (err += b.toString()));
-    child.on("error", reject);
-    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`say exited ${code}: ${err}`))));
-  });
+function bboxCenter(b?: BBox): { x: number; y: number } | undefined {
+  if (!b) return undefined;
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
 }
 
-/**
- * Compute the zoom target: centroid and a zoom multiplier based on element size.
- * Bigger elements get modest zoom (to keep context), tiny elements get a bit more.
- */
-function computeZoomTarget(bbox: BBox | undefined, importance?: string): null | { cx: number; cy: number; vw: number; vh: number; targetZ: number } {
-  if (!bbox) return null;
-  const vw = bbox.viewportWidth;
-  const vh = bbox.viewportHeight;
-  if (!vw || !vh) return null;
-  const cx = bbox.x + bbox.width / 2;
-  const cy = bbox.y + bbox.height / 2;
-  // How big is the element relative to the viewport? If it's already large, barely zoom.
-  const relSize = Math.max(bbox.width / vw, bbox.height / vh);
-  // Base zoom: 1.6 for small controls → 1.15 for large regions.
-  let targetZ = 1.15 + (1 - Math.min(1, relSize * 3)) * 0.45;
-  if (importance === "critical") targetZ += 0.1;
-  if (importance === "high") targetZ += 0.05;
-  targetZ = Math.max(1.1, Math.min(1.7, targetZ));
-  return { cx, cy, vw, vh, targetZ };
-}
-
-interface SegmentContext {
-  ev: StepEvent;
-  idx: number;
-  total: number;
-  step?: PlanStep;
-  planStartUrl: string;
-  sliceStartS: number;
-  sliceDurS: number;
-}
-
-interface RenderedSegment {
-  file: string;
-  durationS: number;
-}
-
-async function renderSegment(
-  raw: string,
-  rawDuration: number,
-  ctx: SegmentContext,
-  outFile: string,
-  font: string | null,
-  textDir: string,
-  voice: string | null,
-): Promise<RenderedSegment> {
-  const { ev, idx, total, planStartUrl, sliceStartS, sliceDurS } = ctx;
-
-  const narration = narrate({
-    step: ctx.step ?? ({ id: ev.stepId, kind: ev.kind, description: ev.description, importance: ev.importance } as PlanStep),
-    outcome: ev.outcome,
-    error: ev.error,
-    notes: ev.notes,
-    seed: idx,
-    index: idx,
-    total,
-    startUrl: planStartUrl,
-  });
-
-  // Voice-over audio
-  let voiceDur = 0;
-  const voicePath = path.join(textDir, `${idx}-voice.aiff`);
-  if (voice) {
-    try {
-      await runSay(sanitiseForSpeech(narration.line), voicePath, voice);
-      voiceDur = await ffprobeDuration(voicePath);
-    } catch (e) {
-      voiceDur = 0;
-    }
-  }
-
-  // Segment duration: honour narration length + minimum dwell for each importance level.
-  const minDwell = ev.outcome === "failure" ? 4.5 : ev.importance === "critical" ? 3.8 : ev.importance === "high" ? 3.0 : 2.5;
-  const segDur = Math.max(minDwell, voiceDur + 1.0);
-
-  // Speed of playback = sliceDur / segDur so the slice exactly fills the segment at a steady pace.
-  // We clamp to a reasonable range so important steps slow down visibly, and wait-heavy steps don't drag.
-  const natural = sliceDurS / segDur;
-  const speed = Math.max(0.3, Math.min(3.0, natural));
-  const speedExpr = `setpts=${(1 / speed).toFixed(4)}*PTS`;
-
-  const zoomTarget = computeZoomTarget(ev.bbox, ev.importance);
-  const zoomFilter = buildZoomFilter(zoomTarget, segDur);
-  const c = colorFor(ev);
-
-  const parts: string[] = [];
-  parts.push(
-    `[0:v]trim=start=${sliceStartS.toFixed(3)}:duration=${sliceDurS.toFixed(3)},setpts=PTS-STARTPTS,${speedExpr},fps=${FPS},format=yuv420p,trim=duration=${segDur.toFixed(3)},setpts=PTS-STARTPTS[v0]`,
-  );
-  // Apply zoom via crop filter, then scale up so crop=viewport case is identity.
-  parts.push(zoomFilter);
-  // Lay the zoomed viewport into the centered band, with a blurred cover behind.
-  parts.push(
-    `[zoomed]split=2[src1][src2]`,
-    `[src1]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase,crop=${OUT_W}:${OUT_H},boxblur=24:1,eq=brightness=-0.2:saturation=0.55[bg]`,
-    `[src2]scale=${INNER_W}:-2:flags=lanczos[fg]`,
-    `[bg][fg]overlay=(W-w)/2:(H-h)/2[base]`,
-  );
-
-  // Outline / dramatic frame
-  if (ev.outcome === "failure") {
-    parts.push(`[base]drawbox=x=30:y=30:w=${OUT_W - 60}:h=${OUT_H - 60}:color=red@0.9:t=14[base2]`);
-  } else if (ev.importance === "critical") {
-    parts.push(`[base]drawbox=x=30:y=30:w=${OUT_W - 60}:h=${OUT_H - 60}:color=0xffd04a@0.7:t=10[base2]`);
-  } else if (ev.importance === "high") {
-    parts.push(`[base]drawbox=x=30:y=30:w=${OUT_W - 60}:h=${OUT_H - 60}:color=0x00e5a0@0.6:t=6[base2]`);
-  } else {
-    parts.push(`[base]null[base2]`);
-  }
-
-  const files = {
-    heading: path.join(textDir, `${idx}-head.txt`),
-    caption: path.join(textDir, `${idx}-cap.txt`),
-    meta: path.join(textDir, `${idx}-meta.txt`),
+function toReelBBox(b?: BBox): ReelBBox | undefined {
+  if (!b) return undefined;
+  return {
+    x: b.x, y: b.y, width: b.width, height: b.height,
+    viewportWidth: b.viewportWidth, viewportHeight: b.viewportHeight,
   };
-  await writeFile(files.heading, narration.heading);
-  await writeFile(files.caption, wrapCaption(narration.caption, 26));
-  const metaText = ev.error ? wrapCaption(`! ${ev.error}`, 34) : ev.notes ? wrapCaption(ev.notes, 34) : "";
-  let lastNode = "base2";
-  if (font) {
-    const fontOpt = `fontfile=${ffEscapePath(font)}`;
-    // Top chip
-    parts.push(
-      `[${lastNode}]drawbox=x=0:y=70:w=${OUT_W}:h=130:color=${c.primary}@0.95:t=fill[h1]`,
-      `[h1]drawtext=${fontOpt}:textfile=${ffEscapePath(files.heading)}:fontcolor=${c.accent}:fontsize=52:x=(w-text_w)/2:y=105[h2]`,
-    );
-    lastNode = "h2";
-    // Bottom caption slab — taller, with soft shadow
-    parts.push(
-      `[${lastNode}]drawbox=x=0:y=${OUT_H - 540}:w=${OUT_W}:h=460:color=0x0a0a0a@0.78:t=fill[c1]`,
-      `[c1]drawtext=${fontOpt}:textfile=${ffEscapePath(files.caption)}:fontcolor=white:fontsize=78:x=(w-text_w)/2:y=${OUT_H - 500}:line_spacing=14:borderw=4:bordercolor=0x000000[c2]`,
-    );
-    lastNode = "c2";
-    if (metaText) {
-      await writeFile(files.meta, metaText);
-      const color = ev.outcome === "failure" ? "0xff8888" : "0xa0ffcd";
-      parts.push(
-        `[${lastNode}]drawtext=${fontOpt}:textfile=${ffEscapePath(files.meta)}:fontcolor=${color}:fontsize=40:x=(w-text_w)/2:y=${OUT_H - 160}:line_spacing=6:borderw=2:bordercolor=0x000000[meta]`,
-      );
-      lastNode = "meta";
-    }
-  }
-  // Force stable SAR + pixel format so concat_filter won't reject mismatched segments.
-  parts.push(`[${lastNode}]setsar=1,format=yuv420p[out]`);
-
-  const finalArgs: string[] = ["-i", raw];
-  const hasVoice = !!(voice && voiceDur > 0);
-  let voiceIdx = -1;
-  if (hasVoice) {
-    voiceIdx = 1;
-    finalArgs.push("-i", voicePath);
-  }
-  const silentIdx = hasVoice ? 2 : 1;
-  finalArgs.push("-f", "lavfi", "-t", segDur.toFixed(3), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
-
-  const audioParts: string[] = [];
-  if (hasVoice) {
-    audioParts.push(
-      `[${voiceIdx}:a]adelay=200|200,apad=whole_dur=${segDur.toFixed(3)},volume=1.15[vox]`,
-      `[${silentIdx}:a][vox]amix=inputs=2:duration=longest:dropout_transition=0,atrim=duration=${segDur.toFixed(3)}[aout]`,
-    );
-  } else {
-    audioParts.push(`[${silentIdx}:a]atrim=duration=${segDur.toFixed(3)}[aout]`);
-  }
-  const combined = [...parts, ...audioParts].join(";");
-  finalArgs.push("-filter_complex", combined);
-  finalArgs.push(
-    "-map", "[out]",
-    "-map", "[aout]",
-    "-t", segDur.toFixed(3),
-    "-r", String(FPS),
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
-    "-c:a", "aac", "-b:a", "160k", "-ar", "44100",
-    outFile,
-  );
-  await runFfmpeg(finalArgs);
-  return { file: outFile, durationS: segDur };
 }
 
-/**
- * Ken-burns zoom via zoompan. Output size locked to viewport so downstream composition is stable.
- */
-function buildZoomFilter(target: ReturnType<typeof computeZoomTarget>, segDur: number): string {
-  if (!target) return `[v0]null[zoomed]`;
-  const { cx, cy, vw, vh, targetZ } = target;
-  // Ease in over 55% of the segment; hold after.
-  const holdFrame = Math.max(1, Math.round(FPS * segDur * 0.55));
-  const zExpr = `if(lt(on,${holdFrame}),1+(${(targetZ - 1).toFixed(4)})*(on/${holdFrame}),${targetZ.toFixed(4)})`;
-  const xExpr = `'${cx.toFixed(2)}-iw/zoom/2'`;
-  const yExpr = `'${cy.toFixed(2)}-ih/zoom/2'`;
-  return `[v0]zoompan=z='${zExpr}':x=${xExpr}:y=${yExpr}:d=1:s=${vw}x${vh}:fps=${FPS},setsar=1[zoomed]`;
-}
-
-async function renderTitleCard(outFile: string, title: string, subtitle: string, font: string | null, textDir: string, voice: string | null): Promise<void> {
-  const parts: string[] = [
-    `color=c=0x0f1218:s=${OUT_W}x${OUT_H}:d=3.0:r=${FPS}[bg]`,
-  ];
-  const files = {
-    brand: path.join(textDir, "title-brand.txt"),
-    title: path.join(textDir, "title-main.txt"),
-    sub: path.join(textDir, "title-sub.txt"),
-  };
-  await writeFile(files.brand, "tik-test");
-  await writeFile(files.title, wrapCaption(title, 18));
-  await writeFile(files.sub, wrapCaption(subtitle, 26));
-
-  if (font) {
-    const fontOpt = `fontfile=${ffEscapePath(font)}`;
-    parts.push(
-      `[bg]drawtext=${fontOpt}:textfile=${ffEscapePath(files.brand)}:fontcolor=0x00e5a0:fontsize=84:x=(w-text_w)/2:y=${OUT_H / 2 - 420}[t1]`,
-      `[t1]drawtext=${fontOpt}:textfile=${ffEscapePath(files.title)}:fontcolor=white:fontsize=120:x=(w-text_w)/2:y=${OUT_H / 2 - 280}:line_spacing=18:borderw=4:bordercolor=0x000000[t2]`,
-      `[t2]drawtext=${fontOpt}:textfile=${ffEscapePath(files.sub)}:fontcolor=0xb0b8c4:fontsize=52:x=(w-text_w)/2:y=${OUT_H / 2 + 120}:line_spacing=12,setsar=1,format=yuv420p[out]`,
-    );
-  } else {
-    parts.push(`[bg]null[out]`);
-  }
-
-  // Voice-over for intro
-  let vPath = "";
-  let vDur = 0;
-  if (voice) {
-    vPath = path.join(textDir, "title-voice.aiff");
-    try {
-      await runSay(sanitiseForSpeech(`Tik-test. ${title}. ${subtitle}`), vPath, voice);
-      vDur = await ffprobeDuration(vPath);
-    } catch { vDur = 0; }
-  }
-  const dur = Math.max(3.0, vDur + 0.6);
-
-  const args: string[] = ["-f", "lavfi", "-i", `color=c=black:s=16x16:d=${dur.toFixed(2)}:r=${FPS}`];
-  if (voice && vDur > 0) args.push("-i", vPath);
-  // Always add silent audio input so we have a guaranteed audio stream
-  args.push("-f", "lavfi", "-t", dur.toFixed(2), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
-  const silentIdx = voice && vDur > 0 ? 2 : 1;
-  const voiceIdx = 1;
-  const audioParts: string[] = [];
-  if (voice && vDur > 0) {
-    audioParts.push(
-      `[${voiceIdx}:a]adelay=150|150,apad=whole_dur=${dur.toFixed(2)}[vox]`,
-      `[${silentIdx}:a][vox]amix=inputs=2:duration=longest,atrim=duration=${dur.toFixed(2)}[aout]`,
-    );
-  } else {
-    audioParts.push(`[${silentIdx}:a]atrim=duration=${dur.toFixed(2)}[aout]`);
-  }
-  args.push("-filter_complex", [...parts, ...audioParts].join(";"));
-  args.push(
-    "-map", "[out]", "-map", "[aout]",
-    "-t", dur.toFixed(2), "-r", String(FPS),
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
-    "-c:a", "aac", "-b:a", "160k", "-ar", "44100",
-    outFile,
-  );
-  await runFfmpeg(args);
-}
-
-async function renderSummaryCard(outFile: string, artifacts: RunArtifacts, font: string | null, textDir: string, voice: string | null): Promise<void> {
-  const total = artifacts.events.length;
-  const passed = artifacts.events.filter((e) => e.outcome === "success").length;
-  const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
-  const skipped = artifacts.events.filter((e) => e.outcome === "skipped").length;
-  const status = failed > 0 ? "ISSUES FOUND" : "ALL GREEN";
-  const color = failed > 0 ? "0xff5d5d" : "0x00e5a0";
-
-  const files = {
-    status: path.join(textDir, "sum-status.txt"),
-    name: path.join(textDir, "sum-name.txt"),
-    counts: path.join(textDir, "sum-counts.txt"),
-    dur: path.join(textDir, "sum-dur.txt"),
-    cta: path.join(textDir, "sum-cta.txt"),
-  };
-  await writeFile(files.status, status);
-  await writeFile(files.name, wrapCaption(artifacts.plan.name, 22));
-  await writeFile(files.counts, `${passed}/${total} passed · ${failed} failed · ${skipped} skipped`);
-  await writeFile(files.dur, `${(artifacts.totalMs / 1000).toFixed(1)}s total runtime`);
-  await writeFile(files.cta, "Open the viewer to send\nfeedback to Claude");
-
-  const parts = [
-    `color=c=0x0f1218:s=${OUT_W}x${OUT_H}:d=4.0:r=${FPS}[bg]`,
-  ];
-  if (font) {
-    const fontOpt = `fontfile=${ffEscapePath(font)}`;
-    parts.push(
-      `[bg]drawbox=x=60:y=260:w=${OUT_W - 120}:h=180:color=${color}:t=fill[h]`,
-      `[h]drawtext=${fontOpt}:textfile=${ffEscapePath(files.status)}:fontcolor=0x0a0a0a:fontsize=92:x=(w-text_w)/2:y=300[h2]`,
-      `[h2]drawtext=${fontOpt}:textfile=${ffEscapePath(files.name)}:fontcolor=white:fontsize=80:x=(w-text_w)/2:y=560:line_spacing=14:borderw=4:bordercolor=0x000000[h3]`,
-      `[h3]drawtext=${fontOpt}:textfile=${ffEscapePath(files.counts)}:fontcolor=0xcccccc:fontsize=48:x=(w-text_w)/2:y=${OUT_H / 2 + 80}[h4]`,
-      `[h4]drawtext=${fontOpt}:textfile=${ffEscapePath(files.dur)}:fontcolor=0x888888:fontsize=40:x=(w-text_w)/2:y=${OUT_H / 2 + 160}[h5]`,
-      `[h5]drawtext=${fontOpt}:textfile=${ffEscapePath(files.cta)}:fontcolor=0x00e5a0:fontsize=48:x=(w-text_w)/2:y=${OUT_H - 360}:line_spacing=12,setsar=1,format=yuv420p[out]`,
-    );
-  } else {
-    parts.push(`[bg]null[out]`);
-  }
-
-  let vPath = "";
-  let vDur = 0;
-  if (voice) {
-    vPath = path.join(textDir, "sum-voice.aiff");
-    const line = failed > 0
-      ? `Heads up — ${failed} step${failed === 1 ? "" : "s"} failed. ${passed} out of ${total} passed. Review in the viewer and send feedback to Claude.`
-      : `All ${total} steps passed. ${artifacts.plan.name} is looking good.`;
-    try { await runSay(sanitiseForSpeech(line), vPath, voice); vDur = await ffprobeDuration(vPath); } catch {}
-  }
-  const dur = Math.max(4.0, vDur + 0.8);
-
-  const args: string[] = ["-f", "lavfi", "-i", `color=c=black:s=16x16:d=${dur.toFixed(2)}:r=${FPS}`];
-  if (voice && vDur > 0) args.push("-i", vPath);
-  args.push("-f", "lavfi", "-t", dur.toFixed(2), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100");
-  const silentIdx = voice && vDur > 0 ? 2 : 1;
-  const voiceIdx = 1;
-  const audioParts: string[] = [];
-  if (voice && vDur > 0) {
-    audioParts.push(
-      `[${voiceIdx}:a]adelay=250|250,apad=whole_dur=${dur.toFixed(2)}[vox]`,
-      `[${silentIdx}:a][vox]amix=inputs=2:duration=longest,atrim=duration=${dur.toFixed(2)}[aout]`,
-    );
-  } else {
-    audioParts.push(`[${silentIdx}:a]atrim=duration=${dur.toFixed(2)}[aout]`);
-  }
-  args.push("-filter_complex", [...parts, ...audioParts].join(";"));
-  args.push(
-    "-map", "[out]", "-map", "[aout]",
-    "-t", dur.toFixed(2), "-r", String(FPS),
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p",
-    "-c:a", "aac", "-b:a", "160k", "-ar", "44100",
-    outFile,
-  );
-  await runFfmpeg(args);
+function isClickKind(k: string): boolean {
+  return k === "click" || k === "fill" || k === "press" || k === "hover";
 }
 
 export interface EditOptions {
   artifacts: RunArtifacts;
   outPath: string;
   musicPath?: string;
-  voice?: string | null; // macOS `say` voice name, null/undefined → no narration
+  voice?: string | null;
+  quick?: boolean;           // low-res/low-fps draft for iteration
+  prTitle?: string;          // feeds into Claude-driven narration
+  prBody?: string;
+  focus?: string;
 }
 
-export async function editHighlightReel({ artifacts, outPath, musicPath, voice = "Samantha" }: EditOptions): Promise<string> {
-  const tmp = path.join(artifacts.runDir, "segments");
-  const textDir = path.join(tmp, "text");
-  await mkdir(tmp, { recursive: true });
-  await mkdir(textDir, { recursive: true });
-  const font = await findFont();
-  if (!font) console.log(chalk.yellow("  warning: no bold font found, captions will be plain"));
-  if (voice === null || voice === undefined || voice === "") {
-    console.log(chalk.dim("  voice-over disabled"));
-    voice = null as any;
-  } else {
-    console.log(chalk.dim(`  voice-over: ${voice}`));
+export async function editHighlightReel({
+  artifacts, outPath,
+  voice = "Samantha", musicPath, quick = false,
+  prTitle, prBody, focus,
+}: EditOptions): Promise<string> {
+  const runDir = artifacts.runDir;
+  const publicDir = path.join(runDir, "public");
+  await mkdir(publicDir, { recursive: true });
+
+  // 1. Transcode the raw webm into an MP4 we can slice per step (needed because
+  //    ffmpeg can be fussy about seeking into a VP8/9 webm with variable framerates).
+  const stagedRaw = path.join(runDir, "raw.mp4");
+  await transcodeRawForRemotion(artifacts.rawVideoPath, stagedRaw);
+  const rawDuration = await ffprobeDuration(stagedRaw);
+
+  const stepsMap = new Map<string, PlanStep>(artifacts.plan.steps.map((s) => [s.id, s]));
+  const viewport = artifacts.plan.viewport ?? { width: 1280, height: 800 };
+  const ttsBackend: TTSBackend = resolveBackend(voice);
+  const voiceEnabled = !!ttsBackend;
+  console.log(chalk.dim(`  voice-over: ${describeBackend(ttsBackend)}`));
+
+  // 2. Build per-step reel entries with cursor tracking + timing.
+  // Boring plumbing steps (scripted dropdown tweaks, bare waits) are plumbing —
+  // they belong in the test plan but not in the TikTok reel.
+  const BORING_KINDS = new Set(["script", "wait"]);
+  const MAX_BEATS = 9; // TikTok is short — pick at most this many beats.
+  let visibleEvents = artifacts.events.filter((e) => !BORING_KINDS.has(e.kind));
+
+  // If we still have too many beats, cut to a story-worthy shortlist.
+  if (visibleEvents.length > MAX_BEATS) {
+    const scored = visibleEvents.map((ev, idx) => {
+      let score = 0;
+      if (ev.outcome === "failure") score += 100;
+      if (ev.importance === "critical") score += 50;
+      if (ev.importance === "high") score += 30;
+      if (ev.kind === "navigate") score += 25; // keep the opener
+      if (ev.kind === "click") score += 8;
+      if (ev.kind === "fill") score += 6;
+      if (ev.kind === "assert-visible" || ev.kind === "assert-text") score += 4;
+      // Always keep the first + last beat so the story has a cold open and a landing.
+      if (idx === 0) score += 40;
+      if (idx === visibleEvents.length - 1) score += 40;
+      return { ev, idx, score };
+    });
+    const keep = new Set(
+      scored
+        .sort((a, b) => b.score - a.score || a.idx - b.idx)
+        .slice(0, MAX_BEATS)
+        .map((s) => s.idx),
+    );
+    visibleEvents = visibleEvents.filter((_, i) => keep.has(i));
   }
+  const visibleIndices = visibleEvents.map((ev) => artifacts.events.indexOf(ev));
 
-  const rawDuration = await ffprobeDuration(artifacts.rawVideoPath);
-  const stepById = new Map<string, PlanStep>(artifacts.plan.steps.map((s) => [s.id, s]));
-
-  console.log(chalk.dim(`  rendering ${artifacts.events.length} segments (with zoom, narration, captions)…`));
-  const segPaths: string[] = [];
-
-  const titlePath = path.join(tmp, "00-title.mp4");
-  await renderTitleCard(titlePath, artifacts.plan.name, artifacts.plan.summary || artifacts.plan.startUrl, font, textDir, voice as string | null);
-  segPaths.push(titlePath);
-
-  for (let i = 0; i < artifacts.events.length; i++) {
-    const ev = artifacts.events[i];
-    const next = artifacts.events[i + 1];
-    const MIN_SLICE = 0.6;
-    let sliceStartS = ev.startMs / 1000;
-    const rawEndS = next ? next.startMs / 1000 : rawDuration;
-    let sliceDurS = Math.min(rawEndS - sliceStartS, rawDuration - sliceStartS - 0.02);
-    if (sliceDurS < MIN_SLICE) {
-      // Back up the start so we have enough video to render. Never negative.
-      sliceStartS = Math.max(0, Math.min(sliceStartS, rawDuration - MIN_SLICE - 0.02));
-      sliceDurS = Math.min(rawDuration - sliceStartS - 0.02, MIN_SLICE);
-    }
-    if (sliceDurS < 0.2) {
-      // Completely out of runway — fall back to the last MIN_SLICE of the raw video.
-      sliceStartS = Math.max(0, rawDuration - MIN_SLICE - 0.02);
-      sliceDurS = MIN_SLICE;
-    }
-    const p = path.join(tmp, `seg-${String(i).padStart(3, "0")}.mp4`);
+  // Ask Claude to author the story voice-over — falls back to local templates on error.
+  let story: StoryOutput | null = null;
+  if (prTitle || prBody || focus) {
     try {
-      const { file } = await renderSegment(
-        artifacts.rawVideoPath,
-        rawDuration,
-        {
-          ev,
-          idx: i,
-          total: artifacts.events.length,
-          step: stepById.get(ev.stepId),
-          planStartUrl: artifacts.plan.startUrl,
-          sliceStartS,
-          sliceDurS,
-        },
-        p,
-        font,
-        textDir,
-        voice as string | null,
-      );
-      segPaths.push(file);
-      process.stdout.write(chalk.dim(`    • segment ${i + 1}/${artifacts.events.length}\r`));
+      story = await generateStory({
+        plan: artifacts.plan,
+        events: artifacts.events,
+        stepsById: stepsMap,
+        prTitle,
+        prBody,
+        focus,
+        visibleIndices,
+      });
     } catch (e) {
-      console.log(chalk.yellow(`\n  warning: segment ${i} (${ev.stepId}) failed: ${(e as Error).message.split("\n")[0]}`));
+      console.log(chalk.yellow(`  story generation failed: ${(e as Error).message.split("\n")[0]} — falling back to templates`));
     }
   }
-  process.stdout.write("\n");
 
-  const summaryPath = path.join(tmp, "99-summary.mp4");
-  await renderSummaryCard(summaryPath, artifacts, font, textDir, voice as string | null);
-  segPaths.push(summaryPath);
+  const reelSteps: ReelStep[] = [];
+  let lastCursor: { x: number; y: number } | undefined;
+  for (let i = 0; i < visibleEvents.length; i++) {
+    const ev = visibleEvents[i];
+    const step = stepsMap.get(ev.stepId) ?? ({} as PlanStep);
+    const next = visibleEvents[i + 1];
 
-  // Concat with audio + video: use concat filter to handle differing input durations cleanly.
-  const concatOut = path.join(tmp, "concat.mp4");
-  const inputsArgs = segPaths.flatMap((p) => ["-i", p]);
-  const filterLabels = segPaths.map((_, i) => `[${i}:v][${i}:a]`).join("");
-  const filter = `${filterLabels}concat=n=${segPaths.length}:v=1:a=1[v][a]`;
-  await runFfmpeg([
-    ...inputsArgs,
-    "-filter_complex", filter,
-    "-map", "[v]",
-    "-map", "[a]",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-    "-r", String(FPS),
-    "-c:a", "aac", "-b:a", "160k",
-    concatOut,
-  ]);
+    const tpl = narrate({
+      step: { ...step, id: ev.stepId, kind: ev.kind, description: ev.description, importance: ev.importance } as PlanStep,
+      outcome: ev.outcome,
+      error: ev.error,
+      notes: ev.notes,
+      index: i,
+      total: visibleEvents.length,
+      startUrl: artifacts.plan.startUrl,
+    });
+    const storied = story?.steps[i];
+    const narration = storied
+      ? {
+          voiceLine: storied.voiceLine || tpl.voiceLine,
+          captionText: storied.captionText || tpl.captionText,
+          titleSlideLabel: storied.titleSlideLabel || tpl.titleSlideLabel,
+          titleSlideText: storied.titleSlideText || tpl.titleSlideText,
+        }
+      : tpl;
 
-  const totalDur = await ffprobeDuration(concatOut);
+    // Voice-over per step
+    let voiceSrc: string | undefined;
+    let voiceDurS = 0;
+    if (ttsBackend) {
+      const voiceFile = `voice-${String(i).padStart(3, "0")}.wav`;
+      const voicePath = path.join(publicDir, voiceFile);
+      try {
+        await synth(ttsBackend, sanitiseForSpeech(narration.voiceLine), voicePath);
+        voiceDurS = await ffprobeDuration(voicePath);
+        voiceSrc = voiceFile;
+      } catch (e) {
+        console.log(chalk.yellow(`  voice-over skipped for step ${i}: ${(e as Error).message.split("\n")[0]}`));
+      }
+    }
 
-  if (musicPath) {
-    await runFfmpeg([
-      "-i", concatOut,
-      "-stream_loop", "-1", "-i", musicPath,
-      "-filter_complex", `[0:a]volume=1.0[voice];[1:a]volume=0.12,afade=t=out:st=${Math.max(0, totalDur - 1.5).toFixed(2)}:d=1.5[bg];[voice][bg]amix=inputs=2:duration=first:dropout_transition=0[a]`,
-      "-map", "0:v", "-map", "[a]",
-      "-t", totalDur.toFixed(2),
-      "-c:v", "copy",
-      "-c:a", "aac", "-b:a", "192k",
-      "-shortest",
-      outPath,
-    ]);
-  } else {
-    await runFfmpeg([
-      "-i", concatOut,
-      "-c", "copy",
-      "-movflags", "+faststart",
-      outPath,
-    ]);
+    // Source slice runs from this step's start to the next *visible* step's start
+    // (so skipped boring steps fold their footage into the surrounding clip — not lost).
+    const MIN_SLICE = 0.6;
+    let sourceStartS = ev.startMs / 1000;
+    let sourceEndS = next ? next.startMs / 1000 : rawDuration;
+    let sourceDurS = Math.min(sourceEndS - sourceStartS, rawDuration - sourceStartS - 0.02);
+    if (sourceDurS < MIN_SLICE) {
+      sourceStartS = Math.max(0, Math.min(sourceStartS, rawDuration - MIN_SLICE - 0.02));
+      sourceDurS = Math.min(rawDuration - sourceStartS - 0.02, MIN_SLICE);
+    }
+    if (sourceDurS < 0.3) {
+      sourceStartS = Math.max(0, rawDuration - MIN_SLICE - 0.02);
+      sourceDurS = MIN_SLICE;
+    }
+
+    // Step reel duration = max(minDwell, voiceDur+pad).
+    // Voice is the source of truth — segment length = voice length + small tail.
+    // Without voice we fall back to a sensible minimum per importance.
+    const fallbackDwell =
+      ev.outcome === "failure" ? 2.4 :
+      ev.importance === "critical" ? 2.1 :
+      ev.importance === "high" ? 1.7 :
+      1.3;
+    const stepDurS = voiceDurS > 0
+      ? Math.max(1.0, voiceDurS + 0.35)
+      : fallbackDwell;
+    // Title cards only for the most important beats — most steps are card-less.
+    const deservesTitleCard =
+      ev.importance === "critical" ||
+      ev.outcome === "failure";
+    // Readable dwell: long enough to take in the whole headline + the spring-in animation.
+    const introSlideDurS = !deservesTitleCard ? 0 : 1.75;
+    const stepDurFrames = Math.round(stepDurS * FPS);
+    const introDurFrames = Math.round(introSlideDurS * FPS);
+
+    // Pre-slice + pad so the clip is EXACTLY stepDurS long — Remotion plays at 1x.
+    const speedHint =
+      ev.outcome === "failure" ? 0.6 :
+      ev.importance === "critical" ? 0.75 :
+      ev.importance === "high" ? 0.85 :
+      ev.kind === "wait" ? 2.2 :
+      1.0;
+    const clipFile = `step-${String(i).padStart(3, "0")}.mp4`;
+    const clipPath = path.join(publicDir, clipFile);
+    // No lead-hold — the raw slice already contains a 700ms approach pause
+    // (runner.ts adds waitForTimeout before each click/fill). The action fires
+    // roughly 700ms into the slice, which is where we snap the zoom.
+    const leadHoldS = 0;
+    const CLICK_IN_CLIP_S = 0.8;  // approximate click time inside the slice
+    const snapAtS = CLICK_IN_CLIP_S;
+    // Zoom-out starts shortly after the snap settles, so the reveal lands
+    // well before the segment ends and the viewer can read the UI response.
+    const zoomOutAtS = Math.min(stepDurS - 0.9, snapAtS + 0.65);
+
+    // Build the bake-in zoom spec if we know where to focus.
+    const center = bboxCenter(ev.bbox);
+    const zoom: ZoomSpec | null = center ? {
+      outW: OUT_W_CLIP,
+      outH: OUT_H_CLIP,
+      viewport,
+      targetX: center.x,
+      targetY: center.y,
+      wideZoom: 1.0,
+      peakZoom:
+        ev.outcome === "failure" ? 1.9 :
+        ev.importance === "critical" ? 2.0 :
+        ev.importance === "high" ? 1.7 :
+        1.35,
+      settleZoom:
+        ev.outcome === "failure" ? 1.35 :
+        ev.importance === "critical" ? 1.5 :
+        ev.importance === "high" ? 1.3 :
+        1.12,
+      snapAtS,
+      zoomOutAtS,
+      blurSigma: 0,
+    } : null;
+
+    await sliceClip(stagedRaw, clipPath, {
+      startS: sourceStartS,
+      sourceDurS,
+      segDurS: stepDurS,
+      speedHint,
+      leadHoldS,
+      zoom,
+    });
+    const clipDurS = await ffprobeDuration(clipPath);
+    const playbackRate = 1;
+
+    // Click flash fires at the moment the real action happens in the clip.
+    const clickFrame = center && isClickKind(ev.kind)
+      ? Math.round(snapAtS * FPS)
+      : undefined;
+
+    reelSteps.push({
+      id: ev.stepId,
+      kind: ev.kind,
+      importance: ev.importance,
+      outcome: ev.outcome,
+      description: ev.description,
+      caption: narration.captionText,
+      titleSlideLabel: narration.titleSlideLabel,
+      titleSlideText: narration.titleSlideText,
+      clipSrc: clipFile,
+      clipDurS,
+      playbackRate,
+      stepDurFrames,
+      introDurFrames,
+      prevCursor: center ? lastCursor : undefined,
+      targetCursor: center,
+      clickFrame,
+      isClick: !!center && isClickKind(ev.kind),
+      bbox: toReelBBox(ev.bbox),
+      voiceSrc,
+      voiceDurS,
+      error: ev.error,
+    });
+    if (center) lastCursor = center;
   }
 
-  if (!process.env.TIK_KEEP_SEGMENTS) {
-    await rm(tmp, { recursive: true, force: true });
+  // 3. Intro + outro voice
+  const passed = artifacts.events.filter((e) => e.outcome === "success").length;
+  const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
+  const skipped = artifacts.events.filter((e) => e.outcome === "skipped").length;
+  const stats = { passed, failed, skipped, total: artifacts.events.length, durS: artifacts.totalMs / 1000 };
+
+  let introVoiceSrc: string | undefined;
+  let introVoiceDurS = 0;
+  let outroVoiceSrc: string | undefined;
+  let outroVoiceDurS = 0;
+  const introLine = story?.intro ??
+    `Alright, here's a new build of ${artifacts.plan.name}. Let me walk you through what changed.`;
+  const outroLine = story?.outro ?? (failed > 0
+    ? `${failed} step${failed === 1 ? "" : "s"} failed. ${passed} out of ${artifacts.events.length} passed. Check the flagged beats above.`
+    : `All ${artifacts.events.length} steps passed. This build is looking good.`);
+  if (ttsBackend) {
+    try {
+      const introVoice = "intro.wav";
+      await synth(ttsBackend, sanitiseForSpeech(introLine), path.join(publicDir, introVoice));
+      introVoiceDurS = await ffprobeDuration(path.join(publicDir, introVoice));
+      introVoiceSrc = introVoice;
+    } catch {}
+    try {
+      const outroVoice = "outro.wav";
+      await synth(ttsBackend, sanitiseForSpeech(outroLine), path.join(publicDir, outroVoice));
+      outroVoiceDurS = await ffprobeDuration(path.join(publicDir, outroVoice));
+      outroVoiceSrc = outroVoice;
+    } catch {}
+  }
+
+  // Intro + outro get real dwell so the viewer can actually read them.
+  const introDurFrames = Math.max(Math.round(FPS * 4.2), Math.round((introVoiceDurS + 1.0) * FPS));
+  const outroDurFrames = Math.max(Math.round(FPS * 4.5), Math.round((outroVoiceDurS + 1.0) * FPS));
+
+  const input: ReelInput = {
+    title: artifacts.plan.name || "Feature review",
+    summary: artifacts.plan.summary || artifacts.plan.startUrl,
+    viewport,
+    steps: reelSteps,
+    introDurFrames,
+    outroDurFrames,
+    stats,
+    introVoiceSrc,
+    introVoiceDurS: introVoiceDurS || undefined,
+    outroVoiceSrc,
+    outroVoiceDurS: outroVoiceDurS || undefined,
+  };
+
+  // 4. Bundle + render via Remotion.
+  console.log(chalk.dim("  bundling remotion project…"));
+  const bundleOutput = await bundle({
+    entryPoint: REMOTION_ENTRY,
+    publicDir,
+    onProgress: () => {},
+    webpackOverride: (c) => c,
+  });
+
+  console.log(chalk.dim("  resolving composition…"));
+  const composition = await selectComposition({
+    serveUrl: bundleOutput,
+    id: "VideoReel",
+    inputProps: input as any,
+  });
+
+  const totalFrames = composition.durationInFrames;
+  const totalS = (totalFrames / FPS).toFixed(1);
+  const concurrency = Math.max(2, Math.min(os.cpus().length, 12));
+  const effectiveWidth = quick ? 540 : composition.width;
+  const effectiveHeight = quick ? 960 : composition.height;
+  console.log(chalk.dim(`  rendering ${totalFrames} frames (${totalS}s) at ${effectiveWidth}×${effectiveHeight} with concurrency ${concurrency}…`));
+  const renderStart = Date.now();
+  let lastReportedPct = -1;
+  await renderMedia({
+    composition: {
+      ...composition,
+      width: effectiveWidth,
+      height: effectiveHeight,
+    },
+    serveUrl: bundleOutput,
+    codec: "h264",
+    outputLocation: outPath,
+    inputProps: input as any,
+    audioCodec: "aac",
+    enforceAudioTrack: true,
+    concurrency,
+    jpegQuality: quick ? 70 : 82,
+    onProgress: ({ progress, renderedFrames, encodedFrames }) => {
+      const pct = Math.floor(progress * 100);
+      // Emit a full line every 2% (or when encodedFrames tick) so progress survives pipe buffering.
+      if (pct >= lastReportedPct + 2 || pct === 100) {
+        const elapsedS = (Date.now() - renderStart) / 1000;
+        const fps = renderedFrames && elapsedS > 0 ? (renderedFrames / elapsedS).toFixed(1) : "—";
+        const etaS = pct > 0 ? Math.round(elapsedS * (100 - pct) / pct) : undefined;
+        const etaStr = etaS != null ? ` · eta ${etaS}s` : "";
+        console.log(chalk.dim(
+          `    ${String(pct).padStart(3, " ")}%  rendered ${renderedFrames ?? 0}/${totalFrames}  encoded ${encodedFrames ?? 0}/${totalFrames}  ${fps} fps${etaStr}`,
+        ));
+        lastReportedPct = pct;
+      }
+    },
+    overwrite: true,
+    logLevel: process.env.TIK_REMOTION_DEBUG ? "verbose" : "error",
+  });
+
+  // Optional background music mix as post-process
+  if (musicPath) {
+    const withMusic = outPath.replace(/\.mp4$/i, "-music.mp4");
+    const dur = await ffprobeDuration(outPath);
+    await runFfmpeg([
+      "-i", outPath,
+      "-stream_loop", "-1", "-i", musicPath,
+      "-filter_complex", `[0:a]volume=1.0[voice];[1:a]volume=0.12,afade=t=out:st=${Math.max(0, dur - 1.5).toFixed(2)}:d=1.5[bg];[voice][bg]amix=inputs=2:duration=first:dropout_transition=0[a]`,
+      "-map", "0:v", "-map", "[a]", "-t", dur.toFixed(2),
+      "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+      "-shortest",
+      withMusic,
+    ]);
+    await rm(outPath, { force: true });
+    const { rename } = await import("node:fs/promises");
+    await rename(withMusic, outPath);
+  }
+
+  // Keep public/ for debug if requested
+  if (!process.env.TIK_KEEP_PUBLIC) {
+    await rm(publicDir, { recursive: true, force: true }).catch(() => {});
   }
   return outPath;
 }
 
+async function transcodeRawForRemotion(rawPath: string, outMp4: string): Promise<void> {
+  await runFfmpeg([
+    "-i", rawPath,
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "20",
+    "-r", String(FPS),
+    "-pix_fmt", "yuv420p",
+    "-an",
+    outMp4,
+  ]);
+}
+
+interface SliceOpts {
+  startS: number;
+  sourceDurS: number;   // raw slice length
+  segDurS: number;      // desired output length in the reel (exact)
+  speedHint: number;    // 1.0 = natural, <1 = slow-mo, >1 = speed up
+  leadHoldS?: number;   // seconds of static first-frame at the very start (gives narration runway before the action)
+  zoom?: ZoomSpec | null;
+}
+
+interface ZoomSpec {
+  outW: number;
+  outH: number;
+  viewport: { width: number; height: number };
+  targetX: number;     // element center, viewport coords
+  targetY: number;
+  peakZoom: number;    // how tight to go at the punch (during/just after click)
+  settleZoom: number;  // tight hold right after the overshoot
+  wideZoom: number;    // the "pulled-back" zoom used before the snap and after the zoom-out
+  snapAtS: number;     // when in the clip the whoosh fires
+  zoomOutAtS: number;  // when in the clip we ease back out to show UI reaction
+  blurSigma: number;
+}
+
 /**
- * Generate a compressed animated preview from the highlight MP4 that renders
- * inline on GitHub. GitHub renders release-asset GIFs inline via ![]() but
- * mp4 <video> tags from release assets fall back to a download link, so a
- * companion GIF is what makes the PR comment actually play.
+ * Produce an MP4 that is EXACTLY segDurS seconds long by:
+ *   1. cutting the requested source slice,
+ *   2. applying a speed factor (setpts) to scale action duration,
+ *   3. padding the last frame (tpad) to reach segDurS.
+ * This way the composition never sees black tail frames.
+ */
+async function sliceClip(sourceMp4: string, outMp4: string, opts: SliceOpts): Promise<void> {
+  const startS = Math.max(0, opts.startS);
+  const sourceDurS = Math.max(0.2, opts.sourceDurS);
+  const segDurS = Math.max(0.4, opts.segDurS);
+  const leadHoldS = Math.max(0, opts.leadHoldS ?? 0);
+
+  const actionBudget = Math.max(0.3, segDurS - leadHoldS);
+  const naturalSegFromSource = sourceDurS / opts.speedHint;
+  let setptsFactor: number;
+  let tailHoldS: number;
+  if (naturalSegFromSource >= actionBudget) {
+    setptsFactor = actionBudget / sourceDurS;
+    tailHoldS = 0;
+  } else {
+    setptsFactor = 1 / opts.speedHint;
+    tailHoldS = actionBudget - naturalSegFromSource;
+  }
+  const filters: string[] = [`setpts=${setptsFactor.toFixed(4)}*PTS`];
+  if (leadHoldS > 0) filters.push(`tpad=start_mode=clone:start_duration=${leadHoldS.toFixed(3)}`);
+  if (tailHoldS > 0) filters.push(`tpad=stop_mode=clone:stop_duration=${tailHoldS.toFixed(3)}`);
+  filters.push(`fps=${FPS}`);
+
+  // Bake the cinematic pan+zoom INTO the clip here so Remotion doesn't have to re-render it.
+  if (opts.zoom) {
+    filters.push(...zoomFilterChain(opts.zoom, segDurS));
+  } else {
+    filters.push(`scale=${OUT_W_CLIP}:${OUT_H_CLIP}:force_original_aspect_ratio=increase,crop=${OUT_W_CLIP}:${OUT_H_CLIP},setsar=1`);
+  }
+
+  await runFfmpeg([
+    "-ss", startS.toFixed(3),
+    "-t", sourceDurS.toFixed(3),
+    "-i", sourceMp4,
+    "-vf", filters.join(","),
+    "-t", segDurS.toFixed(3),
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "20",
+    "-r", String(FPS),
+    "-pix_fmt", "yuv420p",
+    "-movflags", "+faststart",
+    "-an",
+    outMp4,
+  ]);
+}
+
+/**
+ * Build an ffmpeg filter chain that produces a beautiful pan+zoom+motion-blur effect
+ * centred on the target element. Runs as a native filter graph — WAY faster than doing
+ * per-frame CSS transforms inside a headless Chrome composition.
  *
- * Two-pass ffmpeg: first generate an optimised 256-colour palette, then apply
- * it. Caps the GIF at ~45 seconds by speeding it up slightly — keeps it under
- * the GitHub 10MB attachment ceiling for typical run lengths.
+ * Strategy: use scale + crop with time-varying x,y (element centroid) plus an animated
+ * scale factor that eases from settleMin → peak → settle. A gblur burst fires around
+ * the snap moment to simulate motion blur.
+ */
+function zoomFilterChain(z: ZoomSpec, segDurS: number): string[] {
+  const { outW, outH, viewport, targetX, targetY, peakZoom, settleZoom, wideZoom, snapAtS, zoomOutAtS } = z;
+
+  // Pre-scale so the viewport covers the output canvas (no black letterbox).
+  const vw = viewport.width;
+  const vh = viewport.height;
+  const baseScale = Math.max(outW / vw, outH / vh);
+  const canvasW = Math.max(outW, Math.ceil(vw * baseScale / 2) * 2);
+  const canvasH = Math.max(outH, Math.ceil(vh * baseScale / 2) * 2);
+  const tx = targetX * baseScale;
+  const ty = targetY * baseScale;
+
+  // Timing windows — all short & snappy so the motion feels kinetic.
+  const snapLen = 0.14;                  // ramp-in to peak
+  const overshootLen = 0.18;             // spring back to settleZoom
+  const zoomOutLen = 0.35;               // ease back out to wideZoom to reveal reaction
+  const snapEnd = snapAtS + snapLen;
+  const overshootEnd = snapEnd + overshootLen;
+  const zoomOutEnd = Math.min(segDurS - 0.05, zoomOutAtS + zoomOutLen);
+
+  // Zoom value over time (5 phases):
+  //   [0 .. snapAtS]               → wide (pre-click)
+  //   [snapAtS .. snapEnd]         → snap in to peak
+  //   [snapEnd .. overshootEnd]    → overshoot down to settle
+  //   [overshootEnd .. zoomOutAtS] → hold on settle (click moment + immediate reaction)
+  //   [zoomOutAtS .. zoomOutEnd]   → ease back out to wide (see result)
+  //   [zoomOutEnd .. end]          → wide hold
+  const lerp = (a: number, b: number, t0: string, t1: string, denom: string) =>
+    `${a.toFixed(4)}+(${(b - a).toFixed(4)})*((ot-${t0})/${denom})`;
+  const zExpr =
+    `if(lt(ot,${snapAtS.toFixed(3)}),${wideZoom.toFixed(4)},` +
+    `if(lt(ot,${snapEnd.toFixed(3)}),${lerp(wideZoom, peakZoom, snapAtS.toFixed(3), snapEnd.toFixed(3), snapLen.toFixed(3))},` +
+    `if(lt(ot,${overshootEnd.toFixed(3)}),${lerp(peakZoom, settleZoom, snapEnd.toFixed(3), overshootEnd.toFixed(3), overshootLen.toFixed(3))},` +
+    `if(lt(ot,${zoomOutAtS.toFixed(3)}),${settleZoom.toFixed(4)},` +
+    `if(lt(ot,${zoomOutEnd.toFixed(3)}),${lerp(settleZoom, wideZoom, zoomOutAtS.toFixed(3), zoomOutEnd.toFixed(3), zoomOutLen.toFixed(3))},` +
+    `${wideZoom.toFixed(4)})))))`;
+
+  const xExpr = `${tx.toFixed(2)}-iw/zoom/2`;
+  const yExpr = `${ty.toFixed(2)}-ih/zoom/2`;
+
+  return [
+    `scale=${canvasW}:${canvasH}:flags=lanczos`,
+    `zoompan=z='${zExpr}':x='${xExpr}':y='${yExpr}':d=1:s=${outW}x${outH}:fps=${FPS}`,
+    "setsar=1",
+  ];
+  // NB: we deliberately dropped gblur — ffmpeg's `enable=between(...)` on gblur
+  // leaves an unintended ghost on the last frame. The snap itself reads fine
+  // without it; we can revisit once we confirm the sync pass works.
+}
+
+/**
+ * Generate a compressed animated preview GIF that renders inline on GitHub.
+ * Two-pass palettegen/paletteuse for small file size and clean colours.
  */
 export async function renderPreviewGif(mp4Path: string, gifPath: string): Promise<void> {
   const probeDur = await ffprobeDuration(mp4Path);
-  // Compress aggressively so GitHub will load it inline even for private repos on slower connections.
-  // Target ~20–25 seconds; 10fps; 420px wide; 128-colour palette.
   const speedMultiplier = probeDur > 26 ? probeDur / 22 : 1;
   const palettePath = gifPath.replace(/\.gif$/i, ".palette.png");
   const vf = `setpts=${(1 / speedMultiplier).toFixed(4)}*PTS,fps=10,scale=420:-2:flags=lanczos`;

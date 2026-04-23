@@ -1,6 +1,6 @@
 ---
 name: Taskpad
-viewport: 900x760
+viewport: 720x720
 ---
 
 ## URL
@@ -38,9 +38,14 @@ Prefer `data-testid` attributes:
   "name": "Taskpad feature review",
   "summary": "Priority filter + toasts regression sweep",
   "startUrl": "http://localhost:4173",
-  "viewport": { "width": 1280, "height": 800 },
+  "viewport": { "width": 720, "height": 720 },
   "steps": [
     { "id": "open", "kind": "navigate", "description": "Open Taskpad", "target": "http://localhost:4173", "importance": "normal" },
+    { "id": "see-login", "kind": "assert-visible", "description": "Login gate appears", "target": "[data-testid=login-gate]" },
+    { "id": "login-pw", "kind": "fill", "description": "Type the password", "target": "[data-testid=login-password]", "value": "hunter2" },
+    { "id": "login-submit", "kind": "click", "description": "Sign in", "target": "[data-testid=login-submit]", "importance": "high" },
+    { "id": "wait-loading", "kind": "wait", "description": "Wait while it signs us in", "value": "1400" },
+    { "id": "see-app", "kind": "assert-visible", "description": "Main app loads", "target": "[data-testid=main-app]" },
     { "id": "see-counter", "kind": "assert-visible", "description": "Header shows the task counter", "target": "[data-testid=counter]" },
     { "id": "add-low", "kind": "fill", "description": "Type a low-priority task", "target": "[data-testid=new-task-input]", "value": "Water the plants" },
     { "id": "pick-low", "kind": "script", "description": "Pick 'Low' priority", "value": "document.querySelector('[data-testid=new-task-priority]').value='low'; document.querySelector('[data-testid=new-task-priority]').dispatchEvent(new Event('change'))" },
@@ -57,7 +62,8 @@ Prefer `data-testid` attributes:
     { "id": "toggle-high", "kind": "script", "description": "Complete the high-priority task", "value": "document.querySelectorAll('[data-testid=tasks] li .title').forEach(el => { if (el.textContent.includes('Fix production bug')) el.parentElement.querySelector('input[type=checkbox]').click(); })", "importance": "high" },
     { "id": "strike", "kind": "assert-visible", "description": "Completed task shows strike-through", "target": "[data-testid=tasks] li.done", "importance": "high" },
     { "id": "clear", "kind": "click", "description": "Clear completed tasks", "target": "[data-testid=clear-done]", "importance": "critical" },
-    { "id": "stats-update", "kind": "assert-text", "description": "Stats reflect remaining tasks", "target": "[data-testid=stats]", "value": "done" }
+    { "id": "stats-update", "kind": "assert-text", "description": "Stats reflect remaining tasks", "target": "[data-testid=stats]", "value": "done" },
+    { "id": "high-survives-clear", "kind": "assert-text", "description": "High-priority rows must survive Clear completed", "target": "[data-testid=tasks]", "value": "Ship Taskpad v0.1", "importance": "critical" }
   ]
 }
 ```

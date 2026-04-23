@@ -1,0 +1,45 @@
+# Example GitHub Action that runs tik-test against this repo's PRs.
+# Drop this into a target repo's .github/workflows/ to get automatic TikTok-style
+# PR reviews on every open PR.
+name: tik-test review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install tik-test
+        run: npx --yes tik-test@latest --version || git clone https://github.com/marcushyett/tik-test /tmp/tik-test && cd /tmp/tik-test && npm install && npm run build
+
+      - name: Install ffmpeg + chromium
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg
+          npx playwright install chromium --with-deps
+
+      - name: Run tik-test PR review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node /tmp/tik-test/dist/cli.js pr ${{ github.event.pull_request.number }} \
+            --asset-repo ${{ github.repository }} \
+            --quick

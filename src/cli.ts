@@ -7,6 +7,7 @@ import { loadConfig } from "./config.js";
 import { generatePlan } from "./plan.js";
 import { runPlan } from "./runner.js";
 import { editHighlightReel } from "./editor.js";
+import { editSingleVideo } from "./single-video-editor.js";
 import { startViewer } from "./viewer.js";
 import { runForPR } from "./pr.js";
 
@@ -26,6 +27,9 @@ program
   .option("--music <path>", "optional audio file to mix under the video")
   .option("--voice <name>", "macOS `say` voice name for narration", "Samantha")
   .option("--no-voice", "disable narration voice-over")
+  .option("--quick", "low-resolution draft render for quicker iteration")
+  .option("--legacy-reel", "use the old per-step clip slicer instead of the single-video overlay pipeline")
+  .option("--vercel-bypass <secret>", "Vercel Protection Bypass secret (also: VERCEL_AUTOMATION_BYPASS_SECRET env)")
   .option("--open", "start the viewer after the run completes")
   .action(async (opts) => {
     const cfg = await loadConfig(opts.config, opts.url);
@@ -42,14 +46,33 @@ program
     console.log(chalk.green(`     ✓ plan: ${plan.steps.length} steps — ${plan.name}`));
 
     console.log(chalk.bold("\n2/3  running tests"));
-    const artifacts = await runPlan({ plan, runDir, headed: opts.headed });
+    const bypass = opts.vercelBypass || process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    const { extraHTTPHeaders, cookies } = buildVercelBypass(bypass, plan.startUrl);
+    const artifacts = await runPlan({ plan, runDir, headed: opts.headed, extraHTTPHeaders, cookies });
     const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
     console.log(chalk.green(`     ✓ ${artifacts.events.length - failed}/${artifacts.events.length} passed, raw ${path.relative(process.cwd(), artifacts.rawVideoPath)}`));
 
     console.log(chalk.bold("\n3/3  editing highlight reel"));
     const outPath = path.join(runDir, "highlights.mp4");
     const voice = opts.voice === false ? null : (opts.voice as string);
-    await editHighlightReel({ artifacts, outPath, musicPath: cfg.music, voice });
+    if (opts.legacyReel) {
+      await editHighlightReel({
+        artifacts, outPath,
+        musicPath: cfg.music,
+        voice,
+        quick: !!opts.quick,
+        focus: cfg.focus,
+        prTitle: cfg.name,
+      });
+    } else {
+      await editSingleVideo({
+        artifacts, outPath,
+        voice,
+        quick: !!opts.quick,
+        focus: cfg.focus,
+        prTitle: cfg.name,
+      });
+    }
     console.log(chalk.green(`     ✓ ${path.relative(process.cwd(), outPath)}`));
 
     console.log(chalk.bold("\n✨ done"));
@@ -74,6 +97,8 @@ program
   .option("--asset-repo <owner/repo>", "repo to upload the video release asset to (default: PR repo)")
   .option("--skip-clone", "run against the current working directory instead of cloning")
   .option("--skip-comment", "render the video but don't post a PR comment")
+  .option("--vercel-bypass <secret>", "Vercel Protection Bypass secret (also: VERCEL_AUTOMATION_BYPASS_SECRET env)")
+  .option("--quick", "low-resolution draft render")
   .action(async (pr, opts) => {
     const voice = opts.voice === false ? null : (opts.voice as string);
     await runForPR(pr, {
@@ -84,6 +109,8 @@ program
       assetRepo: opts.assetRepo,
       skipClone: !!opts.skipClone,
       skipComment: !!opts.skipComment,
+      vercelBypass: opts.vercelBypass,
+      quick: !!opts.quick,
     });
   });
 
@@ -96,6 +123,22 @@ program
     process.env.TIK_RUNS_DIR = path.resolve(opts.dir);
     await startViewer(Number(opts.port));
   });
+
+function buildVercelBypass(secret: string | undefined, url: string): { extraHTTPHeaders?: Record<string, string>; cookies?: Array<any> } {
+  if (!secret) return {};
+  // The combination of header + cookie covers both the initial HTML request AND
+  // subsequent XHR / video asset fetches from the Vercel preview host.
+  let host: string | undefined;
+  try { host = new URL(url).hostname; } catch {}
+  const cookies = host ? [
+    { name: "__vercel_protection_bypass", value: secret, domain: host, path: "/" },
+    { name: "x-vercel-protection-bypass", value: secret, domain: host, path: "/" },
+  ] : undefined;
+  return {
+    extraHTTPHeaders: { "x-vercel-protection-bypass": secret, "x-vercel-set-bypass-cookie": "samesitenone" },
+    cookies,
+  };
+}
 
 program.parseAsync().catch((e: Error) => {
   console.error(chalk.red(`\nerror: ${e.message}`));

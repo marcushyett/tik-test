@@ -1,141 +1,25 @@
 import type { PlanStep, StepEvent, EventOutcome } from "./types.js";
 
-const INTROS = [
-  "Okay, first up —",
-  "Here we go —",
-  "Watch this —",
-  "Now —",
-  "Next —",
-  "Alright —",
-  "Let's see —",
-];
-
-function pickIntro(seed: number): string {
-  return INTROS[seed % INTROS.length];
-}
-
-function domainOf(url?: string): string {
-  if (!url) return "the app";
-  try { return new URL(url).host; } catch { return url; }
-}
-
 export interface NarrationInput {
   step: PlanStep;
   outcome: EventOutcome;
   error?: string;
   notes?: string;
-  seed: number;
-  total: number;
   index: number;
+  total: number;
   startUrl: string;
 }
 
 export interface NarrationOutput {
-  line: string;        // what gets spoken
-  caption: string;     // what appears on screen (may differ — more punchy)
-  heading: string;     // short top-strip chip, e.g. "CLICK" / "HIGH PRIORITY"
+  voiceLine: string;       // what the narrator speaks (natural sentence)
+  captionText: string;     // on-screen word-by-word caption (3–10 words, sentence-case)
+  titleSlideLabel: string; // tiny label on the step intro card ("Tap submit")
+  titleSlideText: string;  // big headline on the step intro card
 }
 
-function critBadge(step: PlanStep): string {
-  if (step.importance === "critical") return "CRITICAL BEAT";
-  if (step.importance === "high") return "IMPORTANT";
-  return "";
-}
-
-export function narrate(input: NarrationInput): NarrationOutput {
-  const { step, outcome, error, seed, index, total, startUrl } = input;
-  const intro = pickIntro(seed);
-  const badge = critBadge(step);
-  const position = `${index + 1}/${total}`;
-  const mk = (label: string) => badge ? `${badge}  ·  ${position}` : `${label}  ·  ${position}`;
-
-  if (outcome === "failure") {
-    return {
-      line: `Hold up — ${step.description}. It failed. ${error ? "The error was: " + error : ""}`,
-      caption: `FAILED\n${step.description}${error ? "\n" + error : ""}`,
-      heading: `FAIL  ·  ${position}`,
-    };
-  }
-
-  switch (step.kind) {
-    case "navigate": {
-      return {
-        line: `${intro} we land on ${domainOf(step.target ?? startUrl)}.`,
-        caption: `Opening\n${domainOf(step.target ?? startUrl)}`,
-        heading: mk("OPEN"),
-      };
-    }
-    case "click": {
-      const name = readableTarget(step.target);
-      const base = step.importance === "critical"
-        ? `${intro} this is the moment — we tap ${name}.`
-        : step.importance === "high"
-          ? `${intro} tap ${name} and see what happens.`
-          : `${intro} tap ${name}.`;
-      return {
-        line: base,
-        caption: step.description,
-        heading: mk("TAP"),
-      };
-    }
-    case "fill": {
-      const val = step.value ?? "";
-      return {
-        line: `${intro} type "${val}" into ${readableTarget(step.target)}.`,
-        caption: `Type: "${val}"`,
-        heading: mk("TYPE"),
-      };
-    }
-    case "press": {
-      return {
-        line: `${intro} hit ${step.value ?? step.target ?? "Enter"}.`,
-        caption: step.description,
-        heading: mk("KEY"),
-      };
-    }
-    case "hover": {
-      return {
-        line: `${intro} hover over ${readableTarget(step.target)} to reveal it.`,
-        caption: step.description,
-        heading: mk("HOVER"),
-      };
-    }
-    case "wait": {
-      return {
-        line: `Give it a beat to settle.`,
-        caption: `Waiting…`,
-        heading: `WAIT  ·  ${position}`,
-      };
-    }
-    case "assert-visible": {
-      return {
-        line: `And there it is — ${step.description.toLowerCase()}.`,
-        caption: step.description,
-        heading: mk("CHECK"),
-      };
-    }
-    case "assert-text": {
-      return {
-        line: `Look at that — the text "${step.value}" shows up, just like we wanted.`,
-        caption: `Contains "${step.value}"`,
-        heading: mk("MATCH"),
-      };
-    }
-    case "screenshot": {
-      return {
-        line: `Snap — saving a screenshot for the record.`,
-        caption: step.description,
-        heading: `SNAP  ·  ${position}`,
-      };
-    }
-    case "script": {
-      return {
-        line: `${intro} nudge the UI under the hood.`,
-        caption: step.description,
-        heading: mk("NUDGE"),
-      };
-    }
-  }
+function domainOf(url?: string): string {
+  if (!url) return "the app";
+  try { return new URL(url).host; } catch { return url; }
 }
 
 function readableTarget(target?: string): string {
@@ -159,8 +43,123 @@ function prettifyName(s: string): string {
   if (lower.endsWith("input") || lower.endsWith("field")) return `the ${lower} field`;
   if (lower.startsWith("del")) return `the delete button`;
   if (lower.startsWith("toggle")) return `the checkbox`;
-  if (lower.includes("button") || lower.includes("btn")) return `the ${lower}`;
   return `the ${lower}`;
+}
+
+function shortSubject(target?: string, fallback = "this control"): string {
+  if (!target) return fallback;
+  const t = readableTarget(target);
+  // Trim leading articles for the intro slide label — shorter hits harder.
+  return t.replace(/^the\s+/i, "");
+}
+
+export function narrate(input: NarrationInput): NarrationOutput {
+  const { step, outcome, error, startUrl } = input;
+  if (outcome === "failure") {
+    return {
+      voiceLine: `Hold up — ${step.description}. It failed. ${error ? "Error: " + error : ""}`.trim(),
+      captionText: `Hold up. ${step.description} failed.`,
+      titleSlideLabel: "Failure",
+      titleSlideText: `${step.description} failed`,
+    };
+  }
+
+  switch (step.kind) {
+    case "navigate": {
+      const host = domainOf(step.target ?? startUrl);
+      return {
+        voiceLine: `First, we open ${host}.`,
+        captionText: `Open ${host}`,
+        titleSlideLabel: "Open",
+        titleSlideText: `Open ${host}`,
+      };
+    }
+    case "click": {
+      const name = readableTarget(step.target);
+      const subj = shortSubject(step.target, "submit");
+      if (step.importance === "critical") {
+        return {
+          voiceLine: `Here's the moment of truth. We click ${name}.`,
+          captionText: `Click ${subj}. Watch the result.`,
+          titleSlideLabel: "Click",
+          titleSlideText: `Click ${subj}`,
+        };
+      }
+      return {
+        voiceLine: `Now we click ${name}.`,
+        captionText: `Click ${subj}.`,
+        titleSlideLabel: "Click",
+        titleSlideText: `Click ${subj}`,
+      };
+    }
+    case "fill": {
+      const val = step.value ?? "";
+      return {
+        voiceLine: `We type "${val}" into ${readableTarget(step.target)}.`,
+        captionText: `Type "${val}"`,
+        titleSlideLabel: "Type",
+        titleSlideText: `Type "${val}"`,
+      };
+    }
+    case "press": {
+      const key = step.value ?? step.target ?? "Enter";
+      return {
+        voiceLine: `Then we press ${key}.`,
+        captionText: `Press ${key}`,
+        titleSlideLabel: "Press",
+        titleSlideText: `Press ${key}`,
+      };
+    }
+    case "hover": {
+      const name = readableTarget(step.target);
+      return {
+        voiceLine: `Hover over ${name} to reveal it.`,
+        captionText: `Hover ${shortSubject(step.target)}`,
+        titleSlideLabel: "Hover",
+        titleSlideText: `Hover ${shortSubject(step.target)}`,
+      };
+    }
+    case "wait": {
+      return {
+        voiceLine: `Give it a beat to settle.`,
+        captionText: `Wait for it...`,
+        titleSlideLabel: "Wait",
+        titleSlideText: `Let it settle`,
+      };
+    }
+    case "assert-visible": {
+      return {
+        voiceLine: `And there it is. ${step.description}.`,
+        captionText: `${step.description}`,
+        titleSlideLabel: "Verify",
+        titleSlideText: step.description,
+      };
+    }
+    case "assert-text": {
+      return {
+        voiceLine: `The text "${step.value}" shows up, right on cue.`,
+        captionText: `Contains "${step.value}"`,
+        titleSlideLabel: "Verify",
+        titleSlideText: step.description,
+      };
+    }
+    case "screenshot": {
+      return {
+        voiceLine: `Snap — saving a screenshot.`,
+        captionText: `Snap ✓`,
+        titleSlideLabel: "Snapshot",
+        titleSlideText: step.description,
+      };
+    }
+    case "script": {
+      return {
+        voiceLine: `We nudge the UI under the hood.`,
+        captionText: step.description,
+        titleSlideLabel: "Setup",
+        titleSlideText: step.description,
+      };
+    }
+  }
 }
 
 export function narrateAll(
@@ -174,7 +173,6 @@ export function narrateAll(
       outcome: ev.outcome,
       error: ev.error,
       notes: ev.notes,
-      seed: i,
       index: i,
       total: events.length,
       startUrl,

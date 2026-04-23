@@ -27,6 +27,27 @@ async function captureBBox(page: Page, locator: Locator, at: "before" | "after")
   }
 }
 
+/**
+ * Move the mouse from its current position to the centre of the element in ~18
+ * stepped frames with an ease-out curve. Playwright's default `locator.click`
+ * teleports the cursor — invisible in a recording — so we move by hand first.
+ */
+async function humanMove(page: Page, box: { x: number; y: number; width: number; height: number }): Promise<void> {
+  const targetX = box.x + box.width / 2;
+  const targetY = box.y + box.height / 2;
+  const steps = 22;
+  await page.mouse.move(targetX, targetY, { steps });
+}
+
+async function humanJitter(page: Page): Promise<void> {
+  // Small wiggle so the pointer feels alive between actions.
+  const vp = page.viewportSize();
+  if (!vp) return;
+  const jitter = (v: number) => v + (Math.random() - 0.5) * 16;
+  // Nudge from wherever Playwright's cursor is — we can't read it, so pick a neutral spot.
+  await page.mouse.move(jitter(vp.width / 2), jitter(vp.height / 2), { steps: 12 });
+}
+
 async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ notes?: string; bbox?: BBox }> {
   const timeout = 15_000;
   switch (step.kind) {
@@ -42,7 +63,11 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const locator = page.locator(resolveSelector(step.target)).first();
       await locator.waitFor({ state: "visible", timeout });
       const bbox = await captureBBox(page, locator, "before");
+      await page.waitForTimeout(650); // thinking beat
+      if (bbox) await humanMove(page, bbox);
+      await page.waitForTimeout(300); // pointer hovers briefly before the click
       await locator.click({ timeout });
+      await page.waitForTimeout(1300); // settle so the UI reaction is on-screen
       return { bbox };
     }
     case "fill": {
@@ -50,7 +75,15 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const locator = page.locator(resolveSelector(step.target)).first();
       await locator.waitFor({ state: "visible", timeout });
       const bbox = await captureBBox(page, locator, "before");
-      await locator.fill(step.value ?? "", { timeout });
+      await page.waitForTimeout(400);
+      if (bbox) await humanMove(page, bbox);
+      await page.waitForTimeout(200);
+      await locator.click({ timeout });
+      await page.keyboard.press("Meta+A").catch(() => {});
+      await page.keyboard.press("Delete").catch(() => {});
+      // Slower typing — the viewer should see letters appear, one by one.
+      await locator.type(step.value ?? "", { delay: 140 });
+      await page.waitForTimeout(900);
       return { bbox };
     }
     case "press": {
@@ -82,6 +115,11 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const locator = page.locator(resolveSelector(step.target)).first();
       await locator.waitFor({ state: "visible", timeout });
       const bbox = await captureBBox(page, locator, "after");
+      // POINT at what we're confirming so the video/pan-zoom tracks it.
+      if (bbox) {
+        await humanMove(page, bbox);
+        await page.waitForTimeout(600);
+      }
       return { notes: "visible — ok", bbox };
     }
     case "assert-text": {
@@ -91,6 +129,11 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const text = (await locator.innerText()).trim();
       if (!text.includes(step.value)) throw new Error(`Expected text to include "${step.value}", got "${text.slice(0, 80)}"`);
       const bbox = await captureBBox(page, locator, "after");
+      // Hover on the asserted element so the viewer can see what the voice-over is talking about.
+      if (bbox) {
+        await humanMove(page, bbox);
+        await page.waitForTimeout(700);
+      }
       return { notes: `contains: ${step.value}`, bbox };
     }
     case "screenshot": {
@@ -109,9 +152,60 @@ export interface RunOptions {
   plan: TestPlan;
   runDir: string;
   headed?: boolean;
+  extraHTTPHeaders?: Record<string, string>;
+  cookies?: Array<{ name: string; value: string; domain?: string; path?: string; url?: string }>;
+  storageStatePath?: string;
 }
 
-export async function runPlan({ plan, runDir, headed }: RunOptions): Promise<RunArtifacts> {
+/**
+ * CSS + JS that paints a synthetic cursor so the RECORDED video actually shows
+ * a pointer moving around. Playwright's recordVideo captures page content only;
+ * the OS cursor is invisible. We hook mousemove and render an overlay.
+ */
+const SYNTHETIC_CURSOR_INIT = `
+window.addEventListener('DOMContentLoaded', () => {
+  const cursor = document.createElement('div');
+  cursor.id = '__tik_cursor__';
+  cursor.style.cssText = [
+    'position:fixed','z-index:2147483647','pointer-events:none',
+    'width:28px','height:28px','top:0','left:0',
+    'transform:translate(-5px,-3px)','transition:transform 40ms linear',
+  ].join(';');
+  cursor.innerHTML = \`
+    <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
+      <path d="M3 2 L3 22 L8.5 17 L12 25 L15 23.5 L11.5 15.5 L19 15.5 Z"
+        fill="#ffffff" stroke="#0a0a0a" stroke-width="1.2" stroke-linejoin="round"/>
+    </svg>\`;
+  document.body.appendChild(cursor);
+  let vx = 0, vy = 0, tx = 0, ty = 0, raf = 0;
+  function tick() {
+    vx += (tx - vx) * 0.28;
+    vy += (ty - vy) * 0.28;
+    cursor.style.transform = \`translate(\${vx - 5}px, \${vy - 3}px)\`;
+    raf = requestAnimationFrame(tick);
+  }
+  tick();
+  document.addEventListener('mousemove', (e) => { tx = e.clientX; ty = e.clientY; }, true);
+  // Click ripple.
+  document.addEventListener('click', (e) => {
+    const r = document.createElement('div');
+    r.style.cssText = [
+      'position:fixed','z-index:2147483646','pointer-events:none',
+      'left:' + e.clientX + 'px','top:' + e.clientY + 'px',
+      'width:10px','height:10px','margin:-5px 0 0 -5px',
+      'border-radius:50%','border:3px solid #00e5a0','opacity:0.9',
+      'animation:tikRipple 500ms ease-out forwards','box-shadow:0 0 24px #00e5a0',
+    ].join(';');
+    document.body.appendChild(r);
+    setTimeout(() => r.remove(), 520);
+  }, true);
+  const style = document.createElement('style');
+  style.textContent = '@keyframes tikRipple{from{transform:scale(1);opacity:0.9}to{transform:scale(9);opacity:0}}';
+  document.head.appendChild(style);
+});
+`;
+
+export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath }: RunOptions): Promise<RunArtifacts> {
   await mkdir(runDir, { recursive: true });
   const videoDir = path.join(runDir, "video");
   await mkdir(videoDir, { recursive: true });
@@ -127,7 +221,21 @@ export async function runPlan({ plan, runDir, headed }: RunOptions): Promise<Run
     viewport,
     recordVideo: { dir: videoDir, size: viewport },
     deviceScaleFactor: 1,
+    extraHTTPHeaders,
+    storageState: storageStatePath,
   });
+  if (cookies?.length) {
+    await context.addCookies(cookies.map((c) => ({
+      name: c.name,
+      value: c.value,
+      domain: c.domain,
+      path: c.path ?? "/",
+      url: c.url,
+      secure: true,
+      sameSite: "Lax" as const,
+    })));
+  }
+  await context.addInitScript(SYNTHETIC_CURSOR_INIT);
   const page = await context.newPage();
 
   const events: StepEvent[] = [];
@@ -185,8 +293,13 @@ export async function runPlan({ plan, runDir, headed }: RunOptions): Promise<Run
         bbox,
       });
       if (outcome === "success") logLine(chalk.green("✓"), step, notes ?? "");
-      // Dwell so the recording captures final state and there's something to linger on.
-      const dwell = step.importance === "critical" ? 900 : step.importance === "high" ? 700 : 450;
+      // Extra dwell so the editor has ample footage — critical beats get longer, since the
+      // voice-over on them tends to be more expansive.
+      const dwell =
+        outcome === "failure" ? 1600 :
+        step.importance === "critical" ? 1400 :
+        step.importance === "high" ? 1100 :
+        800;
       await page.waitForTimeout(dwell);
     }
     // Extra tail dwell so the final step has video content for the editor to hold on.
