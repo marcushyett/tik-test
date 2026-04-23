@@ -113,11 +113,15 @@ function buildTrimPlan(
 
   let cursor = 0;
   let trimmedCursor = 0;
+  let isFirstIdle = true;
   for (const w of merged) {
     const idleBefore = w.start - cursor;
     if (idleBefore > idleThresholdS) {
-      // Compress idle to idleThresholdS at natural speed OR speed-it-up to a cap of 0.5s trimmed.
-      const idleTrimmedDurS = Math.min(idleBefore / idleSpeed, 0.6);
+      // The very first idle (page load, auth redirects, initial session
+      // handshake) caps at 0.3s so the video opens quickly. Subsequent idle
+      // stretches (inter-action dead time) get a gentler 0.6s cap.
+      const cap = isFirstIdle ? 0.3 : 0.6;
+      const idleTrimmedDurS = Math.min(idleBefore / idleSpeed, cap);
       const speed = idleBefore / Math.max(0.01, idleTrimmedDurS);
       segments.push({
         rawStartS: cursor,
@@ -148,6 +152,7 @@ function buildTrimPlan(
     });
     trimmedCursor += activeDurS;
     cursor = w.end;
+    isFirstIdle = false;
   }
   // Tail after the last event — trim aggressively.
   if (cursor < rawDurS) {
@@ -244,7 +249,11 @@ export async function editSingleVideo({
   console.log(chalk.dim(`  voice-over: ${describeBackend(ttsBackend)}`));
 
   // 2. Visible events.
-  const BORING_KINDS = new Set(["script", "wait"]);
+  // `navigate` is intentionally boring: the raw video always opens with a blank
+  // page-load frame and a slow hydration, and narrating "opening the preview"
+  // wastes the first 3-5 seconds. Treating navigate as idle lets the trim plan
+  // collapse everything before the first real interaction to ~0.6s.
+  const BORING_KINDS = new Set(["script", "wait", "navigate"]);
   const visibleEvents = artifacts.events.filter((e) => !BORING_KINDS.has(e.kind));
 
   // 3. Ask Claude for story narration UP FRONT so we know what each event's voice line is.
