@@ -42,7 +42,7 @@ export interface SingleVideoInput {
   /** Overlay captions for silent/investigative tool calls (evaluate,
    *  network_requests, screenshot-then-think). Times are TRIMMED master
    *  seconds (BEFORE intro offset is added by the composition). */
-  toolOverlays?: Array<{ startS: number; endS: number; label: string; detail?: string }>;
+  toolOverlays?: Array<{ startS: number; endS: number; label: string; detail?: string; voiceSrc?: string; voiceDurS?: number; captionText?: string }>;
 }
 
 export function computeSingleVideoDuration(input: SingleVideoInput, fps: number): number {
@@ -279,9 +279,25 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
       {input.toolOverlays?.map((ov, i) => {
         const startFrame = Math.round(ov.startS * fps);
         const durFrames = Math.max(1, Math.round((ov.endS - ov.startS) * fps));
+        const voiceFrames = ov.voiceDurS ? Math.max(1, Math.round(ov.voiceDurS * fps)) : 0;
+        const seqFrames = Math.max(durFrames, voiceFrames);
+        const showBadge = !!ov.label;
         return (
-          <Sequence key={`tov-${i}`} from={startFrame} durationInFrames={durFrames} layout="none">
-            <ToolActivityBadge label={ov.label} detail={ov.detail} />
+          <Sequence key={`tov-${i}`} from={startFrame} durationInFrames={seqFrames} layout="none">
+            {showBadge && <ToolActivityBadge label={ov.label} detail={ov.detail} />}
+            {ov.voiceSrc && <Audio src={staticFile(ov.voiceSrc)} volume={1} />}
+            {ov.captionText && (
+              <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 240 }}>
+                <WordCaption
+                  text={ov.captionText}
+                  durationInFrames={seqFrames}
+                  fps={fps}
+                  accent="#8ab6ff"
+                  voiceDurS={ov.voiceDurS ?? seqFrames / fps}
+                  voiceStartDelayS={0.0}
+                />
+              </div>
+            )}
           </Sequence>
         );
       })}

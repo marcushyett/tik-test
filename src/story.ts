@@ -39,22 +39,22 @@ but genuinely curious whether it's right — you're inviting feedback, not pitch
   "curious what you all think" or "one thing I'm still unsure about..."
 
 **Format constraints:**
-- voiceLine: MAX 14 WORDS per step. Natural spoken sentences. Conversational, like you're
-  thinking out loud to colleagues.
+- voiceLine: **45–75 WORDS per step** — roughly 18–28 seconds of speech. This is
+  substantial demo commentary, not a tagline. Walk through what's happening: name
+  what you're about to click / type / press, explain the design choice, point out
+  details to watch for, preview the next beat. Keep the tone conversational. Silence
+  mid-step is bad — aim to keep talking the whole time.
 - captionText: **TV-style subtitle that MATCHES the voiceLine word-for-word**, minor
-  punctuation adjustments OK. The viewer should be able to read the captionText and get
-  the same information as hearing the voiceLine. Do NOT condense to a 3-word pull-quote
-  — that was the old behaviour, and it made the video hard to follow. Example: if voiceLine
-  is "Here's where we open the overlay — watch the URL update.", captionText is the same
-  thing minus the em-dash.
+  punctuation adjustments OK. The word-reveal caption component paces itself to the
+  voice, so long text is fine.
 - titleSlideLabel: 1–2 word chapter tag, or empty string.
 - titleSlideText: 2–5 word headline, or empty string.
 
 Also produce:
-  intro — 2 short sentences (MAX 22 words total). First sentence names the PROBLEM.
-          Second sentence previews what you'll show to address it.
-  outro — 1 sentence (MAX 16 words) that asks for feedback or names something you're
-          unsure about. NEVER a verdict.
+  intro — 2–3 sentences (30–50 words). First names the PROBLEM from the PR body.
+          Second previews what you'll show. Third optionally teases a detail.
+  outro — 1–2 sentences (20–35 words) that asks for feedback or flags something
+          you're unsure about. NEVER a verdict.
 
 Output STRICT JSON in the following shape (no markdown, no prose):
 {

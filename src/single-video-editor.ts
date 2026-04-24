@@ -85,7 +85,7 @@ export interface SingleVideoInput {
    *  cards during silent-but-informative tool calls (browser_evaluate,
    *  browser_network_requests, etc). Each has a user-friendly label so
    *  viewers see what the agent is checking and why. */
-  toolOverlays?: Array<{ startS: number; endS: number; label: string; detail?: string }>;
+  toolOverlays?: Array<{ startS: number; endS: number; label: string; detail?: string; voiceSrc?: string; voiceDurS?: number; captionText?: string }>;
 }
 
 /**
@@ -95,15 +95,42 @@ export interface SingleVideoInput {
  * the endpoint beyond what a single API key comfortably sustains.
  */
 /**
- * Should this tool kind surface in the video as a "looking under the hood"
- * overlay? Returns true for silent investigative tools; false for
- * user-visible interactions (captions handle those) and plumbing
- * (ToolSearch/Read/Glob/Bash).
+ * Classify a tool kind for the video:
+ *   "silent"  — investigative work with no visible UI change (evaluate,
+ *               network_requests). Gets an overlay BADGE + voice.
+ *   "visible" — user-visible interaction (click, type, press, nav). Gets
+ *               voice ONLY (viewer can see what's happening, badge would
+ *               clutter the frame).
+ *   "skip"    — plumbing the viewer shouldn't care about.
+ * Both "silent" and "visible" tool calls get a TTS voice line so the
+ * narration is continuous across the video instead of one line per goal.
  */
-function shouldSurfaceTool(kind: string): boolean {
-  return kind === "browser_evaluate"
-    || kind === "browser_network_requests"
-    || kind === "browser_console_messages";
+function classifyTool(kind: string): "silent" | "visible" | "skip" {
+  switch (kind) {
+    case "browser_evaluate":
+    case "browser_network_requests":
+    case "browser_console_messages":
+      return "silent";
+    case "browser_click":
+    case "browser_fill_form":
+    case "browser_type":
+    case "browser_press_key":
+    case "browser_hover":
+    case "browser_scroll":
+    case "browser_navigate":
+    case "browser_navigate_back":
+    case "browser_wait_for":
+    case "browser_take_screenshot":
+      return "visible";
+    case "browser_snapshot":
+    case "browser_tabs":
+    case "ToolSearch":
+    case "Read":
+    case "Glob":
+    case "Bash":
+      return "skip";
+    default: return "skip";
+  }
 }
 
 /**
@@ -632,26 +659,61 @@ export async function editSingleVideo({
       }
       return masterDurS;
     };
-    // Filter to tool calls worth surfacing, then send the batch to claude
-    // for specific non-tech captions. Generic "Checking what's on the page"
-    // is dead weight — we need "Counting broken TikTok thumbnails → Found 84".
+    // Pick every tool call worth narrating. Silent tools additionally get
+    // an on-screen BADGE; visible tools (clicks, typing, nav) are shown in
+    // the browser recording, but we still voice them so there's continuous
+    // narration over the video instead of a single voice line per goal.
     const surfacing = artifacts.toolWindows
-      .map((tw, idx) => ({ tw, idx }))
-      .filter((x) => shouldSurfaceTool(x.tw.kind));
+      .map((tw, idx) => ({ tw, idx, kind: classifyTool(tw.kind) as "silent" | "visible" | "skip" }))
+      .filter((x) => x.kind !== "skip");
     let captions: Array<{ label: string; detail?: string } | null> = [];
     if (surfacing.length > 0) {
-      console.log(chalk.dim(`  narrating ${surfacing.length} under-the-hood moments…`));
+      console.log(chalk.dim(`  narrating ${surfacing.length} tool moments…`));
       captions = await translateToolCaptions(surfacing.map((x) => x.tw));
     }
+    // Stage per-tool entries. Silent tools keep their overlay badge (label
+    // shown on top of the frame); visible tools get VOICE ONLY so the
+    // caption doesn't fight the user-visible action on screen.
+    const staged: Array<{ startS: number; endS: number; label: string; detail?: string; kind: "silent" | "visible"; idx: number }> = [];
     for (let i = 0; i < surfacing.length; i++) {
-      const { tw } = surfacing[i];
+      const s = surfacing[i];
       const caption = captions[i];
       if (!caption?.label) continue;
-      const sTrim = toTrimmed(tw.startMs / 1000);
-      const eTrim = Math.max(sTrim + 0.4, toTrimmed(tw.endMs / 1000));
+      const sTrim = toTrimmed(s.tw.startMs / 1000);
+      const eTrim = Math.max(sTrim + 0.4, toTrimmed(s.tw.endMs / 1000));
       if (eTrim - sTrim < 0.3) continue;
-      toolOverlays.push({ startS: sTrim, endS: eTrim, label: caption.label, detail: caption.detail });
+      staged.push({ startS: sTrim, endS: eTrim, label: caption.label, detail: caption.detail, kind: s.kind as "silent" | "visible", idx: i });
     }
+    if (ttsBackend && staged.length > 0) {
+      console.log(chalk.dim(`  voicing ${staged.length} tool moments…`));
+      await runWithConcurrency(staged, 4, async (ov, i) => {
+        const line = ov.detail ? `${ov.label}. ${ov.detail}.` : `${ov.label}.`;
+        const fileName = `overlay-${i}.wav`;
+        try {
+          await synth(ttsBackend, sanitiseForSpeech(line), path.join(publicDir, fileName));
+          const dur = await ffprobeDuration(path.join(publicDir, fileName));
+          toolOverlays.push({
+            startS: ov.startS, endS: ov.endS,
+            // Silent tools: badge with label/detail on top of frame.
+            // Visible tools: no badge (viewer sees the action already).
+            label: ov.kind === "silent" ? ov.label : "",
+            detail: ov.kind === "silent" ? ov.detail : undefined,
+            // Both kinds get captionText so the voice is always subtitled.
+            captionText: line,
+            voiceSrc: fileName, voiceDurS: dur,
+          });
+        } catch {
+          if (ov.kind === "silent") {
+            toolOverlays.push({ startS: ov.startS, endS: ov.endS, label: ov.label, detail: ov.detail });
+          }
+        }
+      });
+    } else {
+      for (const ov of staged) {
+        if (ov.kind === "silent") toolOverlays.push({ startS: ov.startS, endS: ov.endS, label: ov.label, detail: ov.detail });
+      }
+    }
+    toolOverlays.sort((a, b) => a.startS - b.startS);
   }
 
   const input: SingleVideoInput = {
