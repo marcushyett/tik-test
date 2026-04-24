@@ -67,6 +67,10 @@ async function executeAction(page: Page, action: SetupAction, startUrl: string):
     case "navigate": {
       const url = action.url.startsWith("http") ? action.url : new URL(action.url, startUrl).toString();
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
+      // Let the page settle before any follow-up action — especially
+      // server-action-rendered sign-in pages where the button appears a
+      // tick after DOMContentLoaded.
+      await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
       return;
     }
     case "click": {

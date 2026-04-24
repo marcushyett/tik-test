@@ -365,17 +365,19 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   const startedAt = new Date().toISOString();
   const runStart = performance.now();
 
-  // Disable Opaque Response Blocking (ORB). Chromium blocks cross-origin
-  // <img> requests whose response looks ambiguous to ORB — TikTok's CDN
-  // (p16-common-sign.tiktokcdn.com etc) returns images that trigger this,
-  // so thumbnails came back as `net::ERR_BLOCKED_BY_ORB` and the recording
-  // showed blank gray cards. Real browsers (not Playwright's Chromium) often
-  // sidestep this via UA-specific allowlists, which is why the user sees
-  // the images fine in their normal browser but not in our headless run.
+  // `--disable-web-security` turns off all the cross-origin protections
+  // (ORB, CORB, CORS, etc) for this test session. Without it, Chromium
+  // refuses to render third-party CDN thumbnails (tiktokcdn.com, fbcdn
+  // etc) with net::ERR_BLOCKED_BY_ORB — a feature-flag-level disable via
+  // --disable-features=OpaqueResponseBlocking didn't take effect (the
+  // feature name varies across Chromium versions). `--disable-web-security`
+  // is the standard "testing tool" escape hatch and is documented for
+  // exactly this use case.
   const browser: Browser = await chromium.launch({
     headless: !headed,
     args: [
-      "--disable-features=OpaqueResponseBlocking,OpaqueResponseBlockingV01,OpaqueResponseBlockingV02,CorbErrorsAreFatal",
+      "--disable-web-security",
+      "--disable-features=IsolateOrigins,site-per-process",
     ],
   });
   const context: BrowserContext = await browser.newContext({
