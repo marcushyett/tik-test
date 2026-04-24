@@ -24,13 +24,13 @@ export const WordCaption: React.FC<Props> = ({
   if (words.length === 0) return null;
 
   const leadInFrames = Math.max(2, Math.round(fps * voiceStartDelayS));
+  // Minimum 0.33s per word — below this the captions flash too fast to read.
+  // With voice, pace to the narration; clamp to the min so fast lines still stay
+  // on-screen a reasonable time. Without voice, ~0.42s/word (2.4 words/sec).
+  const minWordFrames = Math.round(fps * 0.33);
   const perWordFrames = voiceDurS && voiceDurS > 0
-    // Distribute words across voice duration + a tiny tail so the highlight lingers.
-    ? Math.max(Math.round(fps * 0.18), Math.floor((voiceDurS * fps) / words.length))
-    : Math.max(
-        Math.round(fps / 2.4),
-        Math.floor((durationInFrames - leadInFrames) / words.length),
-      );
+    ? Math.max(minWordFrames, Math.floor((voiceDurS * fps) / words.length))
+    : Math.max(minWordFrames, Math.floor((durationInFrames - leadInFrames) / words.length));
 
   // Chunk words into lines of ~3-5 words for readability.
   const lines: string[][] = [];

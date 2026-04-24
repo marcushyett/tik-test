@@ -500,7 +500,11 @@ export async function editSingleVideo({
     });
     const storied = story?.steps[i];
     const voiceLine = (storied?.voiceLine || tpl.voiceLine).trim();
-    const caption = (storied?.captionText || tpl.captionText).trim();
+    // Caption is ALWAYS the sanitised voice text so on-screen subtitles
+    // match what the viewer actually hears word-for-word. Story.ts asks
+    // Claude for matching captionText but the model often drifts; using
+    // the voice text directly eliminates the drift.
+    const caption = sanitiseForSpeech(voiceLine);
     return { i, ev, voiceLine, caption };
   });
 
@@ -687,10 +691,12 @@ export async function editSingleVideo({
     if (ttsBackend && staged.length > 0) {
       console.log(chalk.dim(`  voicing ${staged.length} tool moments…`));
       await runWithConcurrency(staged, 4, async (ov, i) => {
-        const line = ov.detail ? `${ov.label}. ${ov.detail}.` : `${ov.label}.`;
+        const rawLine = ov.detail ? `${ov.label}. ${ov.detail}.` : `${ov.label}.`;
+        // Sanitise BEFORE splitting captions vs voice so they're identical.
+        const spokenLine = sanitiseForSpeech(rawLine);
         const fileName = `overlay-${i}.wav`;
         try {
-          await synth(ttsBackend, sanitiseForSpeech(line), path.join(publicDir, fileName));
+          await synth(ttsBackend, spokenLine, path.join(publicDir, fileName));
           const dur = await ffprobeDuration(path.join(publicDir, fileName));
           toolOverlays.push({
             startS: ov.startS, endS: ov.endS,
@@ -698,8 +704,9 @@ export async function editSingleVideo({
             // Visible tools: no badge (viewer sees the action already).
             label: ov.kind === "silent" ? ov.label : "",
             detail: ov.kind === "silent" ? ov.detail : undefined,
-            // Both kinds get captionText so the voice is always subtitled.
-            captionText: line,
+            // Caption must be exactly what TTS spoke so on-screen text
+            // matches the voice word-for-word.
+            captionText: spokenLine,
             voiceSrc: fileName, voiceDurS: dur,
           });
         } catch {

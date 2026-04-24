@@ -39,22 +39,20 @@ but genuinely curious whether it's right — you're inviting feedback, not pitch
   "curious what you all think" or "one thing I'm still unsure about..."
 
 **Format constraints:**
-- voiceLine: **45–75 WORDS per step** — roughly 18–28 seconds of speech. This is
-  substantial demo commentary, not a tagline. Walk through what's happening: name
-  what you're about to click / type / press, explain the design choice, point out
-  details to watch for, preview the next beat. Keep the tone conversational. Silence
-  mid-step is bad — aim to keep talking the whole time.
-- captionText: **TV-style subtitle that MATCHES the voiceLine word-for-word**, minor
-  punctuation adjustments OK. The word-reveal caption component paces itself to the
-  voice, so long text is fine.
+- voiceLine: **14–22 WORDS per step**. One or two short sentences that open the
+  step — what you're about to do and why. Keep it brief. Per-tool overlays
+  carry the moment-by-moment commentary during the step (another system
+  handles those), so don't try to fill the full step duration with one voice
+  line. Leave breathing room for the tool overlays.
+- captionText: a TV-style subtitle, matches voiceLine word-for-word (the
+  caption renderer syncs on-screen to the voice, so they must match).
 - titleSlideLabel: 1–2 word chapter tag, or empty string.
 - titleSlideText: 2–5 word headline, or empty string.
 
 Also produce:
-  intro — 2–3 sentences (30–50 words). First names the PROBLEM from the PR body.
-          Second previews what you'll show. Third optionally teases a detail.
-  outro — 1–2 sentences (20–35 words) that asks for feedback or flags something
-          you're unsure about. NEVER a verdict.
+  intro — 2 sentences (MAX 28 words). First names the PROBLEM from the PR
+          body. Second previews what you'll show.
+  outro — 1 sentence (MAX 18 words) asking for feedback or flagging uncertainty.
 
 Output STRICT JSON in the following shape (no markdown, no prose):
 {

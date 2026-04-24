@@ -60,9 +60,15 @@ function synthSay(voice: string, text: string, outPath: string): Promise<void> {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let err = "";
+    // Hard timeout — macOS say occasionally hangs on long text with punctuation
+    // edge cases. A single stuck call shouldn't block the whole render pipeline.
+    const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} reject(new Error("say timeout after 30s")); }, 30_000);
     child.stderr.on("data", (b) => (err += b.toString()));
-    child.on("error", reject);
-    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`say exited ${code}: ${err}`))));
+    child.on("error", (e) => { clearTimeout(timer); reject(e); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      code === 0 ? resolve() : reject(new Error(`say exited ${code}: ${err}`));
+    });
   });
 }
 
