@@ -166,65 +166,87 @@ start: npm run dev
 
 ---
 
-## GitHub Action: run after every preview deploy
+## GitHub Action
 
-`.github/workflows/tik-test.yml` (copy from this repo; ready to drop in):
+tik-test ships as a **composite GitHub Action**. Drop it into your workflow with one `uses:` line:
 
 ```yaml
+# .github/workflows/tik-test.yml
+name: tik-test review
 on:
-  deployment_status:           # triggers after Vercel/Netlify preview is Ready
+  deployment_status:                    # after Vercel/Netlify preview is Ready
+  pull_request:                         # or run directly on PRs
   workflow_dispatch:
-    inputs: { pr_number: { required: true } }
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
 
 permissions:
   contents: read
-  pull-requests: write          # needed for comments + review submissions
+  pull-requests: write                  # for comments + review submissions
 
 jobs:
   review:
-    if: github.event_name == 'workflow_dispatch' || github.event.deployment_status.state == 'success'
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'deployment_status' && github.event.deployment_status.state == 'success')
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "22" }
-      - run: sudo apt-get install -y ffmpeg fonts-dejavu && npx playwright install chromium --with-deps
-
-      # Anthropic's action authenticates Claude Code via your Max subscription.
-      # Generate the token with: `claude setup-token`
-      - uses: anthropics/claude-code-action@v1
+      - uses: marcushyett/tik-test@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-      - run: |
-          git clone --depth 1 https://github.com/marcushyett/tik-test /tmp/tik-test
-          cd /tmp/tik-test && npm ci --omit=dev && npm run build
-
-      - env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          node /tmp/tik-test/dist/cli.js pr "<PR_NUMBER>" \
-            --review request-changes-on-fail \
-            --require-pass \
-            --quick
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          openai-api-key:          ${{ secrets.OPENAI_API_KEY }}            # optional
+          vercel-bypass-secret:    ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}  # optional
+          pr-number:               ${{ github.event.inputs.pr_number }}     # only needed for workflow_dispatch
 ```
 
-### Secrets you'll need
+That's it. The action installs Node + ffmpeg + Playwright, builds tik-test, auto-detects the PR number and preview URL from the triggering event, runs the review, and posts the video back to the PR.
 
-| Secret | Where it comes from | Required? |
-|---|---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | Run `claude setup-token` locally, paste the token into repo secrets. Uses your **Claude Code Max** subscription — no per-request billing. | Recommended |
-| `ANTHROPIC_API_KEY` | Pay-per-use alternative if you'd rather not use the subscription token. | Either/or |
-| `OPENAI_API_KEY` | Voice-over via `gpt-4o-mini-tts` (voice `ash`). Falls back to macOS `say` locally; silent on Linux if unset. | Optional |
-| `VERCEL_AUTOMATION_BYPASS_SECRET` | From Vercel → Project Settings → Deployment Protection → "Protection Bypass for Automation" → "Generate". | Only if your preview is protected |
+### Inputs
+
+| Input | Required? | Default | What |
+|---|---|---|---|
+| `claude-code-oauth-token` | Yes¹ | — | OAuth token from `claude setup-token`. Uses your **Claude Code Max** subscription — no per-request billing. |
+| `anthropic-api-key` | Yes¹ | — | Pay-per-use alternative to the OAuth token. |
+| `openai-api-key` | No | — | Enables OpenAI TTS voice-over. Without it, the video is silent on Linux runners. |
+| `vercel-bypass-secret` | No | — | Vercel automation bypass for protected previews. |
+| `pr-number` | No | auto | Auto-detected from `pull_request`, `deployment_status`, or `workflow_dispatch` events. |
+| `preview-url` | No | auto | Override target URL. Auto-detected from `deployment_status.target_url`; otherwise read from your repo's `claude.md`. |
+| `review-mode` | No | `request-changes-on-fail` | `none` · `approve-on-pass` · `request-changes-on-fail` · `always`. |
+| `require-pass` | No | `true` | Exit non-zero when any test step fails (turns the check red). |
+| `quick` | No | `true` | Draft 540×960 render (~2 min). Set `false` for full-res. |
+
+¹ Provide one of the two — OAuth token recommended for cost control.
+
+### Secrets to add
+
+The action only needs **one** secret to run:
+
+| Secret | Where it comes from |
+|---|---|
+| `CLAUDE_CODE_OAUTH_TOKEN` | Run `claude setup-token` locally → paste into repo Settings → Secrets. |
+
+Optional secrets (for richer output / protected previews):
+
+| Secret | When to add |
+|---|---|
+| `OPENAI_API_KEY` | If you want voice-over narration. |
+| `VERCEL_AUTOMATION_BYPASS_SECRET` | If your Vercel preview has Deployment Protection enabled. |
+| `ANTHROPIC_API_KEY` | Pay-per-use alternative to `CLAUDE_CODE_OAUTH_TOKEN`. |
 
 ### Gating behaviour
 
-- `--review request-changes-on-fail` (default): tik-test posts a formal **Request Changes** review when any step fails, which blocks merges on repos that require reviewer approval.
-- `--require-pass`: the job exits non-zero when any step fails, turning the check red.
-- Use both together for strict gating, or just `--review` to keep the check green but require human attention on bugs.
+- `review-mode: request-changes-on-fail` (default) — tik-test posts a formal **Request Changes** review when any step fails, which blocks merges on repos requiring reviewer approval.
+- `require-pass: true` (default) — the job exits non-zero when any step fails, turning the check red.
+- Set `require-pass: false` to keep the check green but rely on the formal review to flag bugs for humans.
+
+### Self-hosted reference
+
+This repo dogfoods the action: see [`.github/workflows/tik-test.yml`](.github/workflows/tik-test.yml). It's the same workflow as above except `uses: ./` (the local action) instead of `marcushyett/tik-test@v1`.
 
 ---
 

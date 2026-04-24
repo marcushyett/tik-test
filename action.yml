@@ -1,0 +1,157 @@
+name: tik-test
+description: Automated TikTok-style video reviews for your pull requests — Claude plans, Playwright runs, FFmpeg + Remotion compose, posted as a PR comment with optional formal review.
+author: tik-test
+branding:
+  icon: play-circle
+  color: purple
+
+inputs:
+  claude-code-oauth-token:
+    description: |
+      OAuth token for the Claude Code Max subscription. Generate locally with `claude setup-token`,
+      then paste into a repository secret. Required unless `anthropic-api-key` is provided.
+    required: false
+    default: ''
+  anthropic-api-key:
+    description: Pay-per-use Anthropic API key. Alternative to `claude-code-oauth-token`.
+    required: false
+    default: ''
+  openai-api-key:
+    description: Optional. Enables OpenAI TTS voice-over. Without it the video is silent on Linux runners.
+    required: false
+    default: ''
+  pr-number:
+    description: PR number to review. Auto-detected from `pull_request`, `deployment_status`, or `workflow_dispatch` events when omitted.
+    required: false
+    default: ''
+  preview-url:
+    description: Override the target URL. Auto-detected from `deployment_status` events when omitted; otherwise read from the consumer repo's `claude.md`.
+    required: false
+    default: ''
+  vercel-bypass-secret:
+    description: Vercel automation bypass secret for protected previews. Optional.
+    required: false
+    default: ''
+  review-mode:
+    description: 'How to leave a formal PR review: `none` · `approve-on-pass` · `request-changes-on-fail` · `always`.'
+    required: false
+    default: request-changes-on-fail
+  require-pass:
+    description: If `true`, the job exits non-zero when any test step fails (turns the check red).
+    required: false
+    default: 'true'
+  quick:
+    description: If `true`, produce a draft 540×960 render in ~2 min. Set `false` for full-res.
+    required: false
+    default: 'true'
+  github-token:
+    description: 'GITHUB_TOKEN with `pull-requests: write` permission. Defaults to the workflow token.'
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node 22
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+
+    - name: Install ffmpeg and Playwright Chromium
+      shell: bash
+      run: |
+        if [[ "$RUNNER_OS" == "Linux" ]]; then
+          sudo apt-get update -y
+          sudo apt-get install -y ffmpeg fonts-dejavu
+        elif [[ "$RUNNER_OS" == "macOS" ]]; then
+          brew install ffmpeg >/dev/null || true
+        else
+          echo "::error::Unsupported runner: $RUNNER_OS. tik-test runs on Linux and macOS."
+          exit 1
+        fi
+        npx --yes playwright@1 install chromium --with-deps
+
+    - name: Validate auth inputs
+      shell: bash
+      env:
+        CLAUDE_TOKEN: ${{ inputs.claude-code-oauth-token }}
+        ANTHROPIC_KEY: ${{ inputs.anthropic-api-key }}
+      run: |
+        if [[ -z "$CLAUDE_TOKEN" && -z "$ANTHROPIC_KEY" ]]; then
+          echo "::error::Provide either claude-code-oauth-token (recommended — uses your Claude Max subscription) or anthropic-api-key."
+          exit 1
+        fi
+
+    - name: Authenticate Claude Code (Max OAuth)
+      if: ${{ inputs.claude-code-oauth-token != '' }}
+      uses: anthropics/claude-code-action@v1
+      with:
+        claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
+
+    - name: Authenticate Claude Code (API key)
+      if: ${{ inputs.claude-code-oauth-token == '' && inputs.anthropic-api-key != '' }}
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.anthropic-api-key }}
+
+    - name: Build tik-test
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        if [[ ! -f dist/cli.js ]]; then
+          npm ci --omit=dev || npm install
+          npm run build
+        fi
+
+    - name: Resolve PR number
+      id: resolve-pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        EVENT_NAME: ${{ github.event_name }}
+        INPUT_PR: ${{ inputs.pr-number }}
+        EVENT_PR: ${{ github.event.pull_request.number }}
+        DEPLOY_SHA: ${{ github.event.deployment.sha }}
+      run: |
+        PR_NUMBER="$INPUT_PR"
+        if [[ -z "$PR_NUMBER" ]]; then PR_NUMBER="$EVENT_PR"; fi
+        if [[ -z "$PR_NUMBER" && "$EVENT_NAME" == "deployment_status" && -n "$DEPLOY_SHA" ]]; then
+          PR_NUMBER=$(gh pr list --search "$DEPLOY_SHA" --state open --json number --jq '.[0].number' || true)
+        fi
+        if [[ -z "$PR_NUMBER" ]]; then
+          echo "::error::Could not determine PR number. Pass it explicitly via the pr-number input."
+          exit 1
+        fi
+        echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+    - name: Resolve preview URL
+      id: resolve-url
+      shell: bash
+      env:
+        INPUT_URL: ${{ inputs.preview-url }}
+        EVENT_NAME: ${{ github.event_name }}
+        DEPLOY_URL: ${{ github.event.deployment_status.target_url }}
+      run: |
+        URL="$INPUT_URL"
+        if [[ -z "$URL" && "$EVENT_NAME" == "deployment_status" ]]; then URL="$DEPLOY_URL"; fi
+        echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+    - name: Run tik-test
+      shell: bash
+      env:
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        VERCEL_AUTOMATION_BYPASS_SECRET: ${{ inputs.vercel-bypass-secret }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ steps.resolve-pr.outputs.number }}
+        PREVIEW_URL: ${{ steps.resolve-url.outputs.url }}
+        REVIEW_MODE: ${{ inputs.review-mode }}
+        REQUIRE_PASS: ${{ inputs.require-pass }}
+        QUICK: ${{ inputs.quick }}
+        ASSET_REPO: ${{ github.repository }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        ARGS=( pr "$PR_NUMBER" --skip-clone --asset-repo "$ASSET_REPO" --review "$REVIEW_MODE" )
+        [[ "$REQUIRE_PASS" == "true" ]] && ARGS+=( --require-pass )
+        [[ "$QUICK" == "true" ]] && ARGS+=( --quick )
+        [[ -n "$PREVIEW_URL" ]] && ARGS+=( --url "$PREVIEW_URL" )
+        node "$ACTION_PATH/dist/cli.js" "${ARGS[@]}"
