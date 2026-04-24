@@ -14,7 +14,6 @@ import type { TestPlan } from "./types.js";
 
 type FinderAction =
   | { action: "click"; target: string }
-  | { action: "navigate"; url: string }
   | { action: "wait"; ms?: number };
 
 interface PageSnapshot {
@@ -97,14 +96,8 @@ function findLocator(page: Page, target: string) {
     .first();
 }
 
-async function exec(page: Page, a: FinderAction, startUrl: string): Promise<void> {
+async function exec(page: Page, a: FinderAction, _startUrl: string): Promise<void> {
   switch (a.action) {
-    case "navigate": {
-      const url = a.url.startsWith("http") ? a.url : new URL(a.url, startUrl).toString();
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
-      await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
-      return;
-    }
     case "click": {
       const loc = findLocator(page, a.target);
       await loc.waitFor({ state: "visible", timeout: 8_000 });
@@ -166,14 +159,13 @@ ${(diff || "").slice(0, 4000)}
 
 Reply with ONLY a JSON array of up to 5 actions:
 - {"action":"click","target":"<exact visible text from nav/buttons above>"}
-- {"action":"navigate","url":"<path or full URL>"}
 - {"action":"wait","ms":<800-2500>}
 
 Rules:
-- Prefer sidebar clicks over direct navigation (more reliable than guessing route paths).
+- Navigate by CLICKING visible nav elements like a user would. You do NOT have a \`navigate\` action — URL guesses are not allowed (they 404 because real routes have org prefixes, route groups, etc that aren't visible in the diff).
 - Target values MUST match one of the visible names above verbatim.
-- Don't include a leading navigate-to-root step — the runner already navigated home.
 - If the feature is deep (sidebar → submenu → tab), chain the clicks.
+- Insert a short \`wait\` between clicks when the target area needs to load (e.g. after opening a section before clicking something inside it).
 - If you truly don't know where the feature lives, return an empty array [].
 
 Return ONLY the JSON array.`;

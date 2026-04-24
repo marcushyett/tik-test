@@ -83,6 +83,14 @@ export interface Config {
    * guessing from the PR body alone.
    */
   diff?: string;
+  /**
+   * Human-authored PR comments (tik-test's own comments are excluded).
+   * Teammates often drop hints like "make sure to try it with 0 items" or
+   * "watch the error when you hit submit twice" — surfacing those to the
+   * plan generator gives the video a reviewer-steering angle instead of
+   * purely diff-driven coverage.
+   */
+  comments?: string;
   plan?: TestPlan;
   music?: string;
 }

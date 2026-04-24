@@ -65,6 +65,13 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     // Use the PR body as focus context for test plan generation.
     cfg.focus = `PR #${ref.number}: ${meta.title}\n\n${meta.body}`;
   }
+  // Human-authored PR comments — teammate hints like "make sure you test X"
+  // or bug reports that the plan should probe. We exclude tik-test's own
+  // comments (detected by the <!-- tik-test-video marker) so we don't
+  // self-feedback from prior runs.
+  if (meta.comments && meta.comments.length > 0) {
+    cfg.comments = meta.comments.slice(0, 6_000); // prompt-safe cap
+  }
 
   // Read the repo's README for a "TikTest" section — pre-test setup/login
   // instructions. This is the dedicated place repos declare how tik-test
@@ -228,6 +235,9 @@ interface PRMeta {
   headRef: string;
   headRepo: string;
   previewUrl?: string;
+  /** Human-authored PR comments joined as plain text, already filtered to
+   *  skip tik-test's own marker-prefixed comments. */
+  comments?: string;
 }
 
 async function fetchPRMeta(ref: PRRef): Promise<PRMeta> {
@@ -239,12 +249,30 @@ async function fetchPRMeta(ref: PRRef): Promise<PRMeta> {
   const data = JSON.parse(raw);
   const headRepo = `${data.headRepositoryOwner?.login ?? ref.owner}/${data.headRepository?.name ?? ref.repo}`;
   const previewUrl = extractPreviewUrl(data.body ?? "") ?? extractPreviewUrlFromComments(data.comments ?? []);
+  // Collapse human comments into a short "N. @user: …" stream for the plan
+  // prompt. Skip anything carrying the tik-test marker (prior auto-reviews)
+  // and skip Vercel/GitHub bot chatter — neither helps the plan decide what
+  // to poke at.
+  const rawComments = Array.isArray(data.comments) ? data.comments : [];
+  const humanComments = rawComments
+    .filter((c: any) => typeof c?.body === "string" && !c.body.startsWith("<!-- tik-test-video"))
+    .filter((c: any) => !/^(vercel|github-actions|codecov)\b/i.test(c?.author?.login ?? ""))
+    .slice(-10); // most recent 10 are the useful ones
+  const commentsText = humanComments.length
+    ? humanComments.map((c: any, i: number) => {
+        const who = c?.author?.login ?? "user";
+        const body = (c?.body ?? "").trim().slice(0, 600);
+        return `${i + 1}. @${who}: ${body}`;
+      }).join("\n\n")
+    : undefined;
+
   return {
     title: data.title ?? "",
     body: data.body ?? "",
     headRef: data.headRefName ?? "",
     headRepo,
     previewUrl,
+    comments: commentsText,
   };
 }
 

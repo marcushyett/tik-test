@@ -85,5 +85,6 @@ export function configToPromptContext(cfg: Config): string {
   if (cfg.setup) parts.push(`Setup notes:\n${cfg.setup}`);
   if (cfg.login) parts.push(`Login:\n${cfg.login}`);
   if (cfg.diff) parts.push(`PR code diff (authoritative — test the surfaces these hunks touch):\n${cfg.diff}`);
+  if (cfg.comments) parts.push(`PR comments (teammate feedback / suggestions — incorporate any "make sure to test X" hints):\n${cfg.comments}`);
   return parts.join("\n\n");
 }
