@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, ChevronDown, ChevronUp, Keyboard, Pause, Play, RotateCcw, RotateCw, Volume2, VolumeX } from "lucide-react";
 import { Button } from "./ui/button";
 import { PRHeader } from "./pr-header";
@@ -236,24 +236,29 @@ function FeedCounter({ idx, total, video }: { idx: number; total: number; video:
   );
 }
 
-const VideoFrame = (() => {
-  const Inner = (
-    {
-      src, poster, playing, setPlaying, muted, onToggleMute, onPrev, onNext, aspect,
-    }: {
-      src: string;
-      poster?: string;
-      playing: boolean;
-      setPlaying: (v: boolean) => void;
-      muted: boolean;
-      onToggleMute: () => void;
-      onPrev: () => void;
-      onNext: () => void;
-      aspect: "9/16" | "fill";
-    },
-    ref: React.Ref<HTMLVideoElement>,
-  ) => {
-    const videoRef = ref as React.RefObject<HTMLVideoElement>;
+interface VideoFrameProps {
+  src: string;
+  poster?: string;
+  playing: boolean;
+  setPlaying: (v: boolean) => void;
+  muted: boolean;
+  onToggleMute: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+  aspect: "9/16" | "fill";
+}
+
+const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoFrame(
+  { src, poster, playing, setPlaying, muted, onToggleMute, onPrev, onNext, aspect },
+  ref,
+) {
+    // React.forwardRef gives us the ref as an untyped ref; narrow it so the
+    // control handlers can read `.current`. The previous Object.assign hack
+    // silently dropped the ref (the second arg to a plain function component
+    // is NOT populated by React), so videoRef.current stayed null and every
+    // play/pause/skip handler no-op'd — that's what "controls don't work"
+    // meant.
+    const videoRef = ref as React.RefObject<HTMLVideoElement | null>;
     const wrapClass = aspect === "9/16"
       ? "group relative flex-1 min-h-0 overflow-hidden rounded-2xl border border-border bg-black shadow-lift"
       : "absolute inset-0 bg-black";
@@ -360,12 +365,7 @@ const VideoFrame = (() => {
         )}
       </div>
     );
-  };
-  return Object.assign(
-    ({ children: _c, ...p }: any, ref?: any) => Inner(p, ref),
-    { displayName: "VideoFrame" },
-  ) as unknown as React.ForwardRefExoticComponent<any>;
-})();
+});
 
 function KeyboardHint({ onSkip }: { onSkip: () => void }) {
   return (
