@@ -704,17 +704,17 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
           result = { outcome: "failure", note: (e as Error).message.split("\n")[0], actions: [], bbox: undefined };
         }
         const endMs = Math.max(startMs + 50, Math.round(performance.now() - runStart));
-        // Convert each tool-call's wall-clock `startedAt` into a short active
-        // window in raw-video timeline terms. Each call's visible slice is
-        // ~1.2s — enough to see what happened, tight enough that the idle
-        // around it (agent thinking) gets compressed aggressively.
+        // Convert each tool-call's wall-clock `startedAt` into an active
+        // window in raw-video timeline terms. Span 2.5s per call so the
+        // viewer can actually see what happened; the trim planner keeps
+        // non-active agent-thinking gaps between them bounded.
         for (let ai = 0; ai < result.actions.length; ai++) {
           const a = result.actions[ai];
           if (!a.startedAt) continue;
           const windowStart = startMs + (a.startedAt - goalStartedAtWall);
           const next = result.actions[ai + 1];
-          const nextStart = next?.startedAt ? startMs + (next.startedAt - goalStartedAtWall) : windowStart + 1200;
-          const windowEnd = Math.min(nextStart, windowStart + 1500);
+          const nextStart = next?.startedAt ? startMs + (next.startedAt - goalStartedAtWall) : windowStart + 2500;
+          const windowEnd = Math.min(nextStart, windowStart + 2800);
           if (windowEnd > windowStart) {
             toolWindows.push({ startMs: Math.max(0, windowStart), endMs: windowEnd, kind: a.kind });
           }

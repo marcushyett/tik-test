@@ -81,6 +81,11 @@ export interface SingleVideoInput {
   outroVoiceSrc?: string;
   outroVoiceDurS?: number;
   versionTag?: string;
+  /** Per-tool-call overlays in TRIMMED seconds — rendered as small status
+   *  cards during silent-but-informative tool calls (browser_evaluate,
+   *  browser_network_requests, etc). Each has a user-friendly label so
+   *  viewers see what the agent is checking and why. */
+  toolOverlays?: Array<{ startS: number; endS: number; label: string; detail?: string }>;
 }
 
 /**
@@ -89,6 +94,39 @@ export interface SingleVideoInput {
  * with their events). Used to parallelize OpenAI TTS calls without hammering
  * the endpoint beyond what a single API key comfortably sustains.
  */
+/**
+ * Translate a Playwright-MCP tool kind into a short, non-technical caption
+ * shown to the viewer during silent tool calls. Returns null for kinds we
+ * want to suppress (user-visible actions already in the recording, or
+ * plumbing tools like ToolSearch/Read/Glob that shouldn't surface).
+ */
+function toolLabel(kind: string): string | null {
+  switch (kind) {
+    case "browser_evaluate": return "Checking what's on the page";
+    case "browser_network_requests": return "Inspecting network activity";
+    case "browser_take_screenshot": return "Taking a closer look";
+    case "browser_console_messages": return "Reading console for errors";
+    case "browser_snapshot": return null; // invisible work, keep quiet
+    case "browser_click":
+    case "browser_fill_form":
+    case "browser_type":
+    case "browser_press_key":
+    case "browser_hover":
+    case "browser_scroll":
+    case "browser_navigate":
+    case "browser_navigate_back":
+    case "browser_wait_for":
+    case "browser_tabs":
+      return null; // user-visible in the recording; event caption handles it
+    case "Bash": return "Checking supporting files";
+    case "Read":
+    case "Glob":
+    case "ToolSearch":
+      return null; // plumbing
+    default: return null;
+  }
+}
+
 async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
@@ -164,10 +202,11 @@ function buildTrimPlan(
   for (const w of merged) {
     const idleBefore = w.start - cursor;
     if (idleBefore > idleThresholdS) {
-      // The very first idle (page load, auth redirects, initial session
-      // handshake) caps at 0.3s so the video opens quickly. Subsequent idle
-      // stretches (inter-action dead time) get a gentler 0.6s cap.
-      const cap = isFirstIdle ? 0.3 : 0.6;
+      // First idle (page load / auth / setup) gets a longer cap so the
+      // opening reads naturally — users complained the opening was too
+      // fast to follow. Subsequent idle (agent thinking between tool
+      // calls) compresses harder to avoid static dead time.
+      const cap = isFirstIdle ? 1.2 : 0.6;
       const idleTrimmedDurS = Math.min(idleBefore / idleSpeed, cap);
       const speed = idleBefore / Math.max(0.01, idleTrimmedDurS);
       segments.push({
@@ -481,6 +520,38 @@ export async function editSingleVideo({
   const introDurFrames = Math.max(Math.round(FPS * 3.4), Math.round((introVoiceDurS + 0.6) * FPS));
   const outroDurFrames = Math.max(Math.round(FPS * 3.2), Math.round((outroVoiceDurS + 0.6) * FPS));
 
+  // Build overlays that explain what the agent is doing during silent tool
+  // calls. Mapping: tool-window raw time → trimmed time via the trim plan
+  // (plus intro offset the composition adds). Skip kinds that are either
+  // user-visible already (click, navigate, scroll, press) or internal
+  // plumbing (ToolSearch, Read, Glob). The remaining tools get a friendly
+  // caption so a viewer understands why the screen appears still.
+  const toolOverlays: NonNullable<SingleVideoInput["toolOverlays"]> = [];
+  if (artifacts.toolWindows?.length) {
+    // Map raw→trimmed using the trim plan built earlier in this function.
+    // The plan's trimmedStart/End tells us exactly where each raw span
+    // lands in the trimmed master. For any raw timestamp inside a segment,
+    // we lerp within its [raw, trimmed] bounds.
+    const toTrimmed = (rawS: number): number => {
+      for (const seg of plan) {
+        if (rawS >= seg.rawStartS && rawS <= seg.rawEndS + 0.001) {
+          const fracRaw = (rawS - seg.rawStartS) / Math.max(0.001, seg.rawEndS - seg.rawStartS);
+          return seg.trimmedStartS + fracRaw * (seg.trimmedEndS - seg.trimmedStartS);
+        }
+      }
+      // Past the end: pin to master duration.
+      return masterDurS;
+    };
+    for (const tw of artifacts.toolWindows) {
+      const label = toolLabel(tw.kind);
+      if (!label) continue;
+      const sTrim = toTrimmed(tw.startMs / 1000);
+      const eTrim = Math.max(sTrim + 0.4, toTrimmed(tw.endMs / 1000));
+      if (eTrim - sTrim < 0.3) continue;
+      toolOverlays.push({ startS: sTrim, endS: eTrim, label });
+    }
+  }
+
   const input: SingleVideoInput = {
     title: artifacts.plan.name || "Feature review",
     summary: artifacts.plan.summary || artifacts.plan.startUrl,
@@ -496,6 +567,7 @@ export async function editSingleVideo({
     outroVoiceSrc,
     outroVoiceDurS: outroVoiceDurS || undefined,
     versionTag: getVersionTag(),
+    toolOverlays: toolOverlays.length > 0 ? toolOverlays : undefined,
   };
   await writeFile(path.join(runDir, "reel-input.json"), JSON.stringify(input, null, 2));
 

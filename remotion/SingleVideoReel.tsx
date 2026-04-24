@@ -39,6 +39,10 @@ export interface SingleVideoInput {
   /** Persistent version badge (e.g. "v0.2.0 · 6590731") — rendered top-right
    *  so a reviewer can tell at a glance which CLI build produced this video. */
   versionTag?: string;
+  /** Overlay captions for silent/investigative tool calls (evaluate,
+   *  network_requests, screenshot-then-think). Times are TRIMMED master
+   *  seconds (BEFORE intro offset is added by the composition). */
+  toolOverlays?: Array<{ startS: number; endS: number; label: string; detail?: string }>;
 }
 
 export function computeSingleVideoDuration(input: SingleVideoInput, fps: number): number {
@@ -267,8 +271,66 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
         );
       })}
 
+      {/* Agent-activity overlays — non-tech framing for silent tool calls
+          (browser_evaluate, network_requests, screenshots). The browser
+          screen is static during these, so without an overlay the viewer
+          sees nothing happening. We render a compact status card at the
+          top of the viewport explaining what the agent is checking. */}
+      {input.toolOverlays?.map((ov, i) => {
+        const startFrame = Math.round(ov.startS * fps);
+        const durFrames = Math.max(1, Math.round((ov.endS - ov.startS) * fps));
+        return (
+          <Sequence key={`tov-${i}`} from={startFrame} durationInFrames={durFrames} layout="none">
+            <ToolActivityBadge label={ov.label} detail={ov.detail} />
+          </Sequence>
+        );
+      })}
+
       {audioTracks}
     </AbsoluteFill>
+  );
+};
+
+const ToolActivityBadge: React.FC<{ label: string; detail?: string }> = ({ label, detail }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  // Fade in/out at the window edges so the card doesn't snap.
+  const tLocal = frame / fps;
+  const fadeInDur = 0.25;
+  const opacity = interpolate(tLocal, [0, fadeInDur], [0, 1], { easing: Easing.out(Easing.ease), extrapolateRight: "clamp" });
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 120,
+        left: "50%",
+        transform: "translateX(-50%)",
+        padding: "18px 28px",
+        borderRadius: 22,
+        background: "rgba(10,12,18,0.88)",
+        border: "1px solid rgba(255,255,255,0.14)",
+        color: "rgba(255,255,255,0.98)",
+        fontFamily: "'Geist', 'Inter', system-ui, sans-serif",
+        fontWeight: 600,
+        fontSize: 34,
+        letterSpacing: "-0.01em",
+        maxWidth: "78%",
+        textAlign: "center",
+        lineHeight: 1.2,
+        opacity,
+        boxShadow: "0 10px 40px rgba(0,0,0,0.45)",
+        pointerEvents: "none",
+        zIndex: 1500,
+      }}
+    >
+      <div style={{ fontSize: 18, opacity: 0.65, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 6 }}>
+        Looking under the hood
+      </div>
+      {label}
+      {detail && (
+        <div style={{ fontSize: 24, opacity: 0.7, fontWeight: 500, marginTop: 8 }}>{detail}</div>
+      )}
+    </div>
   );
 };
 
