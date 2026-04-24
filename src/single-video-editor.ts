@@ -95,36 +95,130 @@ export interface SingleVideoInput {
  * the endpoint beyond what a single API key comfortably sustains.
  */
 /**
- * Translate a Playwright-MCP tool kind into a short, non-technical caption
- * shown to the viewer during silent tool calls. Returns null for kinds we
- * want to suppress (user-visible actions already in the recording, or
- * plumbing tools like ToolSearch/Read/Glob that shouldn't surface).
+ * Should this tool kind surface in the video as a "looking under the hood"
+ * overlay? Returns true for silent investigative tools; false for
+ * user-visible interactions (captions handle those) and plumbing
+ * (ToolSearch/Read/Glob/Bash).
  */
-function toolLabel(kind: string): string | null {
-  switch (kind) {
-    case "browser_evaluate": return "Checking what's on the page";
-    case "browser_network_requests": return "Inspecting network activity";
-    case "browser_take_screenshot": return "Taking a closer look";
-    case "browser_console_messages": return "Reading console for errors";
-    case "browser_snapshot": return null; // invisible work, keep quiet
-    case "browser_click":
-    case "browser_fill_form":
-    case "browser_type":
-    case "browser_press_key":
-    case "browser_hover":
-    case "browser_scroll":
-    case "browser_navigate":
-    case "browser_navigate_back":
-    case "browser_wait_for":
-    case "browser_tabs":
-      return null; // user-visible in the recording; event caption handles it
-    case "Bash": return "Checking supporting files";
-    case "Read":
-    case "Glob":
-    case "ToolSearch":
-      return null; // plumbing
-    default: return null;
+function shouldSurfaceTool(kind: string): boolean {
+  return kind === "browser_evaluate"
+    || kind === "browser_network_requests"
+    || kind === "browser_console_messages";
+}
+
+/**
+ * Call claude once per run to turn a batch of raw tool calls into short,
+ * specific, non-technical "Looking for X → Found Y" captions. One CLI
+ * round-trip amortized across all overlays instead of per-tool.
+ */
+async function translateToolCaptions(
+  calls: Array<{ kind: string; input?: string; result?: string }>,
+): Promise<Array<{ label: string; detail?: string } | null>> {
+  if (calls.length === 0) return [];
+  const lines = calls.map((c, i) => {
+    const input = (c.input || "").replace(/\s+/g, " ").slice(0, 250);
+    const result = (c.result || "").replace(/\s+/g, " ").slice(0, 400);
+    return `#${i + 1} [${c.kind}] input="${input}" result="${result}"`;
+  }).join("\n");
+  const prompt = `You are narrating what a QA agent is checking inside a web app during a review video, for a non-technical viewer.
+
+For each tool call below, produce ONE JSON object {"label":"...","detail":"..."} on its own line, where:
+- label: 4-8 words, present tense, what the agent is LOOKING FOR. No jargon (no "JS", "DOM", "API", "HTTP"). Good: "Counting broken TikTok thumbnails". Bad: "Running JS evaluation".
+- detail: 4-12 words, what the agent FOUND. Include specific numbers from the result if visible. Good: "Found 84 expired image URLs, 0 blob-backed". Bad: "Various things".
+
+Return exactly ${calls.length} JSON objects, one per line, in the same order. No prose, no markdown, no numbering prefix. Just the JSON lines.
+
+Tool calls:
+${lines}`;
+
+  const { spawn } = await import("node:child_process");
+  return await new Promise<Array<{ label: string; detail?: string } | null>>((resolve) => {
+    const child = spawn("claude", ["-p", prompt, "--output-format", "text", "--model", "sonnet"], {
+      stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp",
+    });
+    let out = "";
+    const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} resolve(calls.map(() => null)); }, 60_000);
+    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
+    child.on("close", () => {
+      clearTimeout(timer);
+      const results: Array<{ label: string; detail?: string } | null> = [];
+      const trimmed = out.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/i, "");
+      for (const raw of trimmed.split("\n")) {
+        const line = raw.trim();
+        if (!line) continue;
+        try {
+          const obj = JSON.parse(line);
+          if (typeof obj?.label === "string") {
+            results.push({ label: obj.label.slice(0, 80), detail: typeof obj.detail === "string" && obj.detail.trim() ? obj.detail.slice(0, 120) : undefined });
+          } else results.push(null);
+        } catch { results.push(null); }
+      }
+      while (results.length < calls.length) results.push(null);
+      resolve(results.slice(0, calls.length));
+    });
+    child.on("error", () => { clearTimeout(timer); resolve(calls.map(() => null)); });
+  });
+}
+
+/**
+ * Extract a short non-technical detail line from a tool result. Uses
+ * cheap pattern-matching heuristics rather than an LLM call — good enough
+ * for common evaluate/network shapes, silent otherwise.
+ *
+ *   browser_evaluate with {total, blob, broken} → "18 of 21 thumbnails from Blob, 0 broken"
+ *   browser_network_requests with many 403s     → "Spotted 84 failing image loads"
+ *   browser_network_requests otherwise         → "Watched N requests"
+ *   browser_take_screenshot                     → silent (label alone)
+ */
+function toolDetail(kind: string, result?: string): string | undefined {
+  if (!result) return undefined;
+  const trimmed = result.trim();
+  if (kind === "browser_evaluate") {
+    // Look for a JSON object in the result text — MCP prefixes with "### Result {...}".
+    const jsonMatch = /\{[\s\S]*\}/.exec(trimmed);
+    if (!jsonMatch) return undefined;
+    try {
+      const obj = JSON.parse(jsonMatch[0]);
+      const flat = flattenForSummary(obj);
+      // Common thumbnail/image shapes.
+      if (typeof flat.total === "number" && typeof flat.blob === "number") {
+        const blobN = flat.blob;
+        const total = flat.total;
+        const broken = flat.broken ?? flat.tiktokCdn ?? 0;
+        if (total === 0) return "Grid looks empty";
+        if (blobN === total && !broken) return `All ${total} thumbnails loaded cleanly`;
+        if (blobN === 0) return `None of ${total} images loaded from Blob storage`;
+        return `${blobN} of ${total} thumbnails from Blob${broken ? `, ${broken} broken` : ""}`;
+      }
+      if (typeof flat.loaded === "number" && typeof flat.broken === "number") {
+        return `${flat.loaded} loaded, ${flat.broken} broken`;
+      }
+      if (typeof flat.count === "number") return `Counted ${flat.count}`;
+      return undefined;
+    } catch { return undefined; }
   }
+  if (kind === "browser_network_requests") {
+    const failing = (trimmed.match(/\] [34][0-9]{2}\b/g) || []).length;
+    const total = (trimmed.match(/^\[(GET|POST|PUT|DELETE|PATCH)\]/gm) || []).length;
+    if (failing > 0) return `Spotted ${failing} failing request${failing === 1 ? "" : "s"}`;
+    if (total > 0) return `Watched ${total} requests`;
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Recursively find numeric leaves at depth ≤2 and merge into a flat map.
+ * Handles shapes like `{counts: {total: 4, blob: 0}}` and `{total: 4, blob: 0}`.
+ */
+function flattenForSummary(obj: any, depth = 2): Record<string, any> {
+  if (obj == null || typeof obj !== "object") return {};
+  const out: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === "number" || typeof v === "string") out[k] = v;
+    else if (depth > 0 && typeof v === "object") Object.assign(out, flattenForSummary(v, depth - 1));
+  }
+  return out;
 }
 
 async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
@@ -529,9 +623,6 @@ export async function editSingleVideo({
   const toolOverlays: NonNullable<SingleVideoInput["toolOverlays"]> = [];
   if (artifacts.toolWindows?.length) {
     // Map raw→trimmed using the trim plan built earlier in this function.
-    // The plan's trimmedStart/End tells us exactly where each raw span
-    // lands in the trimmed master. For any raw timestamp inside a segment,
-    // we lerp within its [raw, trimmed] bounds.
     const toTrimmed = (rawS: number): number => {
       for (const seg of plan) {
         if (rawS >= seg.rawStartS && rawS <= seg.rawEndS + 0.001) {
@@ -539,16 +630,27 @@ export async function editSingleVideo({
           return seg.trimmedStartS + fracRaw * (seg.trimmedEndS - seg.trimmedStartS);
         }
       }
-      // Past the end: pin to master duration.
       return masterDurS;
     };
-    for (const tw of artifacts.toolWindows) {
-      const label = toolLabel(tw.kind);
-      if (!label) continue;
+    // Filter to tool calls worth surfacing, then send the batch to claude
+    // for specific non-tech captions. Generic "Checking what's on the page"
+    // is dead weight — we need "Counting broken TikTok thumbnails → Found 84".
+    const surfacing = artifacts.toolWindows
+      .map((tw, idx) => ({ tw, idx }))
+      .filter((x) => shouldSurfaceTool(x.tw.kind));
+    let captions: Array<{ label: string; detail?: string } | null> = [];
+    if (surfacing.length > 0) {
+      console.log(chalk.dim(`  narrating ${surfacing.length} under-the-hood moments…`));
+      captions = await translateToolCaptions(surfacing.map((x) => x.tw));
+    }
+    for (let i = 0; i < surfacing.length; i++) {
+      const { tw } = surfacing[i];
+      const caption = captions[i];
+      if (!caption?.label) continue;
       const sTrim = toTrimmed(tw.startMs / 1000);
       const eTrim = Math.max(sTrim + 0.4, toTrimmed(tw.endMs / 1000));
       if (eTrim - sTrim < 0.3) continue;
-      toolOverlays.push({ startS: sTrim, endS: eTrim, label });
+      toolOverlays.push({ startS: sTrim, endS: eTrim, label: caption.label, detail: caption.detail });
     }
   }
 

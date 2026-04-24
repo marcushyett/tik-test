@@ -79,9 +79,10 @@ export interface RunArtifacts {
   finishedAt: string;
   totalMs: number;
   /** Fine-grained active-window hints from the agent's per-tool-call timestamps.
-   *  The editor uses these to trim agent-thinking lulls WITHIN a goal event.
-   *  Without them, each goal is one big active window and nothing inside trims. */
-  toolWindows?: Array<{ startMs: number; endMs: number; kind: string }>;
+   *  The editor uses these to trim agent-thinking lulls WITHIN a goal event,
+   *  and (via `result` string) surfaces non-tech overlays in the video so the
+   *  viewer sees what the agent found during otherwise static tool calls. */
+  toolWindows?: Array<{ startMs: number; endMs: number; kind: string; input?: string; result?: string }>;
 }
 
 export interface Config {

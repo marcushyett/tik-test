@@ -613,7 +613,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
 
   // Per-tool-call active-window hints from the agent — declared at function
   // scope so they survive the try block and reach the RunArtifacts builder.
-  const toolWindows: Array<{ startMs: number; endMs: number; kind: string }> = [];
+  const toolWindows: Array<{ startMs: number; endMs: number; kind: string; input?: string; result?: string }> = [];
 
   try {
     // Always navigate to startUrl first so the setup phase has a valid page.
@@ -716,7 +716,13 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
           const nextStart = next?.startedAt ? startMs + (next.startedAt - goalStartedAtWall) : windowStart + 2500;
           const windowEnd = Math.min(nextStart, windowStart + 2800);
           if (windowEnd > windowStart) {
-            toolWindows.push({ startMs: Math.max(0, windowStart), endMs: windowEnd, kind: a.kind });
+            toolWindows.push({
+              startMs: Math.max(0, windowStart),
+              endMs: windowEnd,
+              kind: a.kind,
+              input: a.value || a.target,
+              result: a.result,
+            });
           }
         }
         let screenshotPath: string | undefined;
