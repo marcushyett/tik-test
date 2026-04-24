@@ -334,6 +334,74 @@ export interface RunOptions {
  * a pointer moving around. Playwright's recordVideo captures page content only;
  * the OS cursor is invisible. We hook mousemove and render an overlay.
  */
+/**
+ * Replace broken <img> thumbnails with a neutral placeholder so the video
+ * recording doesn't show ugly gray boxes when third-party CDN assets fail
+ * (expired signatures, ORB, rate-limiting, etc).
+ *
+ * The app being tested can't know its upstream thumbnails are stale, and
+ * we can't fix the upstream data from here — but at least the recorded
+ * video can show a clean "preview unavailable" card instead of a blank.
+ */
+const BROKEN_IMAGE_FALLBACK = `
+(() => {
+  const PLACEHOLDER =
+    'data:image/svg+xml;charset=utf-8,' +
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 600" preserveAspectRatio="xMidYMid slice">' +
+        '<defs>' +
+          '<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">' +
+            '<stop offset="0" stop-color="#1e293b"/>' +
+            '<stop offset="1" stop-color="#0f172a"/>' +
+          '</linearGradient>' +
+        '</defs>' +
+        '<rect width="400" height="600" fill="url(#bg)"/>' +
+        '<g transform="translate(200 260)" fill="#64748b">' +
+          '<circle r="28" fill="none" stroke="#64748b" stroke-width="4"/>' +
+          '<path d="M-10 -8 L10 0 L-10 8 Z" fill="#64748b"/>' +
+        '</g>' +
+        '<text x="200" y="360" text-anchor="middle" fill="#cbd5e1" font-family="system-ui,sans-serif" font-size="20" font-weight="500">preview unavailable</text>' +
+      '</svg>'
+    );
+  function fix(img) {
+    if (!img || img.dataset.tikFallback === '1') return;
+    if (img.complete && img.naturalWidth > 0) return;
+    img.dataset.tikFallback = '1';
+    img.src = PLACEHOLDER;
+    img.removeAttribute('srcset');
+  }
+  function hook(img) {
+    if (img.tagName !== 'IMG') return;
+    img.addEventListener('error', () => fix(img), { once: true, capture: true });
+    if (img.complete) {
+      // Check naturalWidth after a tick — some failing responses still set complete=true.
+      setTimeout(() => {
+        if (img.complete && img.naturalWidth === 0) fix(img);
+      }, 1500);
+    }
+  }
+  const scan = (root) => {
+    try { root.querySelectorAll('img').forEach(hook); } catch {}
+  };
+  function init() {
+    scan(document);
+    try {
+      new MutationObserver((muts) => {
+        for (const m of muts) {
+          for (const n of m.addedNodes) {
+            if (n.nodeType !== 1) continue;
+            if (n.tagName === 'IMG') hook(n);
+            else scan(n);
+          }
+        }
+      }).observe(document.documentElement || document, { childList: true, subtree: true });
+    } catch {}
+  }
+  if (document.readyState !== 'loading') init();
+  else window.addEventListener('DOMContentLoaded', init);
+})();
+`;
+
 const SYNTHETIC_CURSOR_INIT = `
 window.addEventListener('DOMContentLoaded', () => {
   const cursor = document.createElement('div');
@@ -483,6 +551,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     }
   });
   await context.addInitScript(SYNTHETIC_CURSOR_INIT);
+  await context.addInitScript(BROKEN_IMAGE_FALLBACK);
   const page = await context.newPage();
 
   const events: StepEvent[] = [];
