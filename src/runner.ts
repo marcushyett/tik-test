@@ -725,6 +725,15 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
           await page.screenshot({ path: p, fullPage: false });
           screenshotPath = p;
         } catch {}
+        // Persist the full agent trace (tool inputs + truncated results)
+        // per goal so we can debug why the agent over-explored after the
+        // fact. Without this, stream-json output is lost at process exit.
+        try {
+          await writeFile(
+            path.join(runDir, `agent-trace-${goal.id}.json`),
+            JSON.stringify({ goal, outcome: result.outcome, note: result.note, actions: result.actions }, null, 2),
+          );
+        } catch {}
         events.push({
           stepId: goal.id,
           description: goal.intent,
@@ -844,6 +853,10 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   await writeFile(artifacts.eventsJsonPath, JSON.stringify({ plan, events, startedAt, finishedAt, totalMs, toolWindows: artifacts.toolWindows }, null, 2));
   if (artifacts.toolWindows?.length) {
     console.log(chalk.dim(`  tool windows: ${artifacts.toolWindows.length} (per-tool-call active spans for editor trim)`));
+    const byKind: Record<string, number> = {};
+    for (const tw of artifacts.toolWindows) byKind[tw.kind] = (byKind[tw.kind] ?? 0) + 1;
+    const breakdown = Object.entries(byKind).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(" ");
+    console.log(chalk.dim(`     ${breakdown}`));
   }
   await writeFile(path.join(runDir, "plan.json"), JSON.stringify(plan, null, 2));
   return artifacts;

@@ -25,12 +25,14 @@ Output ONLY a single JSON object (no prose, no markdown fences):
 GOAL-WRITING GUIDANCE:
 1. **1-3 goals. Ruthlessly tight.** The video is a scroll-feed review under 60 seconds. One PRIMARY goal (the core flow of what this PR does), optionally up to TWO secondary goals (bug-probing variants — double-click, edge case, keyboard shortcut). If you can't justify a second or third goal as essential, leave it out.
 2. **The primary goal is end-to-end.** It includes navigating to the feature AND exercising it in a single natural-language instruction. Don't split "navigate" and "use feature" into two goals — the agent will do both inside one goal.
-3. **Let the diff drive WHAT.** Read the PR: what's new? what's the ONE thing a reviewer cares about most? That's your primary goal. Reviewer comments in Context are hints — incorporate "make sure to test X" notes.
-4. **Goals are natural-language INSTRUCTIONS.** Good examples:
+3. **Let the diff drive WHAT.** Read the PR: what's new? what's the ONE thing a reviewer cares about most? That's your primary goal.
+4. **READ THE REVIEWER COMMENTS and bake any testing advice into the goal.** If a commenter says "fresh discoveries worked" or "run X before you'll see Y" or "the legacy data is broken, trigger a new flow", your primary goal MUST incorporate that action. Skipping the reviewer's suggested setup is the #1 way plans end up testing broken state instead of the fixed state.
+5. **Success conditions should describe what a USER would see** — a rendered grid, a toast, a new card appearing, a counter changing. Avoid success conditions that require JS/network inspection ("img src points at X") — those force the agent to debug instead of demo. Only use technical conditions when truly unavoidable.
+6. **Goals are natural-language INSTRUCTIONS.** Good examples:
    - PRIMARY: "Open Theater Mode from the Inspiration page, play the first video, advance to the second with ArrowDown, and exit with Escape."
+   - PRIMARY with reviewer hint: "Trigger a fresh TikTok discovery on the Inspiration page (per reviewer), then confirm the newly-added cards show loaded thumbnails."
    - SECONDARY (optional): "From the Inspiration grid, click Recreate → Static Ad and confirm a chat message gets sent."
-5. **Each goal has a clear SUCCESS CONDITION.** Observable, e.g. "Theater overlay opened, counter went 1→2, closed cleanly".
-6. **importance tier.** Primary goal is "critical"; secondary is "high".
+7. **importance tier.** Primary goal is "critical"; secondary is "high".
 
 RULES (strict):
 - \`startUrl\` MUST equal Context's Target URL EXACTLY — preview root, NO sub-path appended.
