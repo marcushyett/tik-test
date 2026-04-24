@@ -111,13 +111,21 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
   try {
     console.log(chalk.bold("\n1/3  generating test plan"));
     const plan = await generatePlan(cfg);
+    // Belt-and-suspenders: force startUrl back to the configured preview root
+    // even if Claude appended a sub-path. The plan prompt forbids sub-path
+    // startUrls, but we enforce it at runtime too so a drifted prompt can't
+    // strand the runner on /inspiration or /gruns/... when those paths 404.
+    if (plan.startUrl !== cfg.url) {
+      console.log(chalk.dim(`  forcing startUrl to preview root (was ${plan.startUrl}, now ${cfg.url})`));
+      plan.startUrl = cfg.url;
+    }
     console.log(chalk.green(`     ✓ plan: ${plan.steps.length} steps — ${plan.name}`));
 
     console.log(chalk.bold("\n2/3  running tests"));
     const bypass = opts.vercelBypass ?? process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
     const { extraHTTPHeaders, cookies } = buildVercelBypass(bypass, plan.startUrl);
     if (bypass) console.log(chalk.dim("  vercel protection bypass enabled"));
-    const artifacts = await runPlan({ plan, runDir, extraHTTPHeaders, cookies, setupInstructions: cfg.tiktestSetup });
+    const artifacts = await runPlan({ plan, runDir, extraHTTPHeaders, cookies, setupInstructions: cfg.tiktestSetup, diff: cfg.diff });
     const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
     console.log(chalk.green(`     ✓ ${artifacts.events.length - failed}/${artifacts.events.length} passed`));
 
@@ -176,6 +184,19 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
       }
     } else {
       console.log(chalk.dim("\n  --skip-comment set — video not posted"));
+    }
+
+    // Disk cleanup: after upload, the only thing worth keeping locally is
+    // highlights.mp4 (plus events.json/plan.json for audit). Everything
+    // else — raw capture, per-step screenshots, Remotion bundle, master
+    // video, TTS audio, segment parts, preview.gif — has already been
+    // either uploaded to the GitHub release or is one-off render artifacts
+    // that won't be reused. Wipe them so /runs doesn't bloat to tens of
+    // GB over a batch of PRs.
+    if (!process.env.TIK_KEEP_ARTIFACTS) {
+      const toClean = ["public", "parts", "screenshots", "video", "raw.webm", "raw.mp4", "preview.gif", "preview.palette.png", "reel-input.json"];
+      await Promise.all(toClean.map((rel) => rm(path.join(runDir, rel), { recursive: true, force: true }).catch(() => {})));
+      console.log(chalk.dim(`  cleaned local run artifacts (highlights.mp4 kept)`));
     }
     if (opts.requirePass && failedCount > 0) {
       throw new Error(`tik-test found ${failedCount} failing step${failedCount === 1 ? "" : "s"} — exiting non-zero for CI gating`);

@@ -4,6 +4,7 @@ import { chromium, type Browser, type BrowserContext, type Page, type Locator } 
 import chalk from "chalk";
 import type { BBox, PlanStep, RunArtifacts, StepEvent, TestPlan } from "./types.js";
 import { runSetup } from "./setup.js";
+import { findFeature, isFeaturePageReady } from "./feature-finder.js";
 
 function resolveSelector(target: string): string {
   const t = target.trim();
@@ -193,9 +194,18 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
   const timeout = 15_000;
   switch (step.kind) {
     case "navigate": {
-      const url = step.target
+      // URL-guessing by the plan generator is routinely wrong — Claude can't
+      // know whether the real route is /chat or /gruns/chat from a diff's
+      // file paths alone, and wrong guesses 404. Always navigate to the
+      // startUrl (preview root) and let the next plan step click its way
+      // into the feature, like a user would.
+      const requested = step.target
         ? (step.target.startsWith("http") ? step.target : new URL(step.target, startUrl).toString())
         : startUrl;
+      const url = requested !== startUrl ? startUrl : requested;
+      if (requested !== startUrl) {
+        console.log(chalk.dim(`    (ignoring plan's guessed URL ${requested} — going to preview root instead)`));
+      }
       await page.goto(url, { waitUntil: "domcontentloaded", timeout });
       await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
       // Prime lazy-loaded thumbnails + wait for them to actually render.
@@ -310,7 +320,12 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
     }
     case "script": {
       if (!step.value) throw new Error("script requires value");
-      await page.evaluate(step.value);
+      // Claude-authored script values routinely use top-level `return`,
+      // which is invalid when evaluate treats the string as a program.
+      // Wrap in an IIFE so the script runs in function scope and returns
+      // behave as expected.
+      const wrapped = `(async () => { ${step.value} })()`;
+      await page.evaluate(wrapped);
       return {};
     }
   }
@@ -327,6 +342,9 @@ export interface RunOptions {
    *  README "TikTest" section. Executed after initial navigation, before the
    *  plan steps run, so the plan sees an already-authed app. */
   setupInstructions?: string;
+  /** PR diff (truncated) — used by the feature-finder to pick where to
+   *  navigate when the plan's startUrl lands on a 404 or an unrelated page. */
+  diff?: string;
 }
 
 /**
@@ -458,7 +476,7 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 `;
 
-export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, setupInstructions }: RunOptions): Promise<RunArtifacts> {
+export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, setupInstructions, diff }: RunOptions): Promise<RunArtifacts> {
   await mkdir(runDir, { recursive: true });
   const videoDir = path.join(runDir, "video");
   await mkdir(videoDir, { recursive: true });
@@ -594,6 +612,22 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
           await settleMedia(page);
         }
       } catch {}
+    }
+
+    // Feature-finder: if setup left us on a 404, still-on-sign-in, or
+    // otherwise blank page, ask Claude to navigate from home to wherever
+    // the PR's feature actually lives. This replaces the old "just run
+    // the plan and hope every step finds its target" behaviour with an
+    // explicit "locate the feature first" phase.
+    {
+      const check = await isFeaturePageReady(page);
+      if (!check.ready) {
+        try {
+          await findFeature(page, plan, diff, check.reason ?? "page not usable");
+        } catch (e) {
+          console.log(chalk.yellow(`  feature-finder errored (${(e as Error).message.split("\n")[0]}) — proceeding anyway`));
+        }
+      }
     }
 
     // If the first plan step is also a navigate to the same start URL, skip
