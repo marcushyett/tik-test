@@ -75,6 +75,42 @@ async function primeLazyImages(page: Page): Promise<void> {
 async function settleMedia(page: Page): Promise<void> {
   await primeLazyImages(page);
   await waitForImagesLoaded(page);
+  // Diagnostic: report any image that claims complete but has zero width
+  // (i.e. failed to decode) OR any video that hasn't loaded its poster.
+  try {
+    const report = await page.evaluate(() => {
+      const imgs = Array.from(document.images).filter((img) => {
+        const r = img.getBoundingClientRect();
+        return r.width > 40 && r.height > 40;
+      });
+      const videos = Array.from(document.querySelectorAll("video")) as HTMLVideoElement[];
+      return {
+        imgTotal: imgs.length,
+        imgBroken: imgs.filter((i) => i.complete && i.naturalWidth === 0).length,
+        imgBrokenSamples: imgs.filter((i) => i.complete && i.naturalWidth === 0).slice(0, 3).map((i) => i.currentSrc || i.src),
+        imgOkSample: imgs.filter((i) => i.complete && i.naturalWidth > 0).slice(0, 1).map((i) => i.currentSrc || i.src),
+        videoTotal: videos.length,
+        videoLoaded: videos.filter((v) => v.readyState >= 2).length,
+        videoPosters: videos.slice(0, 3).map((v) => ({ src: v.currentSrc, poster: v.poster, readyState: v.readyState, error: v.error?.code })),
+      };
+    });
+    if (report.imgBroken > 0 || (report.videoTotal > 0 && report.videoLoaded === 0)) {
+      console.log(chalk.yellow(`  [media report] imgs: ${report.imgTotal} total, ${report.imgBroken} broken; videos: ${report.videoTotal} total, ${report.videoLoaded} loaded`));
+      if (report.imgBrokenSamples.length > 0) {
+        for (const url of report.imgBrokenSamples) {
+          console.log(chalk.yellow(`    broken img: ${url.slice(0, 140)}`));
+        }
+      }
+      if (report.videoPosters.length > 0) {
+        for (const v of report.videoPosters) {
+          console.log(chalk.yellow(`    video src=${(v.src || "").slice(0, 80)} poster=${(v.poster || "").slice(0, 80)} readyState=${v.readyState}${v.error ? " err=" + v.error : ""}`));
+        }
+      }
+      if (report.imgOkSample.length > 0) {
+        console.log(chalk.dim(`    (ok img sample: ${report.imgOkSample[0].slice(0, 140)})`));
+      }
+    }
+  } catch {}
 }
 
 async function captureBBox(page: Page, locator: Locator, at: "before" | "after"): Promise<BBox | undefined> {

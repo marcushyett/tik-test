@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronUp, Keyboard, Volume2, VolumeX } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronUp, Keyboard, Pause, Play, RotateCcw, RotateCw, Volume2, VolumeX } from "lucide-react";
 import { Button } from "./ui/button";
 import { PRHeader } from "./pr-header";
 import { DecisionForm } from "./decision-form";
@@ -79,6 +79,17 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
         e.preventDefault();
         const v = videoRef.current; if (!v) return;
         if (v.paused) { v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
+      }
+      else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        const v = videoRef.current; if (!v) return;
+        v.currentTime = Math.max(0, v.currentTime - 5);
+      }
+      else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        const v = videoRef.current; if (!v) return;
+        const dur = Number.isFinite(v.duration) ? v.duration : v.currentTime + 5;
+        v.currentTime = Math.min(dur, v.currentTime + 5);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -242,19 +253,29 @@ const VideoFrame = (() => {
     },
     ref: React.Ref<HTMLVideoElement>,
   ) => {
+    const videoRef = ref as React.RefObject<HTMLVideoElement>;
     const wrapClass = aspect === "9/16"
       ? "group relative flex-1 min-h-0 overflow-hidden rounded-2xl border border-border bg-black shadow-lift"
       : "absolute inset-0 bg-black";
+
+    const togglePlay = (e?: React.MouseEvent | React.KeyboardEvent) => {
+      e?.stopPropagation();
+      const v = videoRef.current; if (!v) return;
+      if (v.paused) { void v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
+    };
+    const skip = (delta: number) => (e: React.MouseEvent) => {
+      e.stopPropagation();
+      const v = videoRef.current; if (!v) return;
+      const dur = Number.isFinite(v.duration) ? v.duration : 0;
+      v.currentTime = Math.max(0, Math.min(dur || v.currentTime + delta, v.currentTime + delta));
+    };
+
     return (
       <div className={wrapClass} style={aspect === "9/16" ? { aspectRatio: "9 / 16" } : undefined}>
-        {/* key={src} forces React to unmount the previous video element when the
-            src changes. Without this, React reused the same element, the browser
-            would keep the old audio track alive while loading the new src, and
-            we'd get overlapping voices when scrolling quickly between PRs.
-
-            Native controls (from `controls` attribute) handle play/pause/scrub.
-            We intentionally do NOT render an extra overlay play-button — that
-            overlapped with Chrome's own native play-icon when paused. */}
+        {/* key={src} forces React to unmount the previous video element when
+            the src changes. Without it React reuses the element, the browser
+            keeps the old audio track alive while loading the new src, and
+            scrolling fast between PRs produces overlapping voices. */}
         <video
           key={src}
           ref={ref}
@@ -263,34 +284,92 @@ const VideoFrame = (() => {
           autoPlay
           muted
           playsInline
-          controls
-          controlsList="nodownload"
           preload="auto"
-          className="h-full w-full object-contain"
+          className="h-full w-full cursor-pointer object-contain"
+          onClick={togglePlay}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
         />
-        {/* Desktop-only controls: hover chevrons + persistent mute toggle. */}
-        {aspect === "9/16" && (
-          <>
-            <div className="pointer-events-none absolute inset-y-0 right-0 hidden flex-col items-center justify-center gap-2 pr-2 opacity-0 transition-opacity group-hover:opacity-100 md:flex">
-              <Button size="icon" variant="secondary" className="pointer-events-auto h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80" onClick={(e) => { e.stopPropagation(); onPrev(); }} aria-label="Previous PR">
-                <ChevronUp className="h-5 w-5" />
-              </Button>
-              <Button size="icon" variant="secondary" className="pointer-events-auto h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80" onClick={(e) => { e.stopPropagation(); onNext(); }} aria-label="Next PR">
-                <ChevronDown className="h-5 w-5" />
-              </Button>
-            </div>
+
+        {/* Custom control bar — bottom of the frame. Unlike native controls
+            this lives inside our UI and stays consistent across browsers. */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-2 bg-gradient-to-t from-black/70 via-black/30 to-transparent p-3">
+          <div className="pointer-events-auto flex items-center gap-1.5">
             <Button
               size="icon"
               variant="secondary"
-              className="pointer-events-auto absolute bottom-3 right-3 hidden h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80 md:inline-flex"
+              className="h-9 w-9 bg-black/60 backdrop-blur-sm hover:bg-black/80"
+              onClick={togglePlay}
+              aria-label={playing ? "Pause" : "Play"}
+            >
+              {playing ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+            </Button>
+            <Button
+              size="icon"
+              variant="secondary"
+              className="h-9 w-9 bg-black/60 backdrop-blur-sm hover:bg-black/80"
+              onClick={skip(-5)}
+              aria-label="Skip back 5 seconds"
+            >
+              <RotateCcw className="h-4 w-4" />
+            </Button>
+            <Button
+              size="icon"
+              variant="secondary"
+              className="h-9 w-9 bg-black/60 backdrop-blur-sm hover:bg-black/80"
+              onClick={skip(5)}
+              aria-label="Skip forward 5 seconds"
+            >
+              <RotateCw className="h-4 w-4" />
+            </Button>
+            <Button
+              size="icon"
+              variant="secondary"
+              className="h-9 w-9 bg-black/60 backdrop-blur-sm hover:bg-black/80"
               onClick={(e) => { e.stopPropagation(); onToggleMute(); }}
               aria-label={muted ? "Unmute" : "Mute"}
             >
-              {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+              {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
             </Button>
-          </>
+          </div>
+          {aspect === "9/16" && (
+            <div className="pointer-events-auto flex items-center gap-1.5">
+              <Button
+                size="icon"
+                variant="secondary"
+                className="h-9 w-9 bg-black/60 backdrop-blur-sm hover:bg-black/80"
+                onClick={(e) => { e.stopPropagation(); onPrev(); }}
+                aria-label="Previous PR"
+              >
+                <ChevronUp className="h-4 w-4" />
+              </Button>
+              <Button
+                size="icon"
+                variant="secondary"
+                className="h-9 w-9 bg-black/60 backdrop-blur-sm hover:bg-black/80"
+                onClick={(e) => { e.stopPropagation(); onNext(); }}
+                aria-label="Next PR"
+              >
+                <ChevronDown className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Big centred play button when paused — lets the viewer restart a
+            video that ended or paused from elsewhere without aiming for the
+            small bar at the bottom. */}
+        {!playing && (
+          <button
+            type="button"
+            aria-label="Play video"
+            onClick={togglePlay}
+            className="absolute inset-0 flex items-center justify-center bg-black/10 transition hover:bg-black/20"
+          >
+            <span className="rounded-full bg-black/70 p-4 backdrop-blur-sm">
+              <Play className="h-10 w-10 text-white" />
+            </span>
+          </button>
         )}
       </div>
     );
@@ -306,7 +385,7 @@ function KeyboardHint({ onSkip }: { onSkip: () => void }) {
     <div className="flex items-center justify-between text-[11px] text-muted-foreground">
       <span className="inline-flex items-center gap-1.5">
         <Keyboard className="h-3.5 w-3.5" />
-        <Kbd>↑</Kbd><Kbd>↓</Kbd> navigate · <Kbd>space</Kbd> pause · <Kbd>m</Kbd> mute
+        <Kbd>↑</Kbd><Kbd>↓</Kbd> navigate · <Kbd>←</Kbd><Kbd>→</Kbd> skip 5s · <Kbd>space</Kbd> pause · <Kbd>m</Kbd> mute
       </span>
       <Button variant="ghost" size="sm" onClick={onSkip}>Skip →</Button>
     </div>
