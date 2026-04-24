@@ -159,6 +159,18 @@ export function narrate(input: NarrationInput): NarrationOutput {
         titleSlideText: step.description,
       };
     }
+    case "intent":
+    default: {
+      // Goal-agent beat — the goal.intent is plain English already, use it
+      // verbatim as both voice-over and caption. Claude's story generator
+      // usually rewrites this anyway.
+      return {
+        voiceLine: step.description,
+        captionText: step.description,
+        titleSlideLabel: "",
+        titleSlideText: step.description,
+      };
+    }
   }
 }
 

@@ -43,7 +43,7 @@ program
 
     console.log(chalk.bold("\n1/3  generating test plan"));
     const plan = await generatePlan(cfg);
-    console.log(chalk.green(`     ✓ plan: ${plan.steps.length} steps — ${plan.name}`));
+    console.log(chalk.green(`     ✓ plan: ${(plan.steps?.length ?? plan.goals?.length ?? 0)} steps — ${plan.name}`));
 
     console.log(chalk.bold("\n2/3  running tests"));
     const bypass = opts.vercelBypass || process.env.VERCEL_AUTOMATION_BYPASS_SECRET;

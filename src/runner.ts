@@ -5,6 +5,7 @@ import chalk from "chalk";
 import type { BBox, PlanStep, RunArtifacts, StepEvent, TestPlan } from "./types.js";
 import { runSetup } from "./setup.js";
 import { findFeature, isFeaturePageReady } from "./feature-finder.js";
+import { runGoal } from "./goal-agent.js";
 
 function resolveSelector(target: string): string {
   const t = target.trim();
@@ -192,6 +193,8 @@ async function pulseFocus(page: Page, box: { x: number; y: number; width: number
 
 async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ notes?: string; bbox?: BBox }> {
   const timeout = 15_000;
+  // Intent-kind steps are handled by the goal-agent path upstream, not here.
+  if (step.kind === "intent") return {};
   switch (step.kind) {
     case "navigate": {
       // URL-guessing by the plan generator is routinely wrong — Claude can't
@@ -345,6 +348,14 @@ export interface RunOptions {
   /** PR diff (truncated) — used by the feature-finder to pick where to
    *  navigate when the plan's startUrl lands on a 404 or an unrelated page. */
   diff?: string;
+  /** PR comments — reviewer feedback / "make sure to test X" hints. Passed
+   *  to the goal-agent so it can incorporate specific guidance (e.g. "the
+   *  existing cached data is broken, trigger a new fetch first"). */
+  comments?: string;
+  /** PR title — gives the agent a one-line summary of the change. */
+  prTitle?: string;
+  /** PR description / body — the "why" behind the change. */
+  prBody?: string;
 }
 
 /**
@@ -476,7 +487,7 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 `;
 
-export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, setupInstructions, diff }: RunOptions): Promise<RunArtifacts> {
+export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, setupInstructions, diff, comments, prTitle, prBody }: RunOptions): Promise<RunArtifacts> {
   await mkdir(runDir, { recursive: true });
   const videoDir = path.join(runDir, "video");
   await mkdir(videoDir, { recursive: true });
@@ -495,13 +506,35 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   // feature name varies across Chromium versions). `--disable-web-security`
   // is the standard "testing tool" escape hatch and is documented for
   // exactly this use case.
+  // Fixed CDP port so Playwright MCP can attach to the same browser we're
+  // recording, via --cdp-endpoint ws://localhost:9223/... (port 9222 is
+  // Chrome's default and often in use). Playwright's wsEndpoint() returns
+  // the ws URL after launch — we hand it to MCP when we spawn the agent.
   const browser: Browser = await chromium.launch({
     headless: !headed,
     args: [
       "--disable-web-security",
       "--disable-features=IsolateOrigins,site-per-process",
+      "--remote-debugging-port=9223",
     ],
   });
+  // Discover the CDP ws URL so Playwright MCP can attach to the same
+  // browser we're recording. Chrome exposes it at
+  // http://localhost:9223/json/version once --remote-debugging-port is up.
+  // This keeps recording/cookies/bypass plumbing intact while MCP drives.
+  let cdpEndpoint = "";
+  for (let i = 0; i < 30; i++) {
+    try {
+      const resp = await fetch("http://localhost:9223/json/version");
+      if (resp.ok) {
+        const j = (await resp.json()) as { webSocketDebuggerUrl?: string };
+        if (j.webSocketDebuggerUrl) { cdpEndpoint = j.webSocketDebuggerUrl; break; }
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (!cdpEndpoint) throw new Error("Failed to discover CDP endpoint on port 9223");
+  console.log(chalk.dim(`  cdp: ${cdpEndpoint}`));
   const context: BrowserContext = await browser.newContext({
     viewport,
     recordVideo: { dir: videoDir, size: viewport },
@@ -578,6 +611,10 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     console.log(`  ${chalk.dim(pad)} ${label} ${chalk.bold(step.description)}${extra ? chalk.dim("  " + extra) : ""}`);
   };
 
+  // Per-tool-call active-window hints from the agent — declared at function
+  // scope so they survive the try block and reach the RunArtifacts builder.
+  const toolWindows: Array<{ startMs: number; endMs: number; kind: string }> = [];
+
   try {
     // Always navigate to startUrl first so the setup phase has a valid page.
     await page.goto(plan.startUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
@@ -587,14 +624,15 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     await settleMedia(page);
 
     // Pre-test setup: execute README's TikTest instructions (auth, seeding,
-    // etc.) so the plan runs against a prepared, logged-in app. Setup
-    // failures abort the run loudly — the whole point is to not waste a
-    // render on a stuck-at-login recording.
+    // etc.) so the plan runs against a prepared, logged-in app. If setup
+    // fails we WARN and continue — the goal-agent is autonomous and can
+    // drive sign-in itself from the snapshot. Aborting here on a flaky
+    // Claude-generated setup step was wasting runs.
     if (setupInstructions) {
       try {
         await runSetup(page, setupInstructions, plan.startUrl);
       } catch (e) {
-        throw new Error(`TikTest setup (README) failed — aborting before plan run. ${(e as Error).message}`);
+        console.log(chalk.yellow(`  ! setup failed but continuing — agent will handle from here: ${(e as Error).message.split("\n")[0]}`));
       }
       // After auth, the app likely redirected us to a dashboard. Re-navigate
       // to the plan's start URL so the plan's first step is on the feature
@@ -630,11 +668,95 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       }
     }
 
+    // GOAL-BASED PATH: autonomous agent executes each goal end-to-end,
+    // figuring out selectors and sequences on the fly. This is the
+    // preferred shape for plans generated from the current prompt.
+    if (plan.goals && plan.goals.length > 0) {
+      // Build PR context once — the agent gets it every turn, so the
+      // diff/comments inform click decisions even without pre-planned
+      // selectors. Order by signal density: title, reviewer comments
+      // (often contain explicit "make sure to test X" hints), body, diff.
+      // Order the context so reviewer instructions are impossible to miss:
+      // REVIEWER NOTES first (loud + explicit that they're authoritative),
+      // then PR title, body, diff. Agent keeps ignoring buried comment
+      // directives; the heading + top placement + all-caps label fix that.
+      const ctxParts: string[] = [];
+      if (comments && comments.trim()) {
+        ctxParts.push(
+          `REVIEWER NOTES (AUTHORITATIVE — these are instructions from people who already tested this PR. If any note says "do X before you assert Y", you MUST do X. Ignoring a reviewer note and declaring failure is itself a failure.):\n${comments.trim()}`,
+        );
+      }
+      if (prTitle) ctxParts.push(`PR TITLE:\n${prTitle.trim()}`);
+      if (prBody && prBody.trim()) ctxParts.push(`PR DESCRIPTION:\n${prBody.trim()}`);
+      if (diff && diff.trim()) ctxParts.push(`CODE DIFF (truncated):\n${diff.trim()}`);
+      const prContext = ctxParts.join("\n\n---\n\n");
+      // toolWindows declared at outer scope below; collect here.
+      for (let gi = 0; gi < plan.goals.length; gi++) {
+        const goal = plan.goals[gi];
+        const t0 = performance.now();
+        const startMs = Math.max(0, Math.round(t0 - runStart));
+        const goalStartedAtWall = Date.now();
+        logLine(chalk.cyan("▶"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any);
+        let result: Awaited<ReturnType<typeof runGoal>>;
+        try {
+          result = await runGoal(page, goal, prContext, cdpEndpoint);
+        } catch (e) {
+          result = { outcome: "failure", note: (e as Error).message.split("\n")[0], actions: [], bbox: undefined };
+        }
+        const endMs = Math.max(startMs + 50, Math.round(performance.now() - runStart));
+        // Convert each tool-call's wall-clock `startedAt` into a short active
+        // window in raw-video timeline terms. Each call's visible slice is
+        // ~1.2s — enough to see what happened, tight enough that the idle
+        // around it (agent thinking) gets compressed aggressively.
+        for (let ai = 0; ai < result.actions.length; ai++) {
+          const a = result.actions[ai];
+          if (!a.startedAt) continue;
+          const windowStart = startMs + (a.startedAt - goalStartedAtWall);
+          const next = result.actions[ai + 1];
+          const nextStart = next?.startedAt ? startMs + (next.startedAt - goalStartedAtWall) : windowStart + 1200;
+          const windowEnd = Math.min(nextStart, windowStart + 1500);
+          if (windowEnd > windowStart) {
+            toolWindows.push({ startMs: Math.max(0, windowStart), endMs: windowEnd, kind: a.kind });
+          }
+        }
+        let screenshotPath: string | undefined;
+        try {
+          const p = path.join(shotsDir, `${goal.id}.png`);
+          await page.screenshot({ path: p, fullPage: false });
+          screenshotPath = p;
+        } catch {}
+        events.push({
+          stepId: goal.id,
+          description: goal.intent,
+          kind: "intent",
+          importance: goal.importance ?? "normal",
+          startMs,
+          endMs,
+          outcome: result.outcome,
+          error: result.outcome === "failure" ? result.note : undefined,
+          notes: result.note,
+          screenshotPath,
+          bbox: result.bbox,
+        });
+        if (result.outcome === "success") {
+          logLine(chalk.green("✓"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
+        } else {
+          logLine(chalk.red("✗"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
+        }
+        // Small dwell between goals so the video has a visible pause between beats.
+        await page.waitForTimeout(800);
+      }
+      // Tail dwell for editor to hold on the final goal's result.
+      await page.waitForTimeout(1500);
+    } else {
+    // LEGACY STEP-BASED PATH — only used when claude.md ships a pre-baked
+    // step-based plan (no goals). New plans always use goals.
     // If the first plan step is also a navigate to the same start URL, skip
     // the duplicate hop — setup may have already moved us to a different URL.
-    const first = plan.steps[0];
+    const legacySteps = plan.steps ?? [];
+    const first = legacySteps[0];
     const firstIsDupNav = first?.kind === "navigate" && (!first.target || first.target === plan.startUrl);
-    const stepsToRun = firstIsDupNav ? plan.steps.slice(1) : plan.steps;
+    const stepsToRun = firstIsDupNav ? legacySteps.slice(1) : legacySteps;
     for (const step of stepsToRun) {
       const t0 = performance.now();
       const startMs = Math.max(0, Math.round(t0 - runStart));
@@ -689,6 +811,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     }
     // Extra tail dwell so the final step has video content for the editor to hold on.
     await page.waitForTimeout(1500);
+    } // end legacy step branch
   } finally {
     // Close page first to flush video
     await page.close();
@@ -716,8 +839,12 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     startedAt,
     finishedAt,
     totalMs,
+    toolWindows: toolWindows.length ? toolWindows : undefined,
   };
-  await writeFile(artifacts.eventsJsonPath, JSON.stringify({ plan, events, startedAt, finishedAt, totalMs }, null, 2));
+  await writeFile(artifacts.eventsJsonPath, JSON.stringify({ plan, events, startedAt, finishedAt, totalMs, toolWindows: artifacts.toolWindows }, null, 2));
+  if (artifacts.toolWindows?.length) {
+    console.log(chalk.dim(`  tool windows: ${artifacts.toolWindows.length} (per-tool-call active spans for editor trim)`));
+  }
   await writeFile(path.join(runDir, "plan.json"), JSON.stringify(plan, null, 2));
   return artifacts;
 }

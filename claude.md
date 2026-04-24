@@ -15,6 +15,15 @@ When `tik-test pr` runs on this repo, it will launch the bundled Taskpad and
 exercise its priority picker, filters, and toasts. For a real app, a PR preview
 URL (Vercel / Netlify) is auto-detected from the PR description or comments.
 
+## Hard rules for the goal-agent (non-negotiable)
+
+- **The goal agent MUST invoke the `claude` CLI directly (`spawn("claude", ...)`).** Not the Anthropic SDK. Not the Claude Agent SDK. Not direct API calls with an API key.
+- **Reason**: tik-test compute must come out of the user's own Claude subscription/OAuth budget — the same auth they use for `claude` interactively. Using an SDK or raw API call would bill a separate API key and defeat the tool's entire economic model.
+- The CLI is driven with `--input-format stream-json --output-format stream-json --verbose` so we can stream tool-use events for the narrator/editor.
+- Browser tooling (snapshot / click / fill / screenshot) comes from **Playwright MCP** (`@playwright/mcp`), passed to the CLI via `--mcp-config`, with `--allowed-tools mcp__playwright` to sandbox the agent to browser actions only.
+- Playwright MCP connects to the already-running Playwright browser via `--cdp-endpoint`, so video recording, cookies, and bypass headers stay intact while MCP drives.
+- Do NOT reintroduce `@anthropic-ai/claude-agent-sdk` or `@anthropic-ai/sdk` as an agent dependency.
+
 ## Test Plan
 
 ```json

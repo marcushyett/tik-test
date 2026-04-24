@@ -17,6 +17,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@playwright/mcp": "^0.0.70",
     "@remotion/bundler": "^4.0.451",
     "@remotion/cli": "^4.0.451",
     "@remotion/media": "^4.0.451",

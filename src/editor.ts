@@ -117,7 +117,7 @@ export async function editHighlightReel({
   await transcodeRawForRemotion(artifacts.rawVideoPath, stagedRaw);
   const rawDuration = await ffprobeDuration(stagedRaw);
 
-  const stepsMap = new Map<string, PlanStep>(artifacts.plan.steps.map((s) => [s.id, s]));
+  const stepsMap = new Map<string, PlanStep>(((artifacts.plan.steps ?? artifacts.plan.goals ?? []) as any).map((s: any) => [s.id, s]));
   const viewport = artifacts.plan.viewport ?? { width: 1280, height: 800 };
   const ttsBackend: TTSBackend = resolveBackend(voice, artifacts.plan.name);
   const voiceEnabled = !!ttsBackend;

@@ -3,7 +3,48 @@ import chalk from "chalk";
 import type { Config, TestPlan } from "./types.js";
 import { configToPromptContext } from "./config.js";
 
-const PLAN_PROMPT = `You are generating an EXHAUSTIVE, EXPLORATORY UI test plan for a web application.
+const PLAN_PROMPT = `You are generating a GOAL-BASED test plan for a web app. An autonomous AI agent will execute each goal by driving the browser — clicking, typing, reading the page — and decide HOW to achieve it based on what's actually on-screen. You DO NOT write selectors, URLs, or click sequences. You write GOALS and CONTEXT. Trust the agent.
+
+**THE KEY OBJECTIVE**: show off the new feature working, OR surface that it's broken. That's it. Your plan either gives the reviewer confidence the feature ships, or shows them why it shouldn't. Anything that doesn't serve that is dead weight — cut it.
+
+Output ONLY a single JSON object (no prose, no markdown fences):
+
+{
+  "name": string,
+  "summary": string,
+  "startUrl": string,            // MUST equal Context's Target URL exactly — preview root, no sub-path
+  "viewport": { "width": number, "height": number },
+  "goals": Array<{
+    "id": string,                // short kebab-case id
+    "intent": string,            // natural-language goal, e.g. "Navigate to the Inspiration page and open Theater Mode"
+    "success": string,           // observable condition, e.g. "Full-screen overlay is visible with counter showing 1 / N"
+    "importance": "low"|"normal"|"high"|"critical"
+  }>
+}
+
+GOAL-WRITING GUIDANCE:
+1. **1-3 goals. Ruthlessly tight.** The video is a scroll-feed review under 60 seconds. One PRIMARY goal (the core flow of what this PR does), optionally up to TWO secondary goals (bug-probing variants — double-click, edge case, keyboard shortcut). If you can't justify a second or third goal as essential, leave it out.
+2. **The primary goal is end-to-end.** It includes navigating to the feature AND exercising it in a single natural-language instruction. Don't split "navigate" and "use feature" into two goals — the agent will do both inside one goal.
+3. **Let the diff drive WHAT.** Read the PR: what's new? what's the ONE thing a reviewer cares about most? That's your primary goal. Reviewer comments in Context are hints — incorporate "make sure to test X" notes.
+4. **Goals are natural-language INSTRUCTIONS.** Good examples:
+   - PRIMARY: "Open Theater Mode from the Inspiration page, play the first video, advance to the second with ArrowDown, and exit with Escape."
+   - SECONDARY (optional): "From the Inspiration grid, click Recreate → Static Ad and confirm a chat message gets sent."
+5. **Each goal has a clear SUCCESS CONDITION.** Observable, e.g. "Theater overlay opened, counter went 1→2, closed cleanly".
+6. **importance tier.** Primary goal is "critical"; secondary is "high".
+
+RULES (strict):
+- \`startUrl\` MUST equal Context's Target URL EXACTLY — preview root, NO sub-path appended.
+- DO NOT include click sequences, selectors, data-testids, CSS, or URL paths in goal text. Trust the agent.
+- DO NOT write login/auth goals — the setup phase handles that.
+- Keep \`intent\` short (8-16 words). Keep \`success\` concrete and observable (6-14 words).
+
+Context:
+{{CONTEXT}}
+
+Return ONLY the JSON.`;
+
+const OLD_PLAN_PROMPT_UNUSED = `[legacy step-based prompt removed — goal-based above]
+You are generating an EXHAUSTIVE, EXPLORATORY UI test plan for a web application.
 
 Your job is **to expose bugs**, not to prove the happy path works. A minimum-coverage
 sanity pass is a failure of this task. Behave like a thorough QA engineer who clicks
@@ -52,7 +93,7 @@ URL RULES (strict):
 Context:
 {{CONTEXT}}
 
-Return ONLY the JSON.`;
+Return ONLY the JSON. LEGACY UNUSED.`;
 
 function runClaude(prompt: string, timeoutMs = 240_000): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -90,8 +131,9 @@ function extractJson(text: string): string {
 
 export async function generatePlan(cfg: Config): Promise<TestPlan> {
   if (cfg.plan) {
-    console.log(chalk.dim(`  using plan from config (${cfg.plan.steps.length} steps)`));
-    return normalize(cfg.plan, cfg);
+    const staged = cfg.plan;
+    console.log(chalk.dim(`  using plan from config (${staged.goals?.length ?? staged.steps?.length ?? 0} ${staged.goals ? "goals" : "steps"})`));
+    return normalize(staged, cfg);
   }
   const prompt = PLAN_PROMPT.replace("{{CONTEXT}}", configToPromptContext(cfg));
   console.log(chalk.dim("  calling claude CLI to generate test plan…"));
@@ -107,15 +149,24 @@ export async function generatePlan(cfg: Config): Promise<TestPlan> {
 }
 
 function normalize(plan: TestPlan, cfg: Config): TestPlan {
-  return {
+  const normalized: TestPlan = {
     name: plan.name || cfg.name || "Feature review",
     summary: plan.summary || "",
     startUrl: plan.startUrl || cfg.url,
     viewport: plan.viewport || cfg.viewport || { width: 1280, height: 800 },
-    steps: plan.steps.map((s, i) => ({
+  };
+  if (plan.goals && plan.goals.length > 0) {
+    normalized.goals = plan.goals.map((g, i) => ({
+      ...g,
+      id: g.id || `goal-${i + 1}`,
+      importance: g.importance || "normal",
+    }));
+  } else if (plan.steps && plan.steps.length > 0) {
+    normalized.steps = plan.steps.map((s, i) => ({
       ...s,
       id: s.id || `step-${i + 1}`,
       importance: s.importance || "normal",
-    })),
-  };
+    }));
+  }
+  return normalized;
 }

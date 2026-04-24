@@ -126,15 +126,37 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
       console.log(chalk.dim(`  forcing startUrl to preview root (was ${plan.startUrl}, now ${cfg.url})`));
       plan.startUrl = cfg.url;
     }
-    console.log(chalk.green(`     ✓ plan: ${plan.steps.length} steps — ${plan.name}`));
+    console.log(chalk.green(`     ✓ plan: ${(plan.steps?.length ?? plan.goals?.length ?? 0)} steps — ${plan.name}`));
 
     console.log(chalk.bold("\n2/3  running tests"));
     const bypass = opts.vercelBypass ?? process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
     const { extraHTTPHeaders, cookies } = buildVercelBypass(bypass, plan.startUrl);
     if (bypass) console.log(chalk.dim("  vercel protection bypass enabled"));
-    const artifacts = await runPlan({ plan, runDir, extraHTTPHeaders, cookies, setupInstructions: cfg.tiktestSetup, diff: cfg.diff });
+    const artifacts = await runPlan({
+      plan, runDir, extraHTTPHeaders, cookies,
+      setupInstructions: cfg.tiktestSetup,
+      diff: cfg.diff,
+      comments: cfg.comments,
+      prTitle: meta.title,
+      prBody: meta.body,
+    });
     const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
     console.log(chalk.green(`     ✓ ${artifacts.events.length - failed}/${artifacts.events.length} passed`));
+
+    // TIKTEST_SKIP_RENDER is an iteration aid — when you're tuning the agent
+    // it lets you inspect events without waiting 3-4 min for the render.
+    if (process.env.TIKTEST_SKIP_RENDER === "1") {
+      const totalMs = artifacts.events.length ? Math.max(...artifacts.events.map((e) => e.endMs ?? 0)) : 0;
+      console.log(chalk.yellow(`\n     skipping render + upload (TIKTEST_SKIP_RENDER=1)`));
+      console.log(chalk.dim(`     run dir: ${runDir}`));
+      console.log(chalk.dim(`     raw browser time: ${(totalMs / 1000).toFixed(1)}s · ${artifacts.events.length} goals · ${artifacts.events.length - failed} passed`));
+      for (const ev of artifacts.events) {
+        const dur = ev.endMs && ev.startMs ? ((ev.endMs - ev.startMs) / 1000).toFixed(1) : "?";
+        const icon = ev.outcome === "success" ? chalk.green("✓") : chalk.red("✗");
+        console.log(chalk.dim(`     ${icon} [${dur}s] ${ev.description.slice(0, 80)}${ev.notes ? " — " + ev.notes.slice(0, 80) : ""}`));
+      }
+      return;
+    }
 
     console.log(chalk.bold("\n3/3  editing highlight reel"));
     const outPath = path.join(runDir, "highlights.mp4");

@@ -10,3 +10,4 @@ playwright-report/
 .claude/
 
 .vercel
+.playwright-mcp/

@@ -288,7 +288,7 @@ export async function editSingleVideo({
   const rawDurS = await ffprobeDuration(stagedRaw);
   console.log(chalk.dim(`  raw: ${rawDurS.toFixed(1)}s @ ${artifacts.plan.viewport?.width ?? 1280}×${artifacts.plan.viewport?.height ?? 800}`));
 
-  const stepsMap = new Map<string, PlanStep>(artifacts.plan.steps.map((s) => [s.id, s]));
+  const stepsMap = new Map<string, PlanStep>(((artifacts.plan.steps ?? artifacts.plan.goals ?? []) as any).map((s: any) => [s.id, s]));
   const viewport = artifacts.plan.viewport ?? { width: 1280, height: 800 };
   // Seed voice variation from the plan name (so two renders of the same PR
   // keep the same voice, but different PRs alternate across the feed).
@@ -362,8 +362,13 @@ export async function editSingleVideo({
   // Overlapping windows get merged so each event's audio has exclusive runway.
   const rawWindows: ActiveWindow[] = [];
   const preferredWindows: Array<{ start: number; end: number; voiceDurS: number }> = [];
+  // Skip event-level windows for goal-based runs ("intent" kind): those span
+  // the whole goal (often 90s+), swallowing the per-tool-call micro-windows
+  // so nothing inside the goal gets trimmed. Use tool windows alone instead.
+  const hasToolWindows = !!(artifacts.toolWindows && artifacts.toolWindows.length > 0);
   for (let i = 0; i < preEvents.length; i++) {
     const { ev, voiceDurS } = preEvents[i];
+    if (hasToolWindows && ev.kind === "intent") continue;
     const naturalStart = Math.max(0, ev.startMs / 1000 - 0.1);
     const naturalEnd = Math.min(rawDurS, ev.endMs / 1000 + 0.25);
     const voiceEnd = Math.min(rawDurS, naturalStart + voiceDurS + 0.25);
@@ -376,6 +381,16 @@ export async function editSingleVideo({
     const next = preferredWindows[i + 1];
     if (next && w.end > next.start) w.end = Math.max(w.start + 0.4, next.start);
     rawWindows.push({ start: w.start, end: w.end });
+  }
+  // Add per-tool-call micro-windows so the trimmer compresses agent-thinking
+  // lulls WITHIN a goal event. Without these, a single 90s goal event is one
+  // big "active" window and nothing inside gets trimmed.
+  if (artifacts.toolWindows && artifacts.toolWindows.length > 0) {
+    for (const tw of artifacts.toolWindows) {
+      const s = Math.max(0, Math.min(rawDurS, tw.startMs / 1000));
+      const e = Math.max(s + 0.2, Math.min(rawDurS, tw.endMs / 1000));
+      rawWindows.push({ start: s, end: e });
+    }
   }
 
   // 6. Build trim plan over those windows and render master.

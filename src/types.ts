@@ -8,7 +8,8 @@ export type StepKind =
   | "assert-visible"
   | "assert-text"
   | "screenshot"
-  | "script";
+  | "script"
+  | "intent";
 
 export interface PlanStep {
   id: string;
@@ -20,12 +21,26 @@ export interface PlanStep {
   optional?: boolean;
 }
 
+export interface Goal {
+  id: string;
+  /** Natural-language goal — what we want an autonomous agent to verify.
+   *  E.g. "Navigate to the Inspiration page and open Theater Mode". */
+  intent: string;
+  /** Optional observable success condition the agent should stop at. */
+  success?: string;
+  importance?: "low" | "normal" | "high" | "critical";
+}
+
 export interface TestPlan {
   name: string;
   summary: string;
   startUrl: string;
   viewport?: { width: number; height: number };
-  steps: PlanStep[];
+  /** New: high-level goals driven by an autonomous agent. Preferred. */
+  goals?: Goal[];
+  /** Legacy step-by-step plan. Kept for backwards compatibility with old
+   *  claude.md files that include a pre-baked Test Plan JSON. */
+  steps?: PlanStep[];
 }
 
 export type EventOutcome = "success" | "failure" | "skipped";
@@ -63,6 +78,10 @@ export interface RunArtifacts {
   startedAt: string;
   finishedAt: string;
   totalMs: number;
+  /** Fine-grained active-window hints from the agent's per-tool-call timestamps.
+   *  The editor uses these to trim agent-thinking lulls WITHIN a goal event.
+   *  Without them, each goal is one big active window and nothing inside trims. */
+  toolWindows?: Array<{ startMs: number; endMs: number; kind: string }>;
 }
 
 export interface Config {
