@@ -134,7 +134,7 @@ Return ONLY a JSON array of actions (no prose, no markdown fences). Each action 
 - {"action":"assert_visible","target":"<visible text or selector>"}
 
 Rules:
-- Target values must be CONCRETE visible text quoted in the instructions (e.g. 'Preview Sign In (marcus@yolodex.ai)') or literal CSS/testid selectors. Do NOT translate descriptive prose into targets — if the instructions say "verify dashboard is visible (e.g. sidebar nav or org dropdown)", the "(e.g. …)" part is a HINT about what you'd see, not a literal element name. Never create a target like "org dropdown" or "dashboard" unless those words are explicitly quoted as an element label.
+- Target values must be CONCRETE visible text quoted in the instructions or literal CSS/testid selectors. Do NOT translate descriptive prose into targets — if the instructions say "verify the dashboard is visible (e.g. sidebar or header)", the "(e.g. …)" is a HINT for a human reader, NOT a literal element label. Never create a target out of descriptive words like "the dashboard" or "the sidebar" unless those exact words are quoted as an element's visible label in the instructions.
 - After a click that triggers a navigation/redirect, insert {"action":"wait","ms":1500} so the next page renders before the next action.
 - Do NOT add trailing assert_visible verify-steps unless the instructions quote a specific element label. When in doubt, just end with a wait instead.
 - The mandatory actions are the concrete ones (navigate, click, fill, press). Everything else is optional.

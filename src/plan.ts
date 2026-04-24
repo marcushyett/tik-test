@@ -45,9 +45,9 @@ PLAN GUIDANCE — follow all of these:
 Selectors: prefer text=, role=, [data-testid]. Avoid nth-child chains.
 
 URL RULES (strict):
-- \`startUrl\` MUST be EXACTLY the \`Target URL\` from Context — the preview root — with NO sub-path appended. Sub-path guesses are routinely wrong (route groups, /gruns/… org prefixes, etc) and leave the run stuck on 404.
-- You get exactly ONE \`kind:"navigate"\` step at the very top of the plan, with no target (it re-navigates to startUrl). Any further navigation between pages MUST be a \`kind:"click"\` on a visible sidebar / tab / link — the test agent navigates like a user, it does not fabricate URLs. Do NOT emit \`kind:"navigate"\` with a target URL anywhere after step 1. Every extra in-page transition is a click.
-- If the diff adds a route like \`app/gruns/inspiration/theater/page.tsx\`, that's a HINT about WHERE the feature lives, not a URL you should navigate to directly. Use the hint to describe the click path in your plan ("Click 'Inspiration' in sidebar → click 'Theater' button"), not to construct a URL.
+- \`startUrl\` MUST be EXACTLY the \`Target URL\` from Context — the preview root — with NO sub-path appended. Route groups, org prefixes, and other conventions vary per app; guessing a sub-path will 404 and strand the run.
+- You get exactly ONE \`kind:"navigate"\` step at the very top of the plan, with no target (it re-navigates to startUrl). Any further navigation between pages MUST be a \`kind:"click"\` on a visible sidebar / tab / link — the test agent navigates like a user, it does not fabricate URLs. Do NOT emit \`kind:"navigate"\` with a target URL anywhere after step 1.
+- If the diff shows a route path (e.g. a new \`app/.../page.tsx\`), treat it as a HINT about WHERE the feature lives, not as a URL to visit directly. Translate it into click steps ("Click 'X' in sidebar → click 'Y' tab") — the runner will find the real route via visible navigation.
 
 Context:
 {{CONTEXT}}
