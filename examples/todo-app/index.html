@@ -44,6 +44,13 @@
   .badge { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 999px; background: #f0f2fa; color: var(--ink-2); }
   .badge.high { background: #ffedea; color: #c83c1e; }
   .badge.low { background: #eafaf3; color: #0a8560; }
+  .badge.due { background: #eef0fb; color: var(--ink-2); }
+  .badge.due.overdue { background: #ffe5e5; color: #c83c1e; font-weight: 700; }
+  .badge.due.today { background: #fff3d6; color: #a56610; font-weight: 700; }
+  .badge.due.soon { background: #e8f4ff; color: #1560aa; }
+  .new-task input[type=date] { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 14px; background: #fff; color: var(--ink-2); width: 148px; }
+  .new-task input[type=date]:focus { border-color: var(--accent); color: var(--ink); outline: none; }
+  ul.tasks li { grid-template-columns: 28px 1fr auto auto auto; }
   .del { background: transparent; border: 0; color: var(--ink-2); cursor: pointer; padding: 6px 8px; border-radius: 8px; }
   .del:hover { background: #ffecec; color: var(--danger); }
   .empty { padding: 40px 20px; text-align: center; color: var(--ink-2); font-size: 14px; }
@@ -105,6 +112,7 @@
   <div class="card">
     <form class="new-task" id="new-task-form">
       <input id="new-task-input" data-testid="new-task-input" type="text" placeholder="What needs doing?" autocomplete="off" required />
+      <input id="new-task-due-date" data-testid="new-task-due-date" type="date" aria-label="Due date" />
       <select id="new-task-priority" data-testid="new-task-priority">
         <option value="low">Low</option>
         <option value="normal" selected>Normal</option>
@@ -118,6 +126,7 @@
       <button data-filter="active">Active</button>
       <button data-filter="done">Done</button>
       <button data-filter="high">High priority</button>
+      <button data-filter="today">Today</button>
     </div>
 
     <ul class="tasks" id="tasks" data-testid="tasks"></ul>
@@ -144,6 +153,25 @@
     setTimeout(() => t.classList.remove("show"), 1400);
   };
 
+  function todayISO() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  function daysBetween(isoA, isoB) {
+    const a = new Date(isoA + "T00:00:00");
+    const b = new Date(isoB + "T00:00:00");
+    return Math.round((a - b) / 86400000);
+  }
+  function dueInfo(iso) {
+    if (!iso) return null;
+    const delta = daysBetween(iso, todayISO());
+    if (delta < 0) return { label: `${-delta}d overdue`, cls: "overdue" };
+    if (delta === 0) return { label: "today", cls: "today" };
+    if (delta === 1) return { label: "tomorrow", cls: "soon" };
+    if (delta <= 7) return { label: `in ${delta}d`, cls: "soon" };
+    return { label: iso.slice(5), cls: "" };
+  }
+
   function render() {
     let items = state.tasks;
     if (state.filter === "active") items = items.filter((t) => !t.done);
@@ -152,21 +180,32 @@
     // priority tasks — a single-character string swap during a refactor. The
     // classic "two things on the same page, wrong one wired up" regression.
     else if (state.filter === "high") items = items.filter((t) => t.priority === "low");
+    // BUG #3 (new): "Today" filter accidentally shows tasks due TOMORROW
+    // instead of today — off-by-one in the day-delta comparison.
+    else if (state.filter === "today") items = items.filter((t) => t.dueDate && daysBetween(t.dueDate, todayISO()) === 1);
 
-    tasksEl.innerHTML = items.map((t) => `
+    tasksEl.innerHTML = items.map((t) => {
+      const due = dueInfo(t.dueDate);
+      const dueBadge = due ? `<span class="badge due ${due.cls}" data-testid="due-${t.id}">${due.label}</span>` : "";
+      return `
       <li class="${t.done ? "done" : ""}" data-id="${t.id}" data-testid="task-${t.id}">
         <input type="checkbox" data-testid="toggle-${t.id}" ${t.done ? "checked" : ""} />
         <div class="title">${escape(t.title)}</div>
+        ${dueBadge}
         <span class="badge ${t.priority}">${t.priority}</span>
         <button class="del" data-testid="del-${t.id}" aria-label="Delete task">✕</button>
       </li>
-    `).join("");
+      `;
+    }).join("");
 
     emptyEl.style.display = items.length ? "none" : "block";
     const total = state.tasks.length;
     const done = state.tasks.filter((t) => t.done).length;
+    const overdue = state.tasks.filter((t) => !t.done && t.dueDate && daysBetween(t.dueDate, todayISO()) < 0).length;
     counterEl.textContent = `${total} ${total === 1 ? "task" : "tasks"}`;
-    statsEl.textContent = total ? `${done}/${total} done · ${state.tasks.filter((t) => t.priority === "high" && !t.done).length} high-priority pending` : "No tasks";
+    const parts = total ? [`${done}/${total} done`, `${state.tasks.filter((t) => t.priority === "high" && !t.done).length} high-priority pending`] : [];
+    if (overdue) parts.push(`${overdue} overdue`);
+    statsEl.textContent = total ? parts.join(" · ") : "No tasks";
 
     tasksEl.querySelectorAll("input[type=checkbox]").forEach((cb) => {
       cb.addEventListener("change", () => {
@@ -214,6 +253,7 @@
     const title = $("#new-task-input").value.trim();
     if (!title) return;
     const priority = $("#new-task-priority").value;
+    const dueDate = $("#new-task-due-date").value || null;
     // Fake a save round-trip with a button spinner so the cropping has something to collapse.
     const btn = e.target.querySelector("button[type=submit]");
     const originalHtml = btn.innerHTML;
@@ -222,8 +262,9 @@
     setTimeout(() => {
       btn.classList.remove("loading");
       btn.innerHTML = originalHtml;
-      state.tasks.push({ id: "t" + (state.tasks.length + 1) + "-" + Math.random().toString(36).slice(2, 6), title, priority, done: false });
+      state.tasks.push({ id: "t" + (state.tasks.length + 1) + "-" + Math.random().toString(36).slice(2, 6), title, priority, dueDate, done: false });
       $("#new-task-input").value = "";
+      $("#new-task-due-date").value = "";
       toast("Task added.");
       render();
     }, 850);
@@ -248,10 +289,18 @@
   });
 
   // Seed with some demo data so first run isn't empty
-  state.tasks = [
-    { id: "seed-1", title: "Review draft spec", priority: "normal", done: true },
-    { id: "seed-2", title: "Ship Taskpad v0.1", priority: "high", done: false },
-  ];
+  (function seed() {
+    const today = new Date();
+    const plusDays = (n) => {
+      const d = new Date(today); d.setDate(d.getDate() + n);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
+    state.tasks = [
+      { id: "seed-1", title: "Review draft spec", priority: "normal", done: true, dueDate: plusDays(-3) },
+      { id: "seed-2", title: "Ship Taskpad v0.1", priority: "high", done: false, dueDate: plusDays(0) },
+      { id: "seed-3", title: "Write launch blog post", priority: "normal", done: false, dueDate: plusDays(-1) },
+    ];
+  })();
   render();
 </script>
 </body>
