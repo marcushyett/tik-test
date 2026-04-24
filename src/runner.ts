@@ -17,6 +17,66 @@ function resolveSelector(target: string): string {
   return t;
 }
 
+/**
+ * Wait for all visible <img> elements on the page to finish loading (or fail
+ * visibly). React apps with async data and IntersectionObserver-gated image
+ * loaders routinely finish AFTER networkidle fires — this helper fills that
+ * gap so the recording has actual thumbnails, not blank placeholders.
+ *
+ * We consider an image "done" when it reports complete=true AND naturalWidth>0
+ * (browsers set naturalWidth=0 on errored images, which we don't want to wait
+ * forever on). Images that error out are counted as done so we never block.
+ */
+async function waitForImagesLoaded(page: Page, timeoutMs = 10_000): Promise<void> {
+  try {
+    await page.waitForFunction(() => {
+      const imgs = Array.from(document.images).filter((img) => {
+        // Skip tiny (icon/badge) images and explicitly off-screen ones — they're
+        // often not the thumbnails we care about and can be slow to settle.
+        const r = (img as HTMLImageElement).getBoundingClientRect();
+        if (r.width < 40 || r.height < 40) return false;
+        return true;
+      });
+      if (imgs.length === 0) return true;
+      return imgs.every((img) => {
+        const el = img as HTMLImageElement;
+        if (el.complete && el.naturalWidth > 0) return true;
+        if (el.complete && el.naturalWidth === 0) return true; // errored — don't block
+        return false;
+      });
+    }, { timeout: timeoutMs });
+  } catch {
+    // Cap reached — some images never settled. Fine; we tried.
+  }
+}
+
+/**
+ * Nudge the page to trigger IntersectionObserver-based lazy loaders. Many
+ * React apps (including next/image) only request thumbnails when they enter
+ * the viewport. A short scroll-down-then-scroll-back is enough to prime the
+ * loaders without disrupting the "first frame" the video lands on.
+ */
+async function primeLazyImages(page: Page): Promise<void> {
+  try {
+    await page.evaluate(async () => {
+      const originalY = window.scrollY;
+      const steps = [400, 800, 1200, 1600];
+      for (const y of steps) {
+        window.scrollTo(0, y);
+        await new Promise((r) => setTimeout(r, 80));
+      }
+      window.scrollTo(0, originalY);
+      await new Promise((r) => setTimeout(r, 120));
+    });
+  } catch {}
+}
+
+/** Combined routine: prime lazy loaders + wait for their images to land. */
+async function settleMedia(page: Page): Promise<void> {
+  await primeLazyImages(page);
+  await waitForImagesLoaded(page);
+}
+
 async function captureBBox(page: Page, locator: Locator, at: "before" | "after"): Promise<BBox | undefined> {
   try {
     const box = await locator.boundingBox();
@@ -100,11 +160,10 @@ async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ 
       const url = step.target
         ? (step.target.startsWith("http") ? step.target : new URL(step.target, startUrl).toString())
         : startUrl;
-      // domcontentloaded fires before images/videos finish — that's why ad
-      // thumbnails and video previews were blank in the recording. Wait for
-      // networkidle (or cap at 10s) so the async media has a chance to land.
       await page.goto(url, { waitUntil: "domcontentloaded", timeout });
       await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
+      // Prime lazy-loaded thumbnails + wait for them to actually render.
+      await settleMedia(page);
       return {};
     }
     case "click": {
@@ -306,12 +365,31 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   const startedAt = new Date().toISOString();
   const runStart = performance.now();
 
-  const browser: Browser = await chromium.launch({ headless: !headed });
+  // Disable Opaque Response Blocking (ORB). Chromium blocks cross-origin
+  // <img> requests whose response looks ambiguous to ORB — TikTok's CDN
+  // (p16-common-sign.tiktokcdn.com etc) returns images that trigger this,
+  // so thumbnails came back as `net::ERR_BLOCKED_BY_ORB` and the recording
+  // showed blank gray cards. Real browsers (not Playwright's Chromium) often
+  // sidestep this via UA-specific allowlists, which is why the user sees
+  // the images fine in their normal browser but not in our headless run.
+  const browser: Browser = await chromium.launch({
+    headless: !headed,
+    args: [
+      "--disable-features=OpaqueResponseBlocking,OpaqueResponseBlockingV01,OpaqueResponseBlockingV02,CorbErrorsAreFatal",
+    ],
+  });
   const context: BrowserContext = await browser.newContext({
     viewport,
     recordVideo: { dir: videoDir, size: viewport },
     deviceScaleFactor: 1,
-    extraHTTPHeaders,
+    // Note: we intentionally DON'T pass extraHTTPHeaders here — when applied
+    // at the context level, Playwright sends those headers on EVERY request
+    // (including to third-party CDNs like Vercel Blob, Facebook's fbcdn,
+    // Cloudflare, etc). CDNs sometimes reject requests with unexpected
+    // headers, so ad thumbnails and similar assets come back as 4xx and
+    // render as broken images in the video. Instead we intercept requests
+    // below and only add the Vercel bypass header for same-origin traffic
+    // on the preview domain.
     storageState: storageStatePath,
   });
   if (cookies?.length) {
@@ -325,6 +403,47 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       sameSite: "Lax" as const,
     })));
   }
+  // Scope the Vercel protection-bypass header to the preview host only.
+  // Vercel sets a `_vercel_jwt` cookie on the first hop (via the header +
+  // `x-vercel-set-bypass-cookie` query param or header), so subsequent same-
+  // origin requests are authed by cookie and don't need the header. Third-
+  // party image hosts never need it at all.
+  const previewHost = (() => {
+    try { return new URL(plan.startUrl).host; } catch { return ""; }
+  })();
+  if (extraHTTPHeaders && previewHost) {
+    await context.route("**/*", async (route) => {
+      const reqUrl = route.request().url();
+      let sameHost = false;
+      try { sameHost = new URL(reqUrl).host === previewHost; } catch {}
+      if (sameHost) {
+        await route.continue({ headers: { ...route.request().headers(), ...extraHTTPHeaders } });
+      } else {
+        await route.continue();
+      }
+    });
+  }
+  // Diagnostic: log any media request that fails (non-2xx or aborted).
+  // Helps confirm whether thumbnails are blocked by CORS, auth, or codec —
+  // when everything succeeds this is silent.
+  context.on("response", async (resp) => {
+    try {
+      const url = resp.url();
+      const status = resp.status();
+      const ct = resp.headers()["content-type"] || "";
+      const isMedia = /image|video|audio|octet-stream/i.test(ct) || /\.(png|jpe?g|webp|gif|avif|mp4|webm|m3u8|ts)(\?|$)/i.test(url);
+      if (isMedia && (status < 200 || status >= 400)) {
+        console.log(chalk.yellow(`  [media ${status}] ${url.slice(0, 120)}${url.length > 120 ? "…" : ""}`));
+      }
+    } catch {}
+  });
+  context.on("requestfailed", (req) => {
+    const url = req.url();
+    const resourceType = req.resourceType();
+    if (resourceType === "image" || resourceType === "media") {
+      console.log(chalk.yellow(`  [media FAILED ${resourceType}] ${url.slice(0, 120)}${url.length > 120 ? "…" : ""} · ${req.failure()?.errorText || "unknown"}`));
+    }
+  });
   await context.addInitScript(SYNTHETIC_CURSOR_INIT);
   const page = await context.newPage();
 
@@ -337,10 +456,10 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   try {
     // Always navigate to startUrl first so the setup phase has a valid page.
     await page.goto(plan.startUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
-    // Let network settle so images/videos in the app UI render before we
-    // start recording interactions. Capped to keep a slow CDN from blocking
-    // the run indefinitely.
+    // Let network settle, then prime lazy-loaders + wait for images so the
+    // app's thumbnails are actually rendered before we start recording.
     await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
+    await settleMedia(page);
 
     // Pre-test setup: execute README's TikTest instructions (auth, seeding,
     // etc.) so the plan runs against a prepared, logged-in app. Setup
@@ -362,7 +481,10 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
           console.log(chalk.dim(`  returning to ${new URL(plan.startUrl).pathname} after setup (was ${new URL(postSetupUrl).pathname})`));
           await page.goto(plan.startUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
           await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
+          await settleMedia(page);
           await page.waitForTimeout(800);
+        } else {
+          await settleMedia(page);
         }
       } catch {}
     }

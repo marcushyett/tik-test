@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronUp, Keyboard, PlayCircle, Volume2, VolumeX } from "lucide-react";
+import { CheckCircle2, ChevronDown, ChevronUp, Keyboard, Volume2, VolumeX } from "lucide-react";
 import { Button } from "./ui/button";
 import { PRHeader } from "./pr-header";
 import { DecisionForm } from "./decision-form";
@@ -242,11 +242,6 @@ const VideoFrame = (() => {
     },
     ref: React.Ref<HTMLVideoElement>,
   ) => {
-    const videoRef = ref as React.RefObject<HTMLVideoElement>;
-    const togglePlay = () => {
-      const v = videoRef.current; if (!v) return;
-      if (v.paused) { v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
-    };
     const wrapClass = aspect === "9/16"
       ? "group relative flex-1 min-h-0 overflow-hidden rounded-2xl border border-border bg-black shadow-lift"
       : "absolute inset-0 bg-black";
@@ -255,15 +250,19 @@ const VideoFrame = (() => {
         {/* key={src} forces React to unmount the previous video element when the
             src changes. Without this, React reused the same element, the browser
             would keep the old audio track alive while loading the new src, and
-            we'd get overlapping voices when scrolling quickly between PRs. */}
+            we'd get overlapping voices when scrolling quickly between PRs.
+
+            Native controls (from `controls` attribute) handle play/pause/scrub.
+            We intentionally do NOT render an extra overlay play-button — that
+            overlapped with Chrome's own native play-icon when paused. */}
         <video
           key={src}
           ref={ref}
           src={src}
           poster={poster}
           autoPlay
+          muted
           playsInline
-          muted={muted}
           controls
           controlsList="nodownload"
           preload="auto"
@@ -271,16 +270,6 @@ const VideoFrame = (() => {
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
         />
-        {!playing && (
-          <button
-            type="button"
-            aria-label="Play video"
-            onClick={togglePlay}
-            className="absolute inset-0 flex items-center justify-center bg-black/30 backdrop-blur-[2px] transition hover:bg-black/40"
-          >
-            <PlayCircle className="h-16 w-16 text-white/90 drop-shadow-2xl" />
-          </button>
-        )}
         {/* Desktop-only controls: hover chevrons + persistent mute toggle. */}
         {aspect === "9/16" && (
           <>
