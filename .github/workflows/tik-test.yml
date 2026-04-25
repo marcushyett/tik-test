@@ -43,3 +43,7 @@ jobs:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           pr-number: ${{ github.event.inputs.pr_number }}
+          # This repo has Vercel connected for the unrelated `web/` app, so PR
+          # comments include a vercel.app preview URL the CLI would otherwise
+          # auto-detect. Pin the target to the bundled Taskpad demo instead.
+          preview-url: http://localhost:4173
