@@ -48,6 +48,10 @@ inputs:
     description: 'GITHUB_TOKEN with `pull-requests: write` permission. Defaults to the workflow token.'
     required: false
     default: ${{ github.token }}
+  working-directory:
+    description: Subdirectory of the consumer repo containing `claude.md`. Defaults to the workspace root. Useful for monorepos.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -149,9 +153,11 @@ runs:
         QUICK: ${{ inputs.quick }}
         ASSET_REPO: ${{ github.repository }}
         ACTION_PATH: ${{ github.action_path }}
+        WORKING_DIR: ${{ inputs.working-directory }}
       run: |
         ARGS=( pr "$PR_NUMBER" --skip-clone --asset-repo "$ASSET_REPO" --review "$REVIEW_MODE" )
         [[ "$REQUIRE_PASS" == "true" ]] && ARGS+=( --require-pass )
         [[ "$QUICK" == "true" ]] && ARGS+=( --quick )
         [[ -n "$PREVIEW_URL" ]] && ARGS+=( --url "$PREVIEW_URL" )
+        if [[ -n "$WORKING_DIR" ]]; then cd "$WORKING_DIR"; fi
         node "$ACTION_PATH/dist/cli.js" "${ARGS[@]}"

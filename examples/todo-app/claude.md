@@ -22,7 +22,10 @@ Please thoroughly validate:
 - Empty-state copy appears when appropriate (e.g. filter to "Done" with nothing done).
 
 ## Setup
-No auth required. The app is a single static page served locally.
+start: python3 -m http.server 4173
+
+(The line above tells tik-test to start the static server before running.
+No auth required — the app is a single static page served locally.)
 
 ## Selectors
 Prefer `data-testid` attributes:

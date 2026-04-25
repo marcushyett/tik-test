@@ -23,7 +23,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write           # release-create uploads the video as a release asset
   pull-requests: write
   id-token: write           # required by anthropics/claude-code-action for OIDC
 
@@ -43,6 +43,10 @@ jobs:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           pr-number: ${{ github.event.inputs.pr_number }}
+          # The bundled Taskpad lives in examples/todo-app/, not at the repo
+          # root, and has its own claude.md / index.html that we want the CLI
+          # to discover.
+          working-directory: examples/todo-app
           # This repo has Vercel connected for the unrelated `web/` app, so PR
           # comments include a vercel.app preview URL the CLI would otherwise
           # auto-detect. Pin the target to the bundled Taskpad demo instead.

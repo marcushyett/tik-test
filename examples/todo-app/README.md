@@ -46,7 +46,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   id-token: write
 

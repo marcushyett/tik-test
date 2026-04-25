@@ -183,7 +183,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write                       # for uploading the video as a release asset
   pull-requests: write                  # for comments + review submissions
   id-token: write                       # for Claude Code OIDC auth
 
@@ -220,6 +220,7 @@ That's it. The action installs Node + ffmpeg + Playwright, builds tik-test, auto
 | `review-mode` | No | `request-changes-on-fail` | `none` · `approve-on-pass` · `request-changes-on-fail` · `always`. |
 | `require-pass` | No | `true` | Exit non-zero when any test step fails (turns the check red). |
 | `quick` | No | `true` | Draft 540×960 render (~2 min). Set `false` for full-res. |
+| `working-directory` | No | repo root | Subdirectory containing `claude.md`. Useful for monorepos. |
 
 ¹ Provide one of the two — OAuth token recommended for cost control.
 
