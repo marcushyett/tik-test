@@ -185,6 +185,7 @@ on:
 permissions:
   contents: read
   pull-requests: write                  # for comments + review submissions
+  id-token: write                       # for Claude Code OIDC auth
 
 jobs:
   review:
