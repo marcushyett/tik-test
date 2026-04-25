@@ -130,21 +130,38 @@ function extractJson(text: string): string {
   return text.trim();
 }
 
-export async function generateStory(ctx: StoryContext): Promise<StoryOutput | null> {
-  if (ctx.visibleIndices.length === 0) return null;
+/**
+ * Generates the narration for the whole video via the `claude` CLI.
+ *
+ * This is a HARD requirement: every step's voice line, the intro, and the outro
+ * are all written by Claude based on the PR context. There is no template
+ * fallback — if this throws, the whole render aborts. tik-test pays for Claude
+ * everywhere else (planning, goal-agent), so silently degrading to mechanical
+ * templates here is the wrong behaviour: it hides a real environment bug
+ * (missing CLI, busted auth, malformed prompt) behind a low-quality video.
+ */
+export async function generateStory(ctx: StoryContext): Promise<StoryOutput> {
+  if (ctx.visibleIndices.length === 0) {
+    throw new Error("generateStory called with zero visible events — nothing to narrate");
+  }
   const prompt = buildPrompt(ctx);
   console.log(chalk.dim("  asking claude to write the story narration…"));
   const raw = await runClaude(prompt);
+  const json = extractJson(raw);
+  let parsed: StoryOutput;
   try {
-    const json = extractJson(raw);
-    const parsed = JSON.parse(json) as StoryOutput;
-    if (!parsed.steps || parsed.steps.length !== ctx.visibleIndices.length) {
-      console.log(chalk.yellow(`  claude returned ${parsed.steps?.length ?? 0} step lines, expected ${ctx.visibleIndices.length} — falling back to templates`));
-      return null;
-    }
-    return parsed;
+    parsed = JSON.parse(json) as StoryOutput;
   } catch (e) {
-    console.log(chalk.yellow(`  couldn't parse claude story: ${(e as Error).message.split("\n")[0]} — falling back`));
-    return null;
+    throw new Error(`claude returned unparseable JSON for narration: ${(e as Error).message.split("\n")[0]}\n--- raw output (first 500 chars) ---\n${raw.slice(0, 500)}`);
   }
+  if (!parsed.steps || !Array.isArray(parsed.steps)) {
+    throw new Error(`claude narration JSON is missing a "steps" array`);
+  }
+  if (parsed.steps.length !== ctx.visibleIndices.length) {
+    throw new Error(`claude returned ${parsed.steps.length} step lines but the plan has ${ctx.visibleIndices.length} visible events — re-run, or tighten the prompt to enforce the count`);
+  }
+  if (!parsed.intro || !parsed.outro) {
+    throw new Error(`claude narration JSON is missing intro/outro lines`);
+  }
+  return parsed;
 }

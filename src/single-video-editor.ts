@@ -7,7 +7,6 @@ import chalk from "chalk";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
-import { narrate } from "./narrator.js";
 import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.js";
 import { generateStory, type StoryOutput } from "./story.js";
 import type { RunArtifacts, StepEvent, PlanStep, BBox } from "./types.js";
@@ -464,20 +463,16 @@ export async function editSingleVideo({
   const visibleEvents = artifacts.events.filter((e) => !BORING_KINDS.has(e.kind));
 
   // 3. Ask Claude for story narration UP FRONT so we know what each event's voice line is.
-  let story: StoryOutput | null = null;
-  if (prTitle || prBody || focus) {
-    try {
-      story = await generateStory({
-        plan: artifacts.plan,
-        events: artifacts.events,
-        stepsById: stepsMap,
-        prTitle, prBody, focus,
-        visibleIndices: visibleEvents.map((ev) => artifacts.events.indexOf(ev)),
-      });
-    } catch (e) {
-      console.log(chalk.yellow(`  story generation failed: ${(e as Error).message.split("\n")[0]}`));
-    }
-  }
+  // No fallback — if Claude can't produce coherent narration, the whole render aborts.
+  // tik-test depends on the `claude` CLI everywhere else (plan, goal-agent), so
+  // silently degrading here would hide environment bugs behind a bad video.
+  const story: StoryOutput = await generateStory({
+    plan: artifacts.plan,
+    events: artifacts.events,
+    stepsById: stepsMap,
+    prTitle, prBody, focus,
+    visibleIndices: visibleEvents.map((ev) => artifacts.events.indexOf(ev)),
+  });
 
   // 4. Generate voice-over for every event up front so we know exact voice durations.
   //    TTS is the classic "15 sequential network calls that don't depend on each
@@ -492,14 +487,7 @@ export async function editSingleVideo({
     voiceDurS: number;
   }
   const preStaged = visibleEvents.map((ev, i) => {
-    const step = stepsMap.get(ev.stepId) ?? ({} as PlanStep);
-    const tpl = narrate({
-      step: { ...step, id: ev.stepId, kind: ev.kind, description: ev.description, importance: ev.importance } as PlanStep,
-      outcome: ev.outcome, error: ev.error, notes: ev.notes,
-      index: i, total: visibleEvents.length, startUrl: artifacts.plan.startUrl,
-    });
-    const storied = story?.steps[i];
-    const voiceLine = (storied?.voiceLine || tpl.voiceLine).trim();
+    const voiceLine = story.steps[i].voiceLine.trim();
     // Caption is ALWAYS the sanitised voice text so on-screen subtitles
     // match what the viewer actually hears word-for-word. Story.ts asks
     // Claude for matching captionText but the model often drifts; using
@@ -614,10 +602,8 @@ export async function editSingleVideo({
   const skipped = artifacts.events.filter((e) => e.outcome === "skipped").length;
   const stats = { passed, failed, skipped, total: artifacts.events.length, durS: artifacts.totalMs / 1000 };
 
-  const introLine = story?.intro ?? `Here's a walk-through of the ${artifacts.plan.name} change. Let me know what you think as I go.`;
-  const outroLine = story?.outro ?? (failed > 0
-    ? `${failed} step${failed === 1 ? "" : "s"} didn't behave as expected — curious if you see the same.`
-    : `That's the flow — keen for your feedback on anything that feels off.`);
+  const introLine = story.intro;
+  const outroLine = story.outro;
   let introVoiceSrc: string | undefined;
   let introVoiceDurS = 0;
   let outroVoiceSrc: string | undefined;
