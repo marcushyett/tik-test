@@ -34,39 +34,9 @@ Prefer `data-testid` attributes:
 - `tasks` (ul), `task-<id>`, `toggle-<id>`, `del-<id>`
 - `stats`, `counter`, `clear-done`, `empty`, `toast`
 
-## Test Plan
+The login gate accepts any email + the password `hunter2`.
 
-```json
-{
-  "name": "Taskpad feature review",
-  "summary": "Priority filter + toasts regression sweep",
-  "startUrl": "http://localhost:4173",
-  "viewport": { "width": 720, "height": 720 },
-  "steps": [
-    { "id": "open", "kind": "navigate", "description": "Open Taskpad", "target": "http://localhost:4173", "importance": "normal" },
-    { "id": "see-login", "kind": "assert-visible", "description": "Login gate appears", "target": "[data-testid=login-gate]" },
-    { "id": "login-pw", "kind": "fill", "description": "Type the password", "target": "[data-testid=login-password]", "value": "hunter2" },
-    { "id": "login-submit", "kind": "click", "description": "Sign in", "target": "[data-testid=login-submit]", "importance": "high" },
-    { "id": "wait-loading", "kind": "wait", "description": "Wait while it signs us in", "value": "1400" },
-    { "id": "see-app", "kind": "assert-visible", "description": "Main app loads", "target": "[data-testid=main-app]" },
-    { "id": "see-counter", "kind": "assert-visible", "description": "Header shows the task counter", "target": "[data-testid=counter]" },
-    { "id": "add-low", "kind": "fill", "description": "Type a low-priority task", "target": "[data-testid=new-task-input]", "value": "Water the plants" },
-    { "id": "pick-low", "kind": "script", "description": "Pick 'Low' priority", "value": "document.querySelector('[data-testid=new-task-priority]').value='low'; document.querySelector('[data-testid=new-task-priority]').dispatchEvent(new Event('change'))" },
-    { "id": "submit-low", "kind": "click", "description": "Submit — expect green low badge", "target": "[data-testid=add-task]", "importance": "high" },
-    { "id": "toast-added", "kind": "assert-visible", "description": "Toast confirms task added", "target": "[data-testid=toast].show", "importance": "high" },
-    { "id": "add-high-1", "kind": "fill", "description": "Type a high-priority task", "target": "[data-testid=new-task-input]", "value": "Fix production bug" },
-    { "id": "pick-high", "kind": "script", "description": "Pick 'High' priority", "value": "document.querySelector('[data-testid=new-task-priority]').value='high'; document.querySelector('[data-testid=new-task-priority]').dispatchEvent(new Event('change'))" },
-    { "id": "submit-high", "kind": "click", "description": "Submit the high-priority task", "target": "[data-testid=add-task]", "importance": "critical" },
-    { "id": "filter-high", "kind": "click", "description": "Tap the 'High priority' filter", "target": "[data-filter=high]", "importance": "critical" },
-    { "id": "only-high-visible", "kind": "assert-text", "description": "Only the high-priority task is listed", "target": "[data-testid=tasks]", "value": "Fix production bug", "importance": "high" },
-    { "id": "filter-done", "kind": "click", "description": "Switch to the Done filter", "target": "[data-filter=done]" },
-    { "id": "done-shows-seed", "kind": "assert-text", "description": "Seeded 'Review draft spec' shows under Done", "target": "[data-testid=tasks]", "value": "Review draft spec" },
-    { "id": "filter-all", "kind": "click", "description": "Back to All", "target": "[data-filter=all]" },
-    { "id": "toggle-high", "kind": "script", "description": "Complete the high-priority task", "value": "document.querySelectorAll('[data-testid=tasks] li .title').forEach(el => { if (el.textContent.includes('Fix production bug')) el.parentElement.querySelector('input[type=checkbox]').click(); })", "importance": "high" },
-    { "id": "strike", "kind": "assert-visible", "description": "Completed task shows strike-through", "target": "[data-testid=tasks] li.done", "importance": "high" },
-    { "id": "clear", "kind": "click", "description": "Clear completed tasks", "target": "[data-testid=clear-done]", "importance": "critical" },
-    { "id": "stats-update", "kind": "assert-text", "description": "Stats reflect remaining tasks", "target": "[data-testid=stats]", "value": "done" },
-    { "id": "high-survives-clear", "kind": "assert-text", "description": "High-priority rows must survive Clear completed", "target": "[data-testid=tasks]", "value": "Ship Taskpad v0.1", "importance": "critical" }
-  ]
-}
-```
+(No hand-written test plan — tik-test should generate one each run from the
+focus above plus the PR diff. That's the realistic path: a maintainer
+describes what changed and what's risky; the agent figures out how to
+exercise it.)
