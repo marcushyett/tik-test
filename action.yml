@@ -98,6 +98,13 @@ runs:
       with:
         anthropic_api_key: ${{ inputs.anthropic-api-key }}
 
+    # claude-code-action@v1 installs the CLI inside its own action_path, which
+    # is not on PATH for subsequent steps. tik-test's narrator spawns `claude`
+    # directly, so we install it globally so it's visible to subprocesses.
+    - name: Install Claude Code CLI for narrator subprocess
+      shell: bash
+      run: npm install -g @anthropic-ai/claude-code
+
     - name: Build tik-test
       shell: bash
       working-directory: ${{ github.action_path }}
@@ -146,6 +153,10 @@ runs:
         OPENAI_API_KEY: ${{ inputs.openai-api-key }}
         VERCEL_AUTOMATION_BYPASS_SECRET: ${{ inputs.vercel-bypass-secret }}
         GH_TOKEN: ${{ inputs.github-token }}
+        # The narrator spawns `claude -p ...` for the story generation; pass the
+        # auth env vars through so it doesn't get an unauthenticated 401.
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude-code-oauth-token }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         PR_NUMBER: ${{ steps.resolve-pr.outputs.number }}
         PREVIEW_URL: ${{ steps.resolve-url.outputs.url }}
         REVIEW_MODE: ${{ inputs.review-mode }}

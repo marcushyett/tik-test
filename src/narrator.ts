@@ -77,16 +77,8 @@ export function narrate(input: NarrationInput): NarrationOutput {
     case "click": {
       const name = readableTarget(step.target);
       const subj = shortSubject(step.target, "submit");
-      if (step.importance === "critical") {
-        return {
-          voiceLine: `Here's the moment of truth. We click ${name}.`,
-          captionText: `Click ${subj}. Watch the result.`,
-          titleSlideLabel: "Click",
-          titleSlideText: `Click ${subj}`,
-        };
-      }
       return {
-        voiceLine: `Now we click ${name}.`,
+        voiceLine: `Click ${name}.`,
         captionText: `Click ${subj}.`,
         titleSlideLabel: "Click",
         titleSlideText: `Click ${subj}`,
@@ -129,7 +121,7 @@ export function narrate(input: NarrationInput): NarrationOutput {
     }
     case "assert-visible": {
       return {
-        voiceLine: `And there it is. ${step.description}.`,
+        voiceLine: `${step.description}.`,
         captionText: `${step.description}`,
         titleSlideLabel: "Verify",
         titleSlideText: step.description,
@@ -137,7 +129,7 @@ export function narrate(input: NarrationInput): NarrationOutput {
     }
     case "assert-text": {
       return {
-        voiceLine: `The text "${step.value}" shows up, right on cue.`,
+        voiceLine: `Looking for "${step.value}".`,
         captionText: `Contains "${step.value}"`,
         titleSlideLabel: "Verify",
         titleSlideText: step.description,

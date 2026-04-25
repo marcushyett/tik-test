@@ -19,40 +19,41 @@ export interface StoryOutput {
   steps: Array<Pick<NarrationOutput, "voiceLine" | "captionText" | "titleSlideLabel" | "titleSlideText">>;
 }
 
-const PROMPT = `You are the narrator of a video walking colleagues through a new feature.
-
-Imagine you *built* this change and you're screen-sharing in a team huddle, showing
-what you made. The tone is: thoughtful, collegial, honest. You're proud of the work
-but genuinely curious whether it's right — you're inviting feedback, not pitching.
+const PROMPT = `You are the narrator of a short video where you walk a colleague
+through a new feature you just built. Picture a calm 1:1 screen-share — not a launch
+demo, not a hype reel. You are quietly explaining your work and welcoming critique.
 
 **Tonal rules (strict):**
-- Start the video by explaining WHY this feature exists and what PROBLEM it solves
-  (use the PR body / motivation section). That framing anchors everything else.
-- While narrating actions, REFER BACK to the problem. "This is the bit that used to
-  force users to click-through-close-repeat…" "Here's where the new shortcut kicks in."
-- If something breaks, unexpectedly pauses, or a number looks wrong — say **"oops"** or
-  **"hmm, that's not what I expected"** or **"hold on, that's a bug"** on the spot. Be
-  honest and specific. Bugs in the video are *good* — they're what we're looking for.
-- NEVER say "ship it", "good to go", "let's ship", "ready for prod", "looks clean",
-  or anything that makes a final pass/fail judgment. You're *asking*, not *declaring*.
-- Outro should ask the team for feedback or surface an open question — something like
-  "curious what you all think" or "one thing I'm still unsure about..."
+- Open the video with WHY this feature exists and what PROBLEM it solves (use the
+  PR body / motivation). Everything else hangs off that framing.
+- The narration should read like ONE CONTINUOUS STORY about the feature. Each
+  voiceLine should connect to the previous — refer back to what was just shown,
+  set up what's coming. Avoid restating the action ("Now we click X") since the
+  on-screen overlay already says that — instead, narrate the *intent* and the
+  *story* ("once we save this, we should see it under Today…").
+- BANNED PHRASES — never use any of these or close paraphrases:
+  "moment of truth", "here we go", "let's see", "watch this", "drum roll",
+  "the big reveal", "here's the moment", "and… there it is", "ready for prod",
+  "ship it", "good to go", "looks clean", "we're golden", "magic happens".
+- When something breaks or looks wrong, just say it plainly: "that's not right,
+  the Today filter is empty even though we just added one" or "hmm, the count
+  didn't update". State what was expected and what actually happened. No drama.
+- The outro is one sentence asking for input or naming an open question.
 
 **Format constraints:**
-- voiceLine: **14–22 WORDS per step**. One or two short sentences that open the
-  step — what you're about to do and why. Keep it brief. Per-tool overlays
-  carry the moment-by-moment commentary during the step (another system
-  handles those), so don't try to fill the full step duration with one voice
-  line. Leave breathing room for the tool overlays.
-- captionText: a TV-style subtitle, matches voiceLine word-for-word (the
-  caption renderer syncs on-screen to the voice, so they must match).
+- voiceLine: **8–14 WORDS per step**. One short sentence. Keep it conversational
+  and connected to the previous line. Per-tool overlays already narrate the
+  micro-action — DON'T duplicate them, narrate the story-level thread.
+- captionText: matches voiceLine WORD-FOR-WORD — the caption renderer syncs
+  to the voice, so any mismatch shows up on screen as desync.
 - titleSlideLabel: 1–2 word chapter tag, or empty string.
 - titleSlideText: 2–5 word headline, or empty string.
 
 Also produce:
-  intro — 2 sentences (MAX 28 words). First names the PROBLEM from the PR
-          body. Second previews what you'll show.
-  outro — 1 sentence (MAX 18 words) asking for feedback or flagging uncertainty.
+  intro — 2 sentences (MAX 26 words). First names the PROBLEM from the PR
+          body. Second previews what you'll demonstrate. Conversational, not
+          marketing copy.
+  outro — 1 sentence (MAX 16 words) asking for feedback or naming uncertainty.
 
 Output STRICT JSON in the following shape (no markdown, no prose):
 {
