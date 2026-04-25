@@ -101,7 +101,6 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
 
   const { pr, video } = current;
   const videoSrc = proxyMedia(video.videoUrl);
-  const gifSrc = video.gifUrl ? proxyMedia(video.gifUrl) : undefined;
 
   // Shared decision form — available immediately, not gated on video end.
   const decision = (
@@ -140,7 +139,6 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
           <VideoFrame
             ref={videoRef}
             src={videoSrc}
-            poster={gifSrc}
             playing={playing}
             setPlaying={setPlaying}
             muted={muted}
@@ -160,7 +158,6 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
         <VideoFrame
           ref={videoRef}
           src={videoSrc}
-          poster={gifSrc}
           playing={playing}
           setPlaying={setPlaying}
           muted={muted}
@@ -238,7 +235,6 @@ function FeedCounter({ idx, total, video }: { idx: number; total: number; video:
 
 interface VideoFrameProps {
   src: string;
-  poster?: string;
   playing: boolean;
   setPlaying: (v: boolean) => void;
   muted: boolean;
@@ -249,7 +245,7 @@ interface VideoFrameProps {
 }
 
 const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoFrame(
-  { src, poster, playing, setPlaying, muted, onToggleMute, onPrev, onNext, aspect },
+  { src, playing, setPlaying, muted, onToggleMute, onPrev, onNext, aspect },
   ref,
 ) {
     // React.forwardRef gives us the ref as an untyped ref; narrow it so the
@@ -290,12 +286,18 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
       <div className={wrapClass} style={aspect === "9/16" ? { aspectRatio: "9 / 16" } : undefined}>
         {/* key={src} forces React to unmount the previous video element when
             the src changes. Without it the browser keeps the old audio track
-            alive while loading the new src, producing overlapping voices. */}
+            alive while loading the new src, producing overlapping voices.
+
+            DO NOT pass the GIF as `poster` — animated GIFs in <video poster>
+            auto-loop in Chromium/Safari. Our preview.gif is a sped-up summary
+            of the full MP4, so it played a fast condensed pass before the
+            real video took over, looking like the video played twice. With
+            autoPlay + preload="auto" the real first frame appears almost
+            immediately, so a momentary black background is the right trade. */}
         <video
           key={src}
           ref={ref}
           src={src}
-          poster={poster}
           autoPlay
           muted
           playsInline
