@@ -34,7 +34,7 @@
   .filters button { background: transparent; border: 1px solid var(--line); color: var(--ink-2); border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
   .filters button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
   ul.tasks { list-style: none; margin: 0; padding: 0; }
-  ul.tasks li { display: grid; grid-template-columns: 28px 1fr auto auto; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); transition: background 120ms; }
+  ul.tasks li { display: grid; grid-template-columns: 24px 28px 1fr auto auto; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); transition: background 120ms; }
   ul.tasks li:last-child { border-bottom: 0; }
   ul.tasks li:hover { background: #fafbfd; }
   ul.tasks li.done .title { text-decoration: line-through; color: var(--ink-2); }
@@ -44,6 +44,10 @@
   .badge { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 999px; background: #f0f2fa; color: var(--ink-2); }
   .badge.high { background: #ffedea; color: #c83c1e; }
   .badge.low { background: #eafaf3; color: #0a8560; }
+  .star { background: transparent; border: 0; color: #c8ccd6; cursor: pointer; font-size: 18px; line-height: 1; padding: 4px; border-radius: 6px; transition: color 120ms, background 120ms; }
+  .star:hover { background: #fff7e0; color: #e0a02a; }
+  .star.on { color: #f3b134; }
+  .star.on:hover { color: #d99820; }
   .del { background: transparent; border: 0; color: var(--ink-2); cursor: pointer; padding: 6px 8px; border-radius: 8px; }
   .del:hover { background: #ffecec; color: var(--danger); }
   .empty { padding: 40px 20px; text-align: center; color: var(--ink-2); font-size: 14px; }
@@ -153,8 +157,22 @@
     // classic "two things on the same page, wrong one wired up" regression.
     else if (state.filter === "high") items = items.filter((t) => t.priority === "low");
 
+    // Pin starred tasks to the top of the visible list. This sort is
+    // intentionally NOT factoring done-state — see BUG #5 below.
+    items = [...items].sort((a, b) => {
+      // BUG #5 (for tik-test demo): a starred but done task pins above an
+      // unstarred active task. Right behaviour would be: done tasks always
+      // sink, even if starred. Easiest spot for the agent to surface this:
+      // star a task, mark it done, then look at the All filter — the done
+      // strikethrough row is at the top instead of the bottom.
+      if (a.starred && !b.starred) return -1;
+      if (!a.starred && b.starred) return 1;
+      return 0;
+    });
+
     tasksEl.innerHTML = items.map((t) => `
       <li class="${t.done ? "done" : ""}" data-id="${t.id}" data-testid="task-${t.id}">
+        <button class="star ${t.starred ? "on" : ""}" data-testid="star-${t.id}" aria-label="${t.starred ? "Unpin" : "Pin"} task" aria-pressed="${t.starred ? "true" : "false"}">${t.starred ? "★" : "☆"}</button>
         <input type="checkbox" data-testid="toggle-${t.id}" ${t.done ? "checked" : ""} />
         <div class="title">${escape(t.title)}</div>
         <span class="badge ${t.priority}">${t.priority}</span>
@@ -182,6 +200,16 @@
         const id = b.closest("li").dataset.id;
         state.tasks = state.tasks.filter((x) => x.id !== id);
         toast("Task removed.");
+        render();
+      });
+    });
+    tasksEl.querySelectorAll(".star").forEach((b) => {
+      b.addEventListener("click", () => {
+        const id = b.closest("li").dataset.id;
+        const t = state.tasks.find((x) => x.id === id);
+        if (!t) return;
+        t.starred = !t.starred;
+        toast(t.starred ? "Pinned to top." : "Unpinned.");
         render();
       });
     });
