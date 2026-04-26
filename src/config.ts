@@ -3,9 +3,20 @@ import path from "node:path";
 import type { Config, TestPlan } from "./types.js";
 
 const SECTION_RE = /^##\s+(.+?)\s*$/;
-const SUBSECTION_RE = /^###\s+(.+?)\s*$/;
-const TIKTEST_HEADING_RE = /^##\s+tik[- ]?test\b.*$/i;
+/** Recognised aliases for the heading inside a README that wraps tik-test
+ *  config. Tolerant: `## TikTest`, `## tik-test`, `## tiktest setup`,
+ *  `## Testing`, `## How to test`, `## Test setup`, `## Test environment`,
+ *  `## Test instructions` all match. */
+const TIKTEST_HEADING_RE = /^##\s+(tik[- ]?test\b|testing\b|how\s+to\s+test\b|test\s+(?:setup|environment|instructions)\b).*$/i;
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+/** First HTTPS URL anywhere in the body. Used to bootstrap the browser
+ *  before the agent runs; the agent itself reads the natural-language
+ *  blob and figures out everything else (login, what to test, etc). */
+const BARE_URL_RE = /\bhttps?:\/\/[^\s)\]>"'`]+/i;
+/** Lines like `start: npm run dev` get spawned as a background process
+ *  before the test phase. Anchored to start-of-line so prose containing
+ *  the word "start:" doesn't accidentally trigger. */
+const START_DIRECTIVE_RE = /^start:\s*(.+)$/im;
 
 function parseFrontmatter(src: string): { data: Record<string, string>; body: string } {
   const m = FRONTMATTER_RE.exec(src);
@@ -21,131 +32,102 @@ function parseFrontmatter(src: string): { data: Record<string, string>; body: st
   return { data, body: src.slice(m[0].length) };
 }
 
-function parseSections(body: string): Map<string, string> {
-  const out = new Map<string, string>();
-  const lines = body.split(/\r?\n/);
-  let current: string | null = null;
-  let buf: string[] = [];
-  for (const line of lines) {
-    const m = SECTION_RE.exec(line);
-    if (m) {
-      if (current) out.set(current.toLowerCase(), buf.join("\n").trim());
-      current = m[1];
-      buf = [];
-    } else if (current) {
-      buf.push(line);
-    }
-  }
-  if (current) out.set(current.toLowerCase(), buf.join("\n").trim());
-  return out;
-}
-
 function extractJsonBlock(md: string): string | null {
   const fence = /```json\r?\n([\s\S]*?)```/i.exec(md);
   return fence ? fence[1].trim() : null;
 }
 
 /**
- * Pull the body of a `## TikTest` section from a README, then parse its
- * `### URL` / `### Login` / `### Setup` / `### Focus` / `### Test Plan`
- * sub-sections. Anything in the section body BEFORE any sub-heading is
- * treated as a free-form description that becomes the agent's focus copy.
+ * Find the chunk of the file that contains the user's testing instructions.
  *
- * Returns null if no `## TikTest` heading exists. Returns the parsed
- * fragment otherwise so the caller can merge with frontmatter / overrides.
+ * The runtime philosophy: tik-test does NOT pre-parse this blob into URL /
+ * login / setup / focus fields. Doing that with regex is fragile (every
+ * heading variant becomes a bug report). Instead the blob is fed wholesale
+ * to two separate Claude calls — the plan generator (which reads it as
+ * "what does this app do, what should I test") and the setup phase (which
+ * reads it as "how do I get the browser to a logged-in test-ready state").
+ * Each call uses Claude's natural-language understanding to extract what
+ * it needs.
+ *
+ * The only thing this function does is choose WHICH part of the file to
+ * pass through:
+ *
+ *   - `tiktest.md` / `tik-test.md`: the whole file body.
+ *   - `README.md` with a `## TikTest` (or alias) heading: just the body
+ *     of that section, sliced from the heading to the next H2. Saves us
+ *     from feeding the agent the entire README (Install, License, etc).
+ *   - Anything else (claude.md, bare README.md): the whole file body.
  */
-function extractTiktestSection(body: string): {
-  url?: string;
-  login?: string;
-  setup?: string;
-  focus?: string;
-  plan?: string;
-  description?: string;
-} | null {
+function extractInstructionsBlob(filePath: string, body: string): string {
+  const fileName = path.basename(filePath).toLowerCase();
+  const isDedicated = fileName === "tiktest.md" || fileName === "tik-test.md";
+  if (isDedicated) return body.trim();
+
   const lines = body.split(/\r?\n/);
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
     if (TIKTEST_HEADING_RE.test(lines[i])) { start = i + 1; break; }
   }
-  if (start === -1) return null;
+  if (start === -1) return body.trim();
   let end = lines.length;
   for (let i = start; i < lines.length; i++) {
     if (SECTION_RE.test(lines[i])) { end = i; break; }
   }
-  const sub = new Map<string, string>();
-  let intro: string[] = [];
-  let current: string | null = null;
-  let buf: string[] = [];
-  for (let i = start; i < end; i++) {
-    const m = SUBSECTION_RE.exec(lines[i]);
-    if (m) {
-      if (current) sub.set(current.toLowerCase(), buf.join("\n").trim());
-      current = m[1];
-      buf = [];
-    } else if (current) {
-      buf.push(lines[i]);
-    } else {
-      intro.push(lines[i]);
-    }
-  }
-  if (current) sub.set(current.toLowerCase(), buf.join("\n").trim());
-
-  return {
-    url: sub.get("url"),
-    login: sub.get("login"),
-    setup: sub.get("setup"),
-    focus: sub.get("focus") ?? sub.get("changes"),
-    plan: sub.get("test plan") ?? sub.get("plan"),
-    description: intro.join("\n").trim() || undefined,
-  };
+  return lines.slice(start, end).join("\n").trim();
 }
 
 export async function loadConfig(configPath: string, urlOverride?: string): Promise<Config> {
   const abs = path.resolve(configPath);
   const raw = await readFile(abs, "utf8");
   const { data, body } = parseFrontmatter(raw);
-  const sections = parseSections(body);
-  const tiktest = extractTiktestSection(body);
+  const blob = extractInstructionsBlob(abs, body);
 
-  // Resolution order: explicit override > README's `## TikTest > ### URL` >
-  // top-level `## URL` (claude.md style) > frontmatter > error.
-  const url = urlOverride ?? tiktest?.url ?? sections.get("url") ?? data.url ?? "";
+  // URL bootstrap: explicit override > frontmatter `url:` > first HTTPS link
+  // in the blob. We need a starting URL BEFORE the agent runs, so this is
+  // the one piece we extract eagerly. Everything else stays in the blob.
+  let url = urlOverride ?? data.url ?? "";
+  if (!url) {
+    const m = BARE_URL_RE.exec(blob);
+    if (m) url = m[0];
+  }
   if (!url) {
     throw new Error(
-      `No URL provided. Add a "## TikTest" section to your README.md with a "### URL" sub-section ` +
-      `containing the preview URL, or pass --url.`,
+      `No URL found. Put a preview URL anywhere in your tiktest.md (or "url:" in its frontmatter), ` +
+      `or pass --url. In CI, deployment_status events auto-supply the URL.`,
     );
   }
 
   const viewport = (() => {
-    const v = data.viewport ?? sections.get("viewport") ?? "1280x800";
+    const v = data.viewport ?? "1280x800";
     const m = /^(\d+)\s*x\s*(\d+)$/i.exec(v.trim());
     return m ? { width: +m[1], height: +m[2] } : { width: 1280, height: 800 };
   })();
 
-  const planSrc = tiktest?.plan ?? sections.get("test plan") ?? sections.get("plan");
+  // Optional inline plan: still supports `## Test Plan` for power users
+  // who want deterministic coverage. JSON inside a fenced ```json``` block.
   let plan: TestPlan | undefined;
-  if (planSrc) {
-    const json = extractJsonBlock(planSrc);
+  const planMatch = /^##\s+(?:test\s*plan|plan|goals)\b.*$/im.exec(blob);
+  if (planMatch) {
+    const idx = blob.indexOf(planMatch[0]) + planMatch[0].length;
+    const after = blob.slice(idx);
+    const json = extractJsonBlock(after);
     if (json) plan = JSON.parse(json) as TestPlan;
   }
 
-  // Focus prefers the README's `## TikTest > ### Focus`; falls back to its
-  // free-form intro paragraph (everything between `## TikTest` and the
-  // first sub-heading); then top-level legacy sections.
-  const focus = tiktest?.focus
-    ?? tiktest?.description
-    ?? sections.get("focus")
-    ?? sections.get("changes")
-    ?? sections.get("pr summary");
+  // `start: <cmd>` directive: spawned as a background process before the
+  // test phase. Lets local-dev runs auto-launch the app server.
+  const startMatch = START_DIRECTIVE_RE.exec(blob);
+  const setup = startMatch ? `start: ${startMatch[1].trim()}` : undefined;
 
   return {
     url,
-    name: data.name ?? sections.get("name"),
+    name: data.name,
     viewport,
-    setup: tiktest?.setup ?? sections.get("setup"),
-    login: tiktest?.login ?? sections.get("login"),
-    focus,
+    setup,
+    // The blob is the agent's primary context. Both plan generation
+    // (cfg.focus) and the setup phase (cfg.tiktestSetup) get the whole
+    // thing and decide for themselves what's relevant.
+    focus: blob || undefined,
     plan,
     music: data.music,
   };
@@ -155,9 +137,7 @@ export function configToPromptContext(cfg: Config): string {
   const parts: string[] = [];
   parts.push(`Target URL: ${cfg.url}`);
   if (cfg.name) parts.push(`App: ${cfg.name}`);
-  if (cfg.focus) parts.push(`Focus / changes:\n${cfg.focus}`);
-  if (cfg.setup) parts.push(`Setup notes:\n${cfg.setup}`);
-  if (cfg.login) parts.push(`Login:\n${cfg.login}`);
+  if (cfg.focus) parts.push(`Testing instructions (free-form, written by the repo author):\n${cfg.focus}`);
   if (cfg.diff) parts.push(`PR code diff (authoritative — test the surfaces these hunks touch):\n${cfg.diff}`);
   if (cfg.comments) parts.push(`PR comments (teammate feedback / suggestions — incorporate any "make sure to test X" hints):\n${cfg.comments}`);
   return parts.join("\n\n");

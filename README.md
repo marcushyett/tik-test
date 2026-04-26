@@ -50,44 +50,46 @@ tik-test puts a **45-60s narrated video** on every PR: happy path, edge cases, b
 
 ## Telling tik-test how to test your app
 
-Add a `## TikTest` section to your repo's `README.md`. The agent reads it before every run; nothing else in your repo needs to change. Put a short product description at the top (so the narrator can frame the PR), then the four structured sub-sections:
+Create a `tiktest.md` at your repo root. **Write whatever you'd tell a new teammate** about how to test the app: what it does, how to log in, what's risky in this PR. tik-test feeds this whole file to the agent as natural-language context. There is no schema. No fields to fill in. Claude parses the markdown.
 
 ```markdown
-## TikTest
+# Acme
 
-[Product context.] Acme is a project tracker for engineering teams.
-The recent change adds bulk archive — try selecting 5 tasks and
-archiving them in one click.
+Acme is a project tracker for engineering teams. This PR adds bulk
+archive: select multiple tasks and archive them in one click. Worth
+probing the toast count and the empty-state when everything is
+archived.
 
-### URL
-https://acme-pr-42.vercel.app
+The preview URL is https://acme-pr-42.vercel.app
 
-### Login
-email: review-bot@acme.app
-password: hunter2
+To sign in, use email `review-bot@acme.app` and password `hunter2`.
 
-### Setup
+If you're running locally:
 start: npm run dev
-# `start:` prefix runs this in the background before the test phase
-
-### Test Plan
-[optional — omit and Claude generates one from the PR diff. Use it
- only when you want deterministic coverage. JSON schema in the docs.]
 ```
 
-What each part does:
+That's it. tik-test reads the file, generates a plan from the diff plus your description, drives the browser, posts the video.
 
-| Field | What it's for |
-|---|---|
-| Product context (the prose before the sub-sections) | Frames the narrator's intro, anchors the agent's plan in what your app actually does, and highlights what's risky in this PR. Two or three paragraphs is the sweet spot. |
-| `### URL` | The preview URL the agent navigates to. Auto-detected from `deployment_status` events in CI; this is the fallback. |
-| `### Login` | Natural-language credentials or magic-link instructions. Translated into Playwright actions during a one-shot setup phase before the test agent takes over. |
-| `### Setup` | Either a `start:` prefix to run a background process, or natural-language pre-test setup. |
-| `### Test Plan` (optional) | A JSON block with explicit goals, for when you want deterministic coverage. |
+### What tik-test does and doesn't pre-extract
 
-That section is the **only** thing tik-test reads from your repo. Everything in our prompts is generic; nothing is hardcoded about any particular app.
+The runtime philosophy is to do as little parsing as possible and let the agent figure it out. Specifically:
 
-> **Legacy:** earlier docs recommended a separate `claude.md` file. That still works as a fallback. New repos should put everything in `README.md`.
+- **The whole file body** is passed as context to two Claude calls: the plan generator (which decides what to test) and the setup phase (which converts your login/auth instructions into Playwright actions). Both calls use Claude's natural-language understanding; neither relies on hardcoded section names.
+- **The URL** is extracted with a single regex (first `https?://` in the body) so the browser can boot before the agent runs. In CI the URL is auto-supplied from `deployment_status` events, so this regex rarely fires.
+- **`start: <cmd>`** anywhere in the file is recognised as a background-process directive (so a local-dev run can launch the app server). Any line starting with `start:` matches.
+
+Nothing else is parsed. Headings, bullet structure, sub-sections, capitalisation: all irrelevant to tik-test, all visible to Claude.
+
+### Discovery order
+
+If `tiktest.md` doesn't exist, tik-test falls back through these locations:
+
+1. **`tiktest.md`** at repo root (also `TIKTEST.md`, `tik-test.md`). The whole file body is the test instructions.
+2. **`README.md`** containing a `## TikTest` heading (also `## Testing`, `## How to test`, `## Test setup`, `## Test environment`, `## Test instructions`). The body of that section, sliced from the heading to the next H2, is the test instructions. This keeps the agent from being fed your Install / License / Contributing sections.
+3. **`claude.md`** / `CLAUDE.md` / `.claude/claude.md` (legacy). Whole file body.
+4. **`README.md`** without a recognised heading. Last resort; the whole README is fed to the agent. Works but noisy.
+
+In all four cases, what reaches the agent is natural-language markdown. The agent decides what's relevant.
 
 ---
 

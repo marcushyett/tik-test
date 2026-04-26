@@ -78,16 +78,15 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     cfg.comments = meta.comments.slice(0, 6_000); // prompt-safe cap
   }
 
-  // Read the repo's README for a "TikTest" section — pre-test setup/login
-  // instructions. This is the dedicated place repos declare how tik-test
-  // should authenticate. We require it: no silent fallback to claude.md login.
-  const tiktestSetup = await findTiktestSection(workDir);
-  if (tiktestSetup) {
-    cfg.tiktestSetup = tiktestSetup;
-    console.log(chalk.dim(`  tiktest setup: ${tiktestSetup.split("\n")[0].slice(0, 80)}…`));
+  // The setup phase reads the SAME natural-language blob the plan phase
+  // gets (`cfg.focus`), and uses Claude to extract login/setup steps from
+  // it. There's no separate parse — the agent reads the markdown and
+  // figures out which parts are pre-test bootstrap vs. what-to-test.
+  if (cfg.focus) {
+    cfg.tiktestSetup = cfg.focus;
   } else {
-    console.log(chalk.yellow(`  no "## TikTest" section found in README — running without pre-test setup`));
-    console.log(chalk.dim(`    add a "## TikTest Instructions" section to README.md with login steps so the runner can auth itself.`));
+    console.log(chalk.yellow(`  no testing instructions found — running without pre-test setup`));
+    console.log(chalk.dim(`    add a tiktest.md to your repo root describing the URL, login, and what's risky.`));
   }
   // Feed the PR diff to the plan generator so it can target the exact files
   // and selectors the PR touches — "read the code" exhaustiveness, not just
@@ -350,24 +349,46 @@ function extractPreviewUrlFromComments(comments: Array<{ body?: string }>): stri
   return undefined;
 }
 
+/**
+ * Discovery order, most-to-least preferred:
+ *
+ *   1. `tiktest.md` (or `TIKTEST.md` / `tik-test.md`) at repo root.
+ *      Dedicated file, whole body is the test config. Recommended for
+ *      new repos because there's no surrounding README copy to fight
+ *      with the parser.
+ *   2. `README.md` containing a `## TikTest` (or `## Testing` /
+ *      `## How to test`) heading. The agent reads everything from
+ *      that heading down to the next H2.
+ *   3. Legacy: `claude.md`, `CLAUDE.md`, `.claude/claude.md`, then
+ *      bare `README.md` (without a TikTest section). These work but
+ *      are kept only for backwards compatibility.
+ *
+ * Each candidate is checked in order; the first hit wins. A repo that
+ * has BOTH a `tiktest.md` and a `## TikTest` section in its README
+ * will use `tiktest.md` (the dedicated file is more explicit).
+ */
+const TESTING_HEADING_RE = /^##\s+(tik[- ]?test\b|testing\b|how\s+to\s+test\b|test\s+(?:setup|environment|instructions)\b).*$/im;
+
 async function findConfig(workDir: string): Promise<string | null> {
-  // README.md with a `## TikTest` section is the canonical config — every
-  // adopting repo already has a README, and putting tik-test instructions
-  // there keeps everything about how to test next to everything else about
-  // the project. claude.md / tik-test.md are kept as fallbacks for repos
-  // that already invested in them or that use Claude Code's claude.md
-  // convention for other reasons.
+  // 1. Dedicated tiktest.md
+  for (const rel of ["tiktest.md", "TIKTEST.md", "tik-test.md", "TikTest.md"]) {
+    const full = path.join(workDir, rel);
+    try {
+      const s = await stat(full);
+      if (s.isFile()) return full;
+    } catch {}
+  }
+  // 2. README.md with a recognised testing section
   const readmes = ["README.md", "readme.md", "Readme.md"];
   for (const rel of readmes) {
     const full = path.join(workDir, rel);
     try {
       const raw = await readFile(full, "utf8");
-      if (/^##\s+tik[- ]?test\b.*$/im.test(raw)) return full;
+      if (TESTING_HEADING_RE.test(raw)) return full;
     } catch {}
   }
-  // Legacy fallbacks.
-  const fallbacks = ["claude.md", "CLAUDE.md", ".claude/claude.md", "tik-test.md", ...readmes];
-  for (const rel of fallbacks) {
+  // 3. Legacy: claude.md / CLAUDE.md / .claude/claude.md, then bare README.md
+  for (const rel of ["claude.md", "CLAUDE.md", ".claude/claude.md", ...readmes]) {
     const full = path.join(workDir, rel);
     try {
       const s = await stat(full);
@@ -377,42 +398,6 @@ async function findConfig(workDir: string): Promise<string | null> {
   return null;
 }
 
-/**
- * Extract the "TikTest" (or similar) section from the repo's README. This is
- * where the repo author documents how tik-test should sign in and prep the
- * test environment — the instructions are natural language, and a pre-test
- * setup phase translates them to Playwright actions.
- *
- * Returns the section body (without the heading) or null if no matching
- * section was found.
- */
-async function findTiktestSection(workDir: string): Promise<string | null> {
-  const candidates = ["README.md", "readme.md", "Readme.md"];
-  for (const rel of candidates) {
-    const full = path.join(workDir, rel);
-    let raw: string;
-    try { raw = await readFile(full, "utf8"); } catch { continue; }
-    const aliases = [
-      /^##\s+tik[- ]?test\s+instructions?\s*$/i,
-      /^##\s+tik[- ]?test\b.*$/i,
-      /^##\s+testing\s+with\s+tik[- ]?test\s*$/i,
-      /^##\s+tik[- ]?test\s+setup\s*$/i,
-    ];
-    const lines = raw.split(/\r?\n/);
-    for (let i = 0; i < lines.length; i++) {
-      if (aliases.some((re) => re.test(lines[i]))) {
-        const body: string[] = [];
-        for (let j = i + 1; j < lines.length; j++) {
-          if (/^##\s+/.test(lines[j])) break;
-          body.push(lines[j]);
-        }
-        const section = body.join("\n").trim();
-        if (section) return section;
-      }
-    }
-  }
-  return null;
-}
 
 function buildVercelBypass(secret: string | undefined, url: string): { extraHTTPHeaders?: Record<string, string>; cookies?: Array<any> } {
   if (!secret) return {};
