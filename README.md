@@ -2,9 +2,19 @@
 
 # 🎬 tik-test
 
-**Automated TikTok-style video reviews for your PRs.**
+**A 45-second TikTok-style video review on every PR — so you can review 20 AI-generated PRs in under 15 minutes.**
 
-Point it at a pull request, it signs in, clicks around, tries to break things, and posts a narrated 9:16 video that explains what the feature does, exercises it exhaustively, and calls out bugs on camera — like a colleague walking you through their change on a screen-share.
+</div>
+
+<p align="center">
+  <a href="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4">
+    <img src="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.gif" alt="tik-test demo — 9:16 narrated video review of a PR" width="320" />
+  </a>
+  <br />
+  ▶ <a href="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4"><strong>Play with sound</strong></a> — narrated walkthrough + outro AI-checks list
+</p>
+
+<div align="center">
 
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-blue.svg)](package.json)
@@ -14,18 +24,13 @@ Point it at a pull request, it signs in, clicks around, tries to break things, a
 
 ---
 
-## Why
+## The problem
 
-Reviewing a UI PR is exhausting. You have to pull the branch, run the app, sign in, click through five flows, and hope you caught the regression. Most reviewers just look at the screenshots and LGTM.
+AI ships **20+ PRs a day** that mostly work. Where it fails is taste — awkward flows, off-brand copy, the counter-intuitive ways real users click. Catching that means spinning up a dev environment for every PR, signing in, finding the change, exercising the edges. **Hours per day.**
 
-tik-test is an experiment: what if every PR showed up with a **45-second TikTok-style video** where someone (your AI colleague) actually uses the feature, narrates why it was built, tests the edges, and flags anything that looks off?
+tik-test puts a **45-60s narrated video** on every PR — happy path, edge cases, bugs called out on camera. You scan 20 of them in your inbox and only spin up the ones that need a closer look.
 
-- **Exhaustive, not minimum-path** — the test plan deliberately repeats actions, tries edge cases, and regression-probes features adjacent to the change.
-- **Problem-first narration** — the voiceover opens by explaining *why* the feature exists (pulled from the PR body), then refers back to that problem while demonstrating.
-- **Honest on bugs** — if something breaks, the narrator says *"oops"* on camera. The video ends asking for feedback, not declaring a ship.
-- **Gated in CI** — the GitHub Action runs `tik-test` after your preview deploy succeeds, posts the video, and **requests changes on the PR if anything failed**.
-
----
+> The bottleneck of building products is shifting from writing code to **testing it well**. tik-test is a bet on that.
 
 ## Prerequisites
 
@@ -62,19 +67,11 @@ If your PR is backend-only, tik-test will still produce a video — but it will 
 
 ---
 
-## Demo
+## In the wild
 
-A real PR run against the bundled Taskpad demo — agent caught two
-deliberately-planted bugs (case-sensitive search, priority-sort
-reversed) and posted a request-changes review:
+The demo above is the bundled Taskpad app — agent caught two deliberately-planted bugs (case-sensitive search, priority-sort reversed) and posted a request-changes review.
 
-<a href="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4">
-  <img src="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.gif" alt="tik-test demo — 9:16 video review of a PR" width="320" />
-</a>
-
-▶ **[Play with sound (3 min, narrated)](https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4)** — the GIF above loops silently; the MP4 has the full voice-over, captions, and outro AI-checks list.
-
-**Real-world PR review:** [yolodex-ai/personadex#282](https://github.com/yolodex-ai/personadex/pull/282#issuecomment-4301341770) — 19/19 steps green through a Theater-mode flow (magic-link sign-in → Inspiration grid → `▶ Theater` → ↓ → S → Esc).
+A real-world example: [yolodex-ai/personadex#282](https://github.com/yolodex-ai/personadex/pull/282#issuecomment-4301341770) — 19/19 steps green through a Theater-mode flow (magic-link sign-in → Inspiration grid → `▶ Theater` → ↓ → S → Esc).
 
 ---
 

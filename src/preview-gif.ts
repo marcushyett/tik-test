@@ -7,13 +7,26 @@ import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
  * autoplay, so the GIF is what reviewers see at-a-glance before clicking
  * through to the full MP4.
  *
- * Long videos get sped up so the preview stays under ~22s of looped motion.
+ * Pacing rules (legibility > brevity):
+ *   - Cap the speed-up at MAX_SPEED so captions and tool overlays stay
+ *     readable. Earlier versions divided "any duration" by a 22s target,
+ *     which for a 3-min video meant 8x — a cartoon flicker no human
+ *     could follow. A 3x ceiling keeps motion comprehensible at the cost
+ *     of a longer (~50s) loop on long runs; that's the right trade for
+ *     a preview people actually parse.
+ *   - 12 fps balances smoothness against file size — under ~6MB per
+ *     preview at 420px wide.
  */
+const TARGET_SECONDS = 22;
+const MAX_SPEED = 3;
+const FPS = 12;
+
 export async function renderPreviewGif(mp4Path: string, gifPath: string): Promise<void> {
   const probeDur = await ffprobeDuration(mp4Path);
-  const speedMultiplier = probeDur > 26 ? probeDur / 22 : 1;
+  const rawSpeed = probeDur > TARGET_SECONDS ? probeDur / TARGET_SECONDS : 1;
+  const speedMultiplier = Math.min(rawSpeed, MAX_SPEED);
   const palettePath = gifPath.replace(/\.gif$/i, ".palette.png");
-  const vf = `setpts=${(1 / speedMultiplier).toFixed(4)}*PTS,fps=10,scale=420:-2:flags=lanczos`;
+  const vf = `setpts=${(1 / speedMultiplier).toFixed(4)}*PTS,fps=${FPS},scale=420:-2:flags=lanczos`;
   await runFfmpeg([
     "-i", mp4Path,
     "-vf", `${vf},palettegen=stats_mode=diff:max_colors=128`,
