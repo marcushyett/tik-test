@@ -66,8 +66,6 @@ tik-test was built for **small, focused PRs that touch one user-facing slice at 
 - **Design studios, canvas tools, drag-precise interactions.** Figma-style apps, video editors. Playwright can drive a `<canvas>` but the agent can't tell whether it dragged the handle to the right spot.
 - **Apps gated behind SAML, SSO, MFA, or per-tenant subdomains** with no automation bypass.
 - **Subtle regressions with no visible surface.** Wrong analytics event, wrong DB write, p95 perf regression, Safari-14-only CSS bug.
-- **Apps that need real seeded data.** Empty list views with nothing to show.
-- **Right-to-left languages.** Caption layout assumes LTR. (PRs welcome.)
 
 Defaults reflect how I review PRs: small slices, fast feedback, video-first. Run `node dist/cli.js config` to retune.
 
