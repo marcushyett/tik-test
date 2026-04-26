@@ -8,6 +8,7 @@ import { DecisionForm } from "./decision-form";
 import { CommentList } from "./comment-list";
 import { PRBodyPreview } from "./pr-body-preview";
 import { MobileDrawer } from "./mobile-drawer";
+import { AIChecksList, AIChecksBadge } from "./ai-checks-list";
 import { proxyMedia } from "@/lib/utils";
 import type { OpenPR } from "@/lib/github";
 import type { TikTestVideo } from "@/lib/marker";
@@ -118,6 +119,9 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
   const sidebar = (
     <div className="flex flex-col gap-5">
       <PRHeader repo={repo} pr={pr} />
+      {video.checklist && video.checklist.length > 0 && (
+        <AIChecksList items={video.checklist} />
+      )}
       {decision}
       <PRBodyPreview body={pr.body} defaultOpen={false} />
       <div>
@@ -214,7 +218,7 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
           </Button>
         </div>
 
-        <MobileDrawer pr={pr} repo={repo}>
+        <MobileDrawer pr={pr} repo={repo} checklist={video.checklist}>
           {sidebar}
         </MobileDrawer>
       </div>

@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
 import chalk from "chalk";
 import type { TestPlan } from "./types.js";
 import { NARRATION_TIMEOUT_MS } from "./timeouts.js";
+import { runClaude, extractJson } from "./claude-cli.js";
 
 /**
  * One narration "scene" — a slot in the final video that needs spoken
@@ -145,40 +145,6 @@ function buildPrompt(ctx: NarrationContext): string {
     .replace("{{SCENES}}", sceneLines);
 }
 
-function runClaude(prompt: string, timeoutMs = NARRATION_TIMEOUT_MS): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // Sonnet is fast enough for templated narration (12-16 short chunks) and
-    // keeps the editor under 90s on this stage. Opus on the same prompt was
-    // hitting 4-minute timeouts on PR runs with 20+ scenes.
-    const child = spawn("claude", ["-p", prompt, "--output-format", "text", "--model", "sonnet"], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`claude CLI timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    child.stdout.on("data", (b) => (out += b.toString()));
-    child.stderr.on("data", (b) => (err += b.toString()));
-    child.on("error", (e) => { clearTimeout(timer); reject(e); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) return reject(new Error(`claude exited ${code}: ${err || out}`));
-      resolve(out.trim());
-    });
-  });
-}
-
-function extractJson(text: string): string {
-  const fence = /```(?:json)?\s*\n([\s\S]*?)```/i.exec(text);
-  if (fence) return fence[1].trim();
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start !== -1 && end !== -1 && end > start) return text.slice(start, end + 1);
-  return text.trim();
-}
-
 /**
  * Generate ONE coherent narration script for the whole video in a single
  * Claude call. The scene list comes from the editor AFTER the trim plan
@@ -196,7 +162,7 @@ export async function generateTimedNarration(ctx: NarrationContext): Promise<Tim
   }
   const prompt = buildPrompt(ctx);
   console.log(chalk.dim(`  asking claude to write timed narration for ${ctx.scenes.length} scenes…`));
-  const raw = await runClaude(prompt);
+  const raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "narration" });
   const json = extractJson(raw);
   let parsed: TimedNarration;
   try {

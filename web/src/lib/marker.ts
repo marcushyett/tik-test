@@ -10,6 +10,12 @@ export const MARKER_RE = /<!--\s*tik-test-video:v(\d+)\s+(\{[\s\S]*?\})\s*-->/;
 
 const ALLOWED_VIDEO_HOSTS = [/^https:\/\/github\.com\/[^/]+\/[^/]+\/releases\/download\//i];
 
+export interface ChecklistItem {
+  outcome: "success" | "failure" | "skipped";
+  label: string;
+  note?: string;
+}
+
 export interface TikTestVideo {
   v: string;
   runId: string;
@@ -20,6 +26,10 @@ export interface TikTestVideo {
   gifUrl?: string;
   totalMs: number;
   stats: { total: number; passed: number; failed: number; skipped: number };
+  /** LLM-synthesised "AI checks" list (mirrors the on-video outro). Drawer
+   *  renders these natively; absent on older comments and on runs where
+   *  the LLM call failed. */
+  checklist?: ChecklistItem[];
 }
 
 export function parseMarker(body: string): TikTestVideo | null {
@@ -49,8 +59,28 @@ export function parseMarker(body: string): TikTestVideo | null {
         failed: Number(data.stats?.failed ?? 0),
         skipped: Number(data.stats?.skipped ?? 0),
       },
+      checklist: parseChecklist(data.checklist),
     };
   } catch {
     return null;
   }
+}
+
+/** Defensive coercion — the marker JSON is untrusted (PR comments are
+ *  world-writable) so we hard-cap counts and lengths so a malicious
+ *  comment can't blow up the renderer with a 10k-row checklist. */
+function parseChecklist(raw: unknown): ChecklistItem[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ChecklistItem[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue;
+    const item = r as Record<string, unknown>;
+    const outcome = item.outcome === "failure" || item.outcome === "skipped" ? item.outcome : "success";
+    const label = typeof item.label === "string" ? item.label.slice(0, 80) : "";
+    if (!label) continue;
+    const note = typeof item.note === "string" && item.note.trim() ? item.note.slice(0, 160) : undefined;
+    out.push({ outcome, label, note });
+    if (out.length >= 16) break;
+  }
+  return out.length > 0 ? out : undefined;
 }

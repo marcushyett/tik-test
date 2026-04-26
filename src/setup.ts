@@ -7,10 +7,10 @@
  * The plan generator and the runner never see login — they assume they're
  * already inside the app.
  */
-import { spawn } from "node:child_process";
 import type { Page } from "playwright";
 import chalk from "chalk";
 import { SETUP_TIMEOUT_MS } from "./timeouts.js";
+import { runClaude } from "./claude-cli.js";
 
 type SetupAction =
   | { action: "navigate"; url: string }
@@ -19,24 +19,6 @@ type SetupAction =
   | { action: "press"; value: string }
   | { action: "wait"; ms?: number }
   | { action: "assert_visible"; target: string };
-
-function runClaude(prompt: string, timeoutMs = SETUP_TIMEOUT_MS): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("claude", ["-p", prompt, "--output-format", "text"], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`setup claude timed out after ${timeoutMs}ms`)); }, timeoutMs);
-    child.stdout.on("data", (d) => (out += d.toString()));
-    child.stderr.on("data", (d) => (err += d.toString()));
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(out);
-      else reject(new Error(`setup claude exited ${code}: ${err}`));
-    });
-  });
-}
 
 function parseActions(reply: string): SetupAction[] {
   const trimmed = reply.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "");
@@ -142,7 +124,7 @@ Rules:
 
 Return ONLY the JSON array.`;
 
-  const raw = await runClaude(prompt);
+  const raw = await runClaude({ prompt, timeoutMs: SETUP_TIMEOUT_MS, label: "setup" });
   let actions: SetupAction[];
   try {
     actions = parseActions(raw);

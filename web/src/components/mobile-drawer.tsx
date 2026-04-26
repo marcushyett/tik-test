@@ -3,7 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Clock, GripHorizontal, Minus, Plus, X, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AIChecksBadge } from "./ai-checks-list";
 import type { OpenPR } from "@/lib/github";
+import type { ChecklistItem } from "@/lib/marker";
 
 /**
  * Bottom-sheet drawer for mobile. Two states:
@@ -17,10 +19,14 @@ import type { OpenPR } from "@/lib/github";
 export function MobileDrawer({
   pr,
   repo,
+  checklist,
   children,
 }: {
   pr: OpenPR;
   repo: { owner: string; name: string };
+  /** AI-checks list from the marker — surfaced as a small badge on the
+   *  collapsed peek pill so reviewers see pass/fail counts at a glance. */
+  checklist?: ChecklistItem[];
   children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -95,6 +101,11 @@ export function MobileDrawer({
               <span className="inline-flex items-center gap-1 text-destructive"><Minus className="h-3 w-3" />{pr.deletions}</span>
               {ciIcon}
             </div>
+            {checklist && checklist.length > 0 && (
+              <div className="mt-1.5">
+                <AIChecksBadge items={checklist} />
+              </div>
+            )}
           </div>
           <GripHorizontal className="h-5 w-5 text-white/60" />
         </button>

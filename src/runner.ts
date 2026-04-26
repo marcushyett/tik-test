@@ -2,7 +2,7 @@ import { mkdir, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import chalk from "chalk";
-import type { PlanStep, RunArtifacts, StepEvent, TestPlan } from "./types.js";
+import type { RunArtifacts, StepEvent, TestPlan } from "./types.js";
 import { runSetup } from "./setup.js";
 import { findFeature, isFeaturePageReady } from "./feature-finder.js";
 import { runGoal } from "./goal-agent.js";
@@ -376,7 +376,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   const page = await context.newPage();
 
   const events: StepEvent[] = [];
-  const logLine = (label: string, step: PlanStep, extra = "") => {
+  const logLine = (label: string, step: { description: string }, extra = "") => {
     const pad = String(events.length + 1).padStart(2, "0");
     console.log(`  ${chalk.dim(pad)} ${label} ${chalk.bold(step.description)}${extra ? chalk.dim("  " + extra) : ""}`);
   };

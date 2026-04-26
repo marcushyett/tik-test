@@ -10,7 +10,11 @@ import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
 import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.js";
 import { generateTimedNarration, type NarrationScene } from "./timed-narration.js";
 import { generateChecklist } from "./checklist.js";
-import type { RunArtifacts, PlanStep } from "./types.js";
+import {
+  MIN_CHUNK_S, MAX_BODY_SCENES,
+  INTRO_TARGET_S, OUTRO_TARGET_S, OUTRO_HOLD_S,
+} from "./timeouts.js";
+import type { RunArtifacts } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -304,6 +308,14 @@ async function renderTrimmedMaster(rawMp4: string, outMp4: string, plan: TrimSeg
   ]);
 }
 
+export interface SingleVideoEditResult {
+  outPath: string;
+  /** The LLM-synthesised outro checklist used in the video — exposed so
+   *  the PR-comment poster can render the same table in Markdown and so
+   *  the web viewer can render it natively in the drawer. */
+  checklist: ChecklistItem[];
+}
+
 /**
  * 2-pass renderer. Pass 1 trims the raw recording into a final-length
  * master video. Pass 2 derives a complete scene list from that master
@@ -315,7 +327,7 @@ async function renderTrimmedMaster(rawMp4: string, outMp4: string, plan: TrimSeg
 export async function editSingleVideo({
   artifacts, outPath, voice = "Samantha", quick = false,
   prTitle, prBody, focus,
-}: SingleVideoEditOptions): Promise<string> {
+}: SingleVideoEditOptions): Promise<SingleVideoEditResult> {
   const runDir = artifacts.runDir;
   const publicDir = path.join(runDir, "public");
   await mkdir(publicDir, { recursive: true });
@@ -331,7 +343,6 @@ export async function editSingleVideo({
   const rawDurS = await ffprobeDuration(stagedRaw);
   console.log(chalk.dim(`  raw: ${rawDurS.toFixed(1)}s @ ${artifacts.plan.viewport?.width ?? 1280}×${artifacts.plan.viewport?.height ?? 800}`));
 
-  const _stepsMap = new Map<string, PlanStep>(((artifacts.plan.steps ?? artifacts.plan.goals ?? []) as any).map((s: any) => [s.id, s]));
   const viewport = artifacts.plan.viewport ?? { width: 1280, height: 800 };
   const ttsBackend: TTSBackend = resolveBackend(voice, artifacts.plan.name);
   console.log(chalk.dim(`  voice-over: ${describeBackend(ttsBackend)}`));
@@ -371,17 +382,8 @@ export async function editSingleVideo({
   //      INTRO(0..introTargetS) → body moments(introTargetS+x..) → OUTRO.
   //      Body moments come from non-skip tool windows mapped raw→trimmed,
   //      coalesced so we don't end up with a chunk shorter than 1.6s.
-  const INTRO_TARGET_S = 4.5;
-  const OUTRO_TARGET_S = 4.0;
-  // Bigger chunks = fewer scenes = faster narration call. 3.5s is roughly
-  // one full sentence (~10 words) so the narrator still has room to breathe
-  // per scene, but we don't blow past Claude's narration timeout on long
-  // PR runs with 25+ tool windows.
-  const MIN_CHUNK_S = 3.5;
-  // Hard ceiling on body scenes — even with coalescing, very long runs can
-  // produce 18+ chunks which push sonnet past the timeout. Above this we
-  // sample evenly so the prompt stays bounded.
-  const MAX_BODY_SCENES = 12;
+  // Scene density + intro/outro durations are now configurable knobs —
+  // see src/timeouts.ts for env vars and defaults.
 
   type BodyMoment = { startS: number; visibility: "silent" | "visible"; toolKind: string; toolInput?: string; toolResult?: string };
   const surfacing = (artifacts.toolWindows ?? [])
@@ -539,10 +541,8 @@ export async function editSingleVideo({
 
   // ── 8. Intro / outro durations based on actual voice length.
   const introDurS = Math.max(INTRO_TARGET_S, introTts.dur + 0.5);
-  // Outro holds for a few seconds after the voice ends so the checklist
-  // stays readable on the final frame (the Outro component no longer
-  // fades out — the last frame is what a reviewer sees on pause).
-  const OUTRO_HOLD_S = 3.5;
+  // Outro holds for OUTRO_HOLD_S seconds after the voice ends so the
+  // checklist stays readable on the final frame (Outro no longer fades).
   const outroDurS = Math.max(OUTRO_TARGET_S + OUTRO_HOLD_S, outroTts.dur + OUTRO_HOLD_S);
   const introDurFrames = Math.round(introDurS * FPS);
   const outroDurFrames = Math.round(outroDurS * FPS);
@@ -730,5 +730,5 @@ export async function editSingleVideo({
   if (!process.env.TIK_KEEP_PUBLIC) {
     await rm(publicDir, { recursive: true, force: true }).catch(() => {});
   }
-  return outPath;
+  return { outPath, checklist };
 }

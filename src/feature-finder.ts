@@ -7,8 +7,8 @@
  * lives". Claude returns a short JSON action list; we execute it; then
  * the regular plan takes over against a correctly-positioned page.
  */
-import { spawn } from "node:child_process";
 import { FEATURE_FINDER_TIMEOUT_MS } from "./timeouts.js";
+import { runClaude } from "./claude-cli.js";
 import type { Page } from "playwright";
 import chalk from "chalk";
 import type { TestPlan } from "./types.js";
@@ -56,21 +56,6 @@ export async function isFeaturePageReady(page: Page): Promise<{ ready: boolean; 
   if (/\b(404|page not found|not found)\b/i.test(text.slice(0, 600))) return { ready: false, reason: "404/not-found page" };
   if (text.trim().length < 60) return { ready: false, reason: "page is blank" };
   return { ready: true };
-}
-
-function runClaude(prompt: string, timeoutMs = FEATURE_FINDER_TIMEOUT_MS): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("claude", ["-p", prompt, "--output-format", "text"], { stdio: ["ignore", "pipe", "pipe"] });
-    let out = ""; let err = "";
-    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`feature-finder claude timed out after ${timeoutMs}ms`)); }, timeoutMs);
-    child.stdout.on("data", (d) => (out += d.toString()));
-    child.stderr.on("data", (d) => (err += d.toString()));
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(out);
-      else reject(new Error(`feature-finder claude exited ${code}: ${err}`));
-    });
-  });
 }
 
 function parseActions(reply: string): FinderAction[] {
@@ -173,7 +158,7 @@ Return ONLY the JSON array.`;
 
   let reply: string;
   try {
-    reply = await runClaude(prompt);
+    reply = await runClaude({ prompt, timeoutMs: FEATURE_FINDER_TIMEOUT_MS, label: "feature-finder" });
   } catch (e) {
     console.log(chalk.yellow(`    finder claude call failed: ${(e as Error).message.split("\n")[0]}`));
     return false;

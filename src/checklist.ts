@@ -10,10 +10,10 @@
  * No fallback — if Claude fails the editor falls back to the simple
  * goal-level checklist via the caller. We don't throw.
  */
-import { spawn } from "node:child_process";
 import chalk from "chalk";
 import type { RunArtifacts } from "./types.js";
-import { NARRATION_TIMEOUT_MS } from "./timeouts.js";
+import { NARRATION_TIMEOUT_MS, CHECKLIST_MIN_ITEMS, CHECKLIST_MAX_ITEMS } from "./timeouts.js";
+import { runClaude, extractJson } from "./claude-cli.js";
 
 export interface ChecklistItem {
   outcome: "success" | "failure" | "skipped";
@@ -32,7 +32,7 @@ OUTPUT FORMAT — STRICT JSON, no markdown, no prose:
 }
 
 RULES:
-- 6 to 10 items. Aim for 7-9 — enough to feel substantive, few enough to scan in 5 seconds AND fit on a vertical 9:16 frame without scrolling.
+- {{MIN_ITEMS}} to {{MAX_ITEMS}} items. Aim for the middle of that range — enough to feel substantive, few enough to scan in 5 seconds AND fit on a vertical 9:16 frame without scrolling.
 - Each "label" is a specific CHECK that was performed: subject + verb form, ≤32 chars. Examples: "Today filter shows today task", "Overdue badge appears day 1", "Footer overdue count updates". NOT goal-level summaries.
 - Status comes from the agent's actions: if the agent SAW the expected outcome → success; if the agent emitted failure for a goal that included this check → failure; if the agent never reached this check → skipped.
 - "note": ONLY for failures (or skipped if the reason matters). 5-12 words explaining WHAT broke vs WHAT was expected. No prose, no apologies, no "the test". Good fail note: "filter empty despite TODAY badge". Good skip note: "blocked by earlier failure".
@@ -90,45 +90,16 @@ function formatActions(ctx: ChecklistContext): string {
 
 function buildPrompt(ctx: ChecklistContext): string {
   return PROMPT
+    .replace("{{MIN_ITEMS}}", String(MIN_ITEMS))
+    .replace("{{MAX_ITEMS}}", String(MAX_ITEMS))
     .replace("{{PR_TITLE}}", ctx.prTitle ?? "(not available)")
     .replace("{{PR_BODY}}", (ctx.prBody ?? "(not available)").slice(0, 4000))
     .replace("{{GOALS}}", formatGoals(ctx))
     .replace("{{ACTIONS}}", formatActions(ctx));
 }
 
-function runClaude(prompt: string, timeoutMs = NARRATION_TIMEOUT_MS): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("claude", ["-p", prompt, "--output-format", "text", "--model", "sonnet"], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let out = "";
-    let err = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`checklist claude timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    child.stdout.on("data", (b) => (out += b.toString()));
-    child.stderr.on("data", (b) => (err += b.toString()));
-    child.on("error", (e) => { clearTimeout(timer); reject(e); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) return reject(new Error(`checklist claude exited ${code}: ${err || out}`));
-      resolve(out.trim());
-    });
-  });
-}
-
-function extractJson(text: string): string {
-  const fence = /```(?:json)?\s*\n([\s\S]*?)```/i.exec(text);
-  if (fence) return fence[1].trim();
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start !== -1 && end !== -1 && end > start) return text.slice(start, end + 1);
-  return text.trim();
-}
-
-const MIN_ITEMS = 4;
-const MAX_ITEMS = 10;
+const MIN_ITEMS = CHECKLIST_MIN_ITEMS;
+const MAX_ITEMS = CHECKLIST_MAX_ITEMS;
 const MAX_LABEL = 36;
 const MAX_NOTE = 64;
 
@@ -174,7 +145,7 @@ export async function generateChecklist(ctx: ChecklistContext): Promise<Checklis
   console.log(chalk.dim(`  asking claude to synthesise the outro checklist…`));
   let raw: string;
   try {
-    raw = await runClaude(prompt);
+    raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "checklist" });
   } catch (e) {
     console.log(chalk.yellow(`  checklist generation failed (${(e as Error).message.split("\n")[0]}); falling back to goal-level rows`));
     return null;

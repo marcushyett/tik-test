@@ -1,25 +1,7 @@
-export type StepKind =
-  | "navigate"
-  | "click"
-  | "fill"
-  | "press"
-  | "hover"
-  | "wait"
-  | "assert-visible"
-  | "assert-text"
-  | "screenshot"
-  | "script"
-  | "intent";
-
-export interface PlanStep {
-  id: string;
-  kind: StepKind;
-  description: string;
-  target?: string;
-  value?: string;
-  importance?: "low" | "normal" | "high" | "critical";
-  optional?: boolean;
-}
+/** What kind of action a StepEvent describes. Goal-based runs only emit
+ *  "intent" events; the other kinds are emitted by setup / runtime page
+ *  handling (navigate, wait, script). */
+export type StepKind = "navigate" | "wait" | "script" | "intent" | "click" | "fill" | "press" | "hover";
 
 export interface Goal {
   id: string;
@@ -39,11 +21,8 @@ export interface TestPlan {
   summary: string;
   startUrl: string;
   viewport?: { width: number; height: number };
-  /** New: high-level goals driven by an autonomous agent. Preferred. */
+  /** High-level goals driven by an autonomous agent. */
   goals?: Goal[];
-  /** Legacy step-by-step plan. Kept for backwards compatibility with old
-   *  claude.md files that include a pre-baked Test Plan JSON. */
-  steps?: PlanStep[];
 }
 
 export type EventOutcome = "success" | "failure" | "skipped";
