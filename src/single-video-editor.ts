@@ -361,7 +361,11 @@ export async function editSingleVideo({
   //      coalesced so we don't end up with a chunk shorter than 1.6s.
   const INTRO_TARGET_S = 4.5;
   const OUTRO_TARGET_S = 4.0;
-  const MIN_CHUNK_S = 1.6;
+  // Bigger chunks = fewer scenes = faster narration call. 2.5s is roughly
+  // one short sentence (~6 words) so the narrator still has room to breathe
+  // per scene, but we don't blow past Claude's narration timeout on long
+  // PR runs with 25+ tool windows.
+  const MIN_CHUNK_S = 2.5;
 
   type BodyMoment = { startS: number; visibility: "silent" | "visible"; toolKind: string; toolInput?: string; toolResult?: string };
   const surfacing = (artifacts.toolWindows ?? [])

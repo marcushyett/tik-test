@@ -140,9 +140,12 @@ function buildPrompt(ctx: NarrationContext): string {
     .replace("{{SCENES}}", sceneLines);
 }
 
-function runClaude(prompt: string, timeoutMs = 240_000): Promise<string> {
+function runClaude(prompt: string, timeoutMs = 360_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", ["-p", prompt, "--output-format", "text"], {
+    // Sonnet is fast enough for templated narration (12-16 short chunks) and
+    // keeps the editor under 90s on this stage. Opus on the same prompt was
+    // hitting 4-minute timeouts on PR runs with 20+ scenes.
+    const child = spawn("claude", ["-p", prompt, "--output-format", "text", "--model", "sonnet"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
