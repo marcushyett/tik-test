@@ -26,7 +26,7 @@
 
 ## The problem
 
-AI ships **20+ PRs a day** that mostly work. Where it fails is taste: awkward flows, off-brand copy, the counter-intuitive ways real users click. Catching that means breaking your own focus to pull each branch, find the change, click through it, then context-switch back. Twenty times a day. **The cost isn't the dev environment, it's the context switch.**
+AI ships **20+ PRs a day** that mostly work. Where it fails is taste: awkward flows, off-brand copy, the counter-intuitive ways real users click. Catching that means dropping what you're doing, opening the PR, exercising it, then switching back. **Twenty context switches a day.**
 
 tik-test puts a **45-60s narrated video** on every PR: happy path, edge cases, bugs called out on camera. You skim 20 in your inbox between meetings and only context-switch into the ones that look off.
 
