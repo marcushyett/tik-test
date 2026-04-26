@@ -18,7 +18,7 @@ import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
  *     preview at 420px wide.
  */
 const TARGET_SECONDS = 22;
-const MAX_SPEED = 3;
+const MAX_SPEED = 1.5;
 const FPS = 12;
 
 export async function renderPreviewGif(mp4Path: string, gifPath: string): Promise<void> {
