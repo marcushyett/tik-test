@@ -9,6 +9,7 @@ import { renderMedia, selectComposition } from "@remotion/renderer";
 import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
 import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.js";
 import { generateTimedNarration, type NarrationScene } from "./timed-narration.js";
+import { generateChecklist } from "./checklist.js";
 import type { RunArtifacts, PlanStep } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -480,6 +481,9 @@ export async function editSingleVideo({
   }
 
   // ── 5. Single Claude call → coherent narration sized to scene targets.
+  //      Kick off the checklist Claude call in parallel — it doesn't depend
+  //      on narration so we don't pay its latency twice.
+  const checklistPromise = generateChecklist({ artifacts, prTitle, prBody });
   const narration = await generateTimedNarration({
     plan: artifacts.plan, prTitle, prBody, focus,
     scenes: sceneList,
@@ -551,21 +555,30 @@ export async function editSingleVideo({
   const skipped = artifacts.events.filter((e) => e.outcome === "skipped").length;
   const stats = { passed, failed, skipped, total: artifacts.events.length, durS: artifacts.totalMs / 1000 };
 
-  // Build the outro checklist from the goal-level events. Cap at 6 items
-  // so the outro never overflows; if there are more, surface the first
-  // few + the failures (since failures are what the reviewer cares about).
-  const goalEvents = artifacts.events.filter((e) => e.kind === "intent");
-  const ranked = [...goalEvents].sort((a, b) => {
-    // Failures first so they're never hidden by truncation.
-    const aFail = a.outcome === "failure" ? 0 : 1;
-    const bFail = b.outcome === "failure" ? 0 : 1;
-    return aFail - bFail;
-  });
-  const checklist: ChecklistItem[] = ranked.slice(0, 6).map((e) => ({
-    outcome: e.outcome,
-    label: (e.shortLabel ?? e.description).replace(/\s+/g, " ").slice(0, 36).trim(),
-    note: e.shortNote?.replace(/\s+/g, " ").slice(0, 64).trim() || undefined,
-  }));
+  // Outro checklist. PREFERRED: the Claude-generated 6-12 row list
+  // (synthesised from goals + agent action history — that's what the
+  // reviewer actually wants to see). FALLBACK: one row per goal, if
+  // generateChecklist returned null (transient CLI failure / unparseable
+  // output) — we never want to ship an outro with no checklist at all.
+  let checklist: ChecklistItem[] = [];
+  const llmList = await checklistPromise;
+  if (llmList && llmList.length > 0) {
+    checklist = llmList;
+    console.log(chalk.dim(`  checklist: ${llmList.length} llm-synthesised items`));
+  } else {
+    const goalEvents = artifacts.events.filter((e) => e.kind === "intent");
+    const ranked = [...goalEvents].sort((a, b) => {
+      const aFail = a.outcome === "failure" ? 0 : 1;
+      const bFail = b.outcome === "failure" ? 0 : 1;
+      return aFail - bFail;
+    });
+    checklist = ranked.slice(0, 6).map((e) => ({
+      outcome: e.outcome,
+      label: (e.shortLabel ?? e.description).replace(/\s+/g, " ").slice(0, 36).trim(),
+      note: e.shortNote?.replace(/\s+/g, " ").slice(0, 64).trim() || undefined,
+    }));
+    console.log(chalk.dim(`  checklist: ${checklist.length} fallback goal-level items`));
+  }
 
   const input: SingleVideoInput = {
     title: artifacts.plan.name || "Feature review",

@@ -86,58 +86,79 @@ function outroTitleFontSize(title: string): number {
 }
 
 /**
- * Vertical checklist of the actual goals the agent ran. Each row gets a
- * circular pass/fail glyph, the short label, and (for failures) a single
- * line of explanation underneath. Tight enough to fit 6 items in the
- * outro band without colliding with the bottom 280px caption zone.
+ * Vertical checklist of every check the agent ran (LLM-synthesised from
+ * the agent's action log). Each row: circular pass/fail glyph, scannable
+ * label, optional one-line note for failures. Row size scales with item
+ * count so up to 10 fit inside the safe band without colliding with
+ * captions or going off-screen.
  */
-const Checklist: React.FC<{ items: ChecklistItem[] }> = ({ items }) => (
-  <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 24, maxWidth: 460, marginLeft: "auto", marginRight: "auto", textAlign: "left" }}>
-    {items.map((item, i) => {
-      const isFail = item.outcome === "failure";
-      const isSkip = item.outcome === "skipped";
-      const glyphColor = isFail ? "#ff5d5d" : isSkip ? "#94a3b8" : "#00e5a0";
-      return (
-        <div
-          key={i}
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 11,
-            padding: "9px 12px",
-            borderRadius: 12,
-            background: "rgba(255,255,255,0.04)",
-            border: `1px solid ${isFail ? "rgba(255,93,93,0.28)" : "rgba(255,255,255,0.08)"}`,
-          }}
-        >
+const Checklist: React.FC<{ items: ChecklistItem[] }> = ({ items }) => {
+  const dense = items.length > 7;
+  const labelPx = dense ? 14 : 16;
+  const notePx = dense ? 11 : 13;
+  const padY = dense ? 6 : 8;
+  const padX = dense ? 10 : 12;
+  const gap = dense ? 6 : 8;
+  const glyph = dense ? 18 : 20;
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap,
+        marginTop: dense ? 16 : 20,
+        maxWidth: 460,
+        marginLeft: "auto",
+        marginRight: "auto",
+        textAlign: "left",
+      }}
+    >
+      {items.map((item, i) => {
+        const isFail = item.outcome === "failure";
+        const isSkip = item.outcome === "skipped";
+        const glyphColor = isFail ? "#ff5d5d" : isSkip ? "#94a3b8" : "#00e5a0";
+        return (
           <div
+            key={i}
             style={{
-              flexShrink: 0,
-              marginTop: 2,
-              width: 22, height: 22, borderRadius: 999,
-              background: glyphColor,
-              color: "#0a0a0a",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontWeight: 900, fontSize: 14, lineHeight: 1,
+              display: "flex",
+              alignItems: "flex-start",
+              gap: dense ? 9 : 11,
+              padding: `${padY}px ${padX}px`,
+              borderRadius: 10,
+              background: "rgba(255,255,255,0.04)",
+              border: `1px solid ${isFail ? "rgba(255,93,93,0.28)" : "rgba(255,255,255,0.08)"}`,
             }}
           >
-            {isFail ? "✗" : isSkip ? "–" : "✓"}
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 17, fontWeight: 700, color: "#ffffff", lineHeight: 1.2, letterSpacing: "-0.005em" }}>
-              {item.label}
+            <div
+              style={{
+                flexShrink: 0,
+                marginTop: 1,
+                width: glyph, height: glyph, borderRadius: 999,
+                background: glyphColor,
+                color: "#0a0a0a",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontWeight: 900, fontSize: glyph * 0.62, lineHeight: 1,
+              }}
+            >
+              {isFail ? "✗" : isSkip ? "–" : "✓"}
             </div>
-            {item.note && (
-              <div style={{ fontSize: 13, color: isFail ? "#ffb0b0" : "#9aa4b2", lineHeight: 1.3, marginTop: 3, fontWeight: 500 }}>
-                {item.note}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: labelPx, fontWeight: 700, color: "#ffffff", lineHeight: 1.2, letterSpacing: "-0.005em" }}>
+                {item.label}
               </div>
-            )}
+              {item.note && (
+                <div style={{ fontSize: notePx, color: isFail ? "#ffb0b0" : "#9aa4b2", lineHeight: 1.3, marginTop: 2, fontWeight: 500 }}>
+                  {item.note}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      );
-    })}
-  </div>
-);
+        );
+      })}
+    </div>
+  );
+};
 
 const Block: React.FC<{ label: string; value: number; color: string }> = ({ label, value, color }) => (
   <div style={{ padding: "14px 22px", borderRadius: 16, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", backdropFilter: "blur(10px)", minWidth: 124 }}>
