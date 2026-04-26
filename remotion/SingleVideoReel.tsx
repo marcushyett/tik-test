@@ -318,33 +318,45 @@ const ToolActivityBadge: React.FC<{ label: string; detail?: string }> = ({ label
     <div
       style={{
         position: "absolute",
-        top: 120,
+        top: 100,
         left: "50%",
         transform: "translateX(-50%)",
-        padding: "18px 28px",
-        borderRadius: 22,
-        background: "rgba(10,12,18,0.88)",
-        border: "1px solid rgba(255,255,255,0.14)",
-        color: "rgba(255,255,255,0.98)",
+        padding: "10px 16px",
+        borderRadius: 14,
+        background: "rgba(10,12,18,0.85)",
+        border: "1px solid rgba(255,255,255,0.12)",
+        color: "rgba(255,255,255,0.96)",
         fontFamily: "'Geist', 'Inter', system-ui, sans-serif",
         fontWeight: 600,
-        fontSize: 34,
-        letterSpacing: "-0.01em",
-        maxWidth: "78%",
+        fontSize: 22,
+        letterSpacing: "-0.005em",
+        maxWidth: "82%",
         textAlign: "center",
-        lineHeight: 1.2,
+        lineHeight: 1.25,
         opacity,
-        boxShadow: "0 10px 40px rgba(0,0,0,0.45)",
+        boxShadow: "0 6px 22px rgba(0,0,0,0.4)",
         pointerEvents: "none",
         zIndex: 1500,
       }}
     >
-      <div style={{ fontSize: 18, opacity: 0.65, textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 6 }}>
-        Looking under the hood
+      <div style={{ fontSize: 11, opacity: 0.55, textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 4, fontWeight: 700 }}>
+        Agent
       </div>
-      {label}
+      <div>{label}</div>
       {detail && (
-        <div style={{ fontSize: 24, opacity: 0.7, fontWeight: 500, marginTop: 8 }}>{detail}</div>
+        <div
+          style={{
+            fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace",
+            fontSize: 13,
+            opacity: 0.7,
+            fontWeight: 500,
+            marginTop: 6,
+            letterSpacing: 0,
+            color: "#9be0c8",
+          }}
+        >
+          {detail}
+        </div>
       )}
     </div>
   );

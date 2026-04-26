@@ -146,13 +146,17 @@ async function translateToolCaptions(
     const result = (c.result || "").replace(/\s+/g, " ").slice(0, 400);
     return `#${i + 1} [${c.kind}] input="${input}" result="${result}"`;
   }).join("\n");
-  const prompt = `You are narrating what a QA agent is checking inside a web app during a review video, for a non-technical viewer.
+  const prompt = `You are narrating what a QA agent is doing inside a web app during a review video.
 
-For each tool call below, produce ONE JSON object {"label":"...","detail":"..."} on its own line, where:
-- label: 4-8 words, present tense, what the agent is LOOKING FOR. No jargon (no "JS", "DOM", "API", "HTTP"). Good: "Counting broken TikTok thumbnails". Bad: "Running JS evaluation".
-- detail: 4-12 words, what the agent FOUND. Include specific numbers from the result if visible. Good: "Found 84 expired image URLs, 0 blob-backed". Bad: "Various things".
+The screen reader sees both a non-technical viewer (who needs the plain-English summary) and a developer reviewing the PR (who wants to see the specific selector / value / element being acted on, in monospace).
 
-Return exactly ${calls.length} JSON objects, one per line, in the same order. No prose, no markdown, no numbering prefix. Just the JSON lines.
+For each tool call below, produce ONE JSON object on its own line:
+  {"label": "...", "detail": "..."}
+
+- label: PLAIN ENGLISH summary, 5-9 words, present tense, what the agent is doing. No code, no selectors, no quotes around technical strings. Good: "Adding a task due tomorrow". Bad: "Calling browser_type on input[name=title]".
+- detail: TECHNICAL one-liner, max 60 chars, suitable for a monospace overlay. Show the actual selector/value/url/key, exactly as the agent would type it in a terminal. Examples (generic): \`type "hello"\`, \`click [data-testid=submit]\`, \`navigate /settings\`, \`press Enter\`. Bad: vague summaries, prose, or duplicating the label.
+
+Return exactly ${calls.length} JSON objects, one per line, same order. No prose, no markdown, no numbering. Just the JSON lines.
 
 Tool calls:
 ${lines}`;
@@ -486,8 +490,15 @@ export async function editSingleVideo({
     voiceSrc?: string;
     voiceDurS: number;
   }
+  // When per-tool voice is generated below (goal-agent runs that produce
+  // toolWindows), suppress per-event voice. Otherwise the goal-level voice
+  // plays during whatever the agent happens to be doing at goal start —
+  // typically login or navigation — and narrates the FEATURE ahead of when
+  // it actually appears on screen, creating an audible mismatch. Per-tool
+  // voice tracks the agent's actual moments; intro + outro carry the arc.
+  const hasToolVoice = !!(ttsBackend && artifacts.toolWindows?.length);
   const preStaged = visibleEvents.map((ev, i) => {
-    const voiceLine = story.steps[i].voiceLine.trim();
+    const voiceLine = hasToolVoice ? "" : story.steps[i].voiceLine.trim();
     // Caption is ALWAYS the sanitised voice text so on-screen subtitles
     // match what the viewer actually hears word-for-word. Story.ts asks
     // Claude for matching captionText but the model often drifts; using
@@ -497,7 +508,7 @@ export async function editSingleVideo({
   });
 
   const preEvents: PreEvent[] = await runWithConcurrency(preStaged, 6, async ({ i, ev, voiceLine, caption }): Promise<PreEvent> => {
-    if (!ttsBackend) return { ev, voiceLine, caption, voiceSrc: undefined, voiceDurS: 0 };
+    if (!ttsBackend || !voiceLine) return { ev, voiceLine, caption, voiceSrc: undefined, voiceDurS: 0 };
     const fileName = `voice-${String(i).padStart(3, "0")}.wav`;
     try {
       await synth(ttsBackend, sanitiseForSpeech(voiceLine), path.join(publicDir, fileName));

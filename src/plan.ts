@@ -16,7 +16,7 @@ Output ONLY a single JSON object (no prose, no markdown fences):
   "viewport": { "width": number, "height": number },
   "goals": Array<{
     "id": string,                // short kebab-case id
-    "intent": string,            // natural-language goal, e.g. "Navigate to the Inspiration page and open Theater Mode"
+    "intent": string,            // natural-language goal — describes WHAT to do, not which selectors to use
     "success": string,           // observable condition, e.g. "Full-screen overlay is visible with counter showing 1 / N"
     "importance": "low"|"normal"|"high"|"critical"
   }>
@@ -28,10 +28,12 @@ GOAL-WRITING GUIDANCE:
 3. **Let the diff drive WHAT.** Read the PR: what's new? what's the ONE thing a reviewer cares about most? That's your primary goal.
 4. **READ THE REVIEWER COMMENTS and bake any testing advice into the goal.** If a commenter says "fresh discoveries worked" or "run X before you'll see Y" or "the legacy data is broken, trigger a new flow", your primary goal MUST incorporate that action. Skipping the reviewer's suggested setup is the #1 way plans end up testing broken state instead of the fixed state.
 5. **Success conditions should describe what a USER would see** — a rendered grid, a toast, a new card appearing, a counter changing. Avoid success conditions that require JS/network inspection ("img src points at X") — those force the agent to debug instead of demo. Only use technical conditions when truly unavoidable.
-6. **Goals are natural-language INSTRUCTIONS.** Good examples:
-   - PRIMARY: "Open Theater Mode from the Inspiration page, play the first video, advance to the second with ArrowDown, and exit with Escape."
-   - PRIMARY with reviewer hint: "Trigger a fresh TikTok discovery on the Inspiration page (per reviewer), then confirm the newly-added cards show loaded thumbnails."
-   - SECONDARY (optional): "From the Inspiration grid, click Recreate → Static Ad and confirm a chat message gets sent."
+6. **Goals are natural-language INSTRUCTIONS.** Good shape (generic, not tied to any specific app):
+   - PRIMARY: "Open the new feature from the main nav, exercise the primary action it adds, and confirm the visible result."
+   - PRIMARY with reviewer hint: "Follow the reviewer's setup step (e.g. trigger a fresh fetch / clear cached state), then confirm the newly-rendered items behave as the PR describes."
+   - SECONDARY (optional): "Try the same flow with an edge-case input (empty / max-length / repeated press) and confirm it doesn't break."
+
+   When you write the actual goal, replace the generic phrasing with the app's real surface (page names, button labels, etc.) — but ONLY using language a user would see on screen, never selectors or class names.
 7. **importance tier.** Primary goal is "critical"; secondary is "high".
 
 RULES (strict):

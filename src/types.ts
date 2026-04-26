@@ -24,7 +24,7 @@ export interface PlanStep {
 export interface Goal {
   id: string;
   /** Natural-language goal — what we want an autonomous agent to verify.
-   *  E.g. "Navigate to the Inspiration page and open Theater Mode". */
+   *  Generic example: "Navigate to the new feature page and exercise the primary action." */
   intent: string;
   /** Optional observable success condition the agent should stop at. */
   success?: string;
