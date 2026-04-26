@@ -10,30 +10,27 @@ interface Props {
 }
 
 /**
- * TV-style subtitle: words appear at reading pace, the active word is highlighted,
- * and older words fade out so the caption never accumulates and overflows the
- * screen. At any given moment only a short rolling window (about one phrase's
- * worth) is visible.
+ * TV-style subtitle: words appear at reading pace, the active word is
+ * highlighted, and older words fade out so the caption never accumulates
+ * and overflows the screen. Tokens that LOOK technical (containing
+ * brackets, equals signs, slashes, dots, or ALL_CAPS_SNAKE) render in
+ * a monospace pill at slightly smaller size, so on-screen subtitles
+ * naturally distinguish "click [data-testid=add]" from prose words.
  */
 export const WordCaption: React.FC<Props> = ({
   text, durationInFrames, fps, accent = "#00e5a0",
-  voiceDurS, voiceStartDelayS = 0.2,
+  voiceDurS, voiceStartDelayS = 0.05,
 }) => {
   const frame = useCurrentFrame();
   const words = text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
   if (words.length === 0) return null;
 
   const leadInFrames = Math.max(2, Math.round(fps * voiceStartDelayS));
-  // Minimum 0.28s per word — below this, captions flash too fast to read.
-  // With voice, pace to the narration; clamp to the min. Without voice, ~0.38s/word.
   const minWordFrames = Math.round(fps * 0.28);
   const perWordFrames = voiceDurS && voiceDurS > 0
     ? Math.max(minWordFrames, Math.floor((voiceDurS * fps) / words.length))
     : Math.max(minWordFrames, Math.floor((durationInFrames - leadInFrames) / words.length));
 
-  // Rolling window: a word stays fully visible for WINDOW_WORDS word-durations
-  // after it appears, then fades out over FADE_FRAMES. Tight enough that the
-  // visible caption never stacks beyond ~one phrase.
   const WINDOW_WORDS = 7;
   const FADE_FRAMES = Math.round(fps * 0.25);
 
@@ -58,10 +55,8 @@ export const WordCaption: React.FC<Props> = ({
         const fadeStartAt = appearAt + WINDOW_WORDS * perWordFrames;
         const fadeEndAt = fadeStartAt + FADE_FRAMES;
 
-        // Compute current opacity for this word.
         let opacity = 0;
         if (frame >= appearAt && frame < fadeStartAt) {
-          // Quick fade-in over the first 5 frames after appearance.
           opacity = interpolate(frame, [appearAt, appearAt + 5], [0, 1], {
             extrapolateLeft: "clamp",
             extrapolateRight: "clamp",
@@ -85,6 +80,7 @@ export const WordCaption: React.FC<Props> = ({
           extrapolateRight: "clamp",
         });
         const scale = interpolate(enterProgress, [0, 1], [0.85, 1]);
+        const isTechnical = looksTechnical(w);
 
         return (
           <span
@@ -94,12 +90,18 @@ export const WordCaption: React.FC<Props> = ({
               opacity,
               transform: `scale(${scale}) translateY(${(1 - enterProgress) * 8}px)`,
               color: isCurrent ? "#0a0a0a" : "#ffffff",
-              backgroundColor: isCurrent ? accent : "rgba(10,10,10,0.78)",
-              padding: "5px 11px",
-              borderRadius: 9,
-              fontSize: 40,
-              fontWeight: 800,
-              letterSpacing: "-0.005em",
+              backgroundColor: isCurrent
+                ? accent
+                : (isTechnical ? "rgba(20,24,32,0.85)" : "rgba(10,10,10,0.78)"),
+              padding: isTechnical ? "4px 9px" : "5px 11px",
+              borderRadius: isTechnical ? 7 : 9,
+              border: isTechnical && !isCurrent ? "1px solid rgba(155,224,200,0.35)" : undefined,
+              fontFamily: isTechnical
+                ? "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace"
+                : "inherit",
+              fontSize: isTechnical ? 32 : 40,
+              fontWeight: isTechnical ? 600 : 800,
+              letterSpacing: isTechnical ? 0 : "-0.005em",
               lineHeight: 1.05,
               textShadow: isCurrent ? "none" : "0 2px 8px rgba(0,0,0,0.5)",
               boxShadow: isCurrent
@@ -115,3 +117,18 @@ export const WordCaption: React.FC<Props> = ({
     </div>
   );
 };
+
+/**
+ * A token "looks technical" when it carries syntax characters that prose
+ * never contains: brackets, equals, slashes, hash, parens, or it's all-caps
+ * snake/kebab. We strip surrounding punctuation (`,` `.` `;` `"` `'`) so the
+ * detection still fires when the line ends with the technical token.
+ */
+function looksTechnical(token: string): boolean {
+  const t = token.replace(/^[\s"'`(]+|[\s"'`),.;:!?]+$/g, "");
+  if (t.length < 2) return false;
+  if (/[\[\]=()/#]/.test(t)) return true;
+  if (/^[A-Z][A-Z0-9_]+$/.test(t) && t.length >= 4) return true; // ALL_CAPS_SNAKE
+  if (/^[a-z]+(-[a-z]+){2,}$/.test(t)) return true; // kebab-with-3+-parts (data-testid)
+  return false;
+}

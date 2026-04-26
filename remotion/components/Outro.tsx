@@ -1,14 +1,17 @@
 import { AbsoluteFill, Audio, useCurrentFrame, useVideoConfig, spring, interpolate, Easing, staticFile } from "remotion";
 import { Background } from "./Background";
+import { WordCaption } from "./WordCaption";
 
 interface Props {
   title: string;
   stats: { passed: number; failed: number; skipped: number; total: number; durS: number };
   voiceSrc?: string;
   voiceDurS?: number;
+  voicePlaybackRate?: number;
+  captionText?: string;
 }
 
-export const Outro: React.FC<Props> = ({ title, stats, voiceSrc }) => {
+export const Outro: React.FC<Props> = ({ title, stats, voiceSrc, voiceDurS, voicePlaybackRate, captionText }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
 
@@ -51,7 +54,19 @@ export const Outro: React.FC<Props> = ({ title, stats, voiceSrc }) => {
           </div>
         </div>
       </AbsoluteFill>
-      {voiceSrc && <Audio src={staticFile(voiceSrc)} volume={1.1} />}
+      {captionText && (
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 240 }}>
+          <WordCaption
+            text={captionText}
+            durationInFrames={durationInFrames}
+            fps={fps}
+            accent={accent}
+            voiceDurS={voiceDurS ? voiceDurS / (voicePlaybackRate ?? 1) : undefined}
+            voiceStartDelayS={0.05}
+          />
+        </div>
+      )}
+      {voiceSrc && <Audio src={staticFile(voiceSrc)} volume={1.1} playbackRate={voicePlaybackRate ?? 1} />}
     </AbsoluteFill>
   );
 };

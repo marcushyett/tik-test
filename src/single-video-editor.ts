@@ -1,4 +1,4 @@
-import { mkdir, writeFile, rm, stat } from "node:fs/promises";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import { execSync } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
@@ -8,8 +8,8 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
 import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.js";
-import { generateStory, type StoryOutput } from "./story.js";
-import type { RunArtifacts, StepEvent, PlanStep, BBox } from "./types.js";
+import { generateTimedNarration, type NarrationScene } from "./timed-narration.js";
+import type { RunArtifacts, PlanStep } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,68 +41,66 @@ function getVersionTag(): string {
   return cachedVersionTag;
 }
 
-export interface SingleVideoEvent {
-  index: number;
-  kind: string;
-  importance: "low" | "normal" | "high" | "critical";
-  outcome: "success" | "failure" | "skipped";
-  description: string;
-
-  // Timeline in the trimmed master video (seconds)
+/**
+ * One slot in the body timeline. Slots are SORTED + NON-OVERLAPPING + COVER
+ * the entire master video — voice and caption never stack and never leave
+ * silence between them. Each slot's voice is sized via playbackRate to fit
+ * its window exactly.
+ */
+export interface BodyChunk {
+  /** Body-relative seconds (0 = first frame of master video). */
   startS: number;
-  endS: number;
-
-  // Voice-over (plays during the event's window)
-  caption: string;
+  /** Window duration. Sum of all chunks ≈ masterDurS. */
+  durS: number;
+  /** Caption text (rendered word-by-word). Matches voice word-for-word. */
+  text: string;
   voiceSrc?: string;
   voiceDurS?: number;
   voicePlaybackRate?: number;
-
-  // For pan/zoom + click flash
-  targetX?: number;
-  targetY?: number;
-  clickAtS?: number;
+  /** Plain-English overlay label for SILENT investigation moments
+   *  (browser_evaluate, network, screenshot-then-think). Shown as a small
+   *  card near the top of the frame so the viewer sees what the agent is
+   *  checking even when the UI is static. Empty for visible interactions. */
+  badgeLabel?: string;
+  /** Terminal-style technical detail (e.g. `evaluate document.querySelectorAll(...)`).
+   *  Only meaningful when badgeLabel is set. */
+  badgeDetail?: string;
 }
 
 export interface SingleVideoInput {
   title: string;
   summary: string;
-  masterVideoSrc: string;   // path relative to publicDir
+  masterVideoSrc: string;
   viewport: { width: number; height: number };
   masterDurS: number;
-  events: SingleVideoEvent[];
-
   introDurFrames: number;
   outroDurFrames: number;
   stats: { passed: number; failed: number; skipped: number; total: number; durS: number };
   introVoiceSrc?: string;
   introVoiceDurS?: number;
+  introVoicePlaybackRate?: number;
+  introCaption?: string;
   outroVoiceSrc?: string;
   outroVoiceDurS?: number;
+  outroVoicePlaybackRate?: number;
+  outroCaption?: string;
   versionTag?: string;
-  /** Per-tool-call overlays in TRIMMED seconds — rendered as small status
-   *  cards during silent-but-informative tool calls (browser_evaluate,
-   *  browser_network_requests, etc). Each has a user-friendly label so
-   *  viewers see what the agent is checking and why. */
-  toolOverlays?: Array<{ startS: number; endS: number; label: string; detail?: string; voiceSrc?: string; voiceDurS?: number; captionText?: string }>;
+  /** Body narration timeline — back-to-back chunks that cover the full
+   *  master duration. Each chunk owns its voice + caption + optional badge. */
+  bodyChunks: BodyChunk[];
 }
 
 /**
- * Run an async worker over `items` with at most `limit` in flight. Preserves
- * the input order in the result array (so per-step voice indexes stay aligned
- * with their events). Used to parallelize OpenAI TTS calls without hammering
- * the endpoint beyond what a single API key comfortably sustains.
- */
-/**
- * Classify a tool kind for the video:
+ * Classify a tool kind for the body narration:
  *   "silent"  — investigative work with no visible UI change (evaluate,
- *               network_requests). Gets an overlay BADGE + voice.
+ *               network, console). Gets a top-of-frame BADGE on top of
+ *               the narration so the viewer can see what's being checked.
  *   "visible" — user-visible interaction (click, type, press, nav). Gets
- *               voice ONLY (viewer can see what's happening, badge would
- *               clutter the frame).
- *   "skip"    — plumbing the viewer shouldn't care about.
- * Both "silent" and "visible" tool calls get a TTS voice line so the
- * narration is continuous across the video instead of one line per goal.
+ *               narration only — the action is visible on screen so a
+ *               badge would just clutter the frame.
+ *   "skip"    — plumbing the viewer shouldn't care about. We don't make a
+ *               scene boundary here; the narration of the surrounding scenes
+ *               extends to cover the dead air naturally.
  */
 function classifyTool(kind: string): "silent" | "visible" | "skip" {
   switch (kind) {
@@ -132,125 +130,6 @@ function classifyTool(kind: string): "silent" | "visible" | "skip" {
   }
 }
 
-/**
- * Call claude once per run to turn a batch of raw tool calls into short,
- * specific, non-technical "Looking for X → Found Y" captions. One CLI
- * round-trip amortized across all overlays instead of per-tool.
- */
-async function translateToolCaptions(
-  calls: Array<{ kind: string; input?: string; result?: string }>,
-): Promise<Array<{ label: string; detail?: string } | null>> {
-  if (calls.length === 0) return [];
-  const lines = calls.map((c, i) => {
-    const input = (c.input || "").replace(/\s+/g, " ").slice(0, 250);
-    const result = (c.result || "").replace(/\s+/g, " ").slice(0, 400);
-    return `#${i + 1} [${c.kind}] input="${input}" result="${result}"`;
-  }).join("\n");
-  const prompt = `You are narrating what a QA agent is doing inside a web app during a review video.
-
-The screen reader sees both a non-technical viewer (who needs the plain-English summary) and a developer reviewing the PR (who wants to see the specific selector / value / element being acted on, in monospace).
-
-For each tool call below, produce ONE JSON object on its own line:
-  {"label": "...", "detail": "..."}
-
-- label: PLAIN ENGLISH summary, 5-9 words, present tense, what the agent is doing. No code, no selectors, no quotes around technical strings. Good: "Adding a task due tomorrow". Bad: "Calling browser_type on input[name=title]".
-- detail: TECHNICAL one-liner, max 60 chars, suitable for a monospace overlay. Show the actual selector/value/url/key, exactly as the agent would type it in a terminal. Examples (generic): \`type "hello"\`, \`click [data-testid=submit]\`, \`navigate /settings\`, \`press Enter\`. Bad: vague summaries, prose, or duplicating the label.
-
-Return exactly ${calls.length} JSON objects, one per line, same order. No prose, no markdown, no numbering. Just the JSON lines.
-
-Tool calls:
-${lines}`;
-
-  const { spawn } = await import("node:child_process");
-  return await new Promise<Array<{ label: string; detail?: string } | null>>((resolve) => {
-    const child = spawn("claude", ["-p", prompt, "--output-format", "text", "--model", "sonnet"], {
-      stdio: ["ignore", "pipe", "pipe"], cwd: "/tmp",
-    });
-    let out = "";
-    const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} resolve(calls.map(() => null)); }, 60_000);
-    child.stdout.on("data", (d: Buffer) => (out += d.toString()));
-    child.on("close", () => {
-      clearTimeout(timer);
-      const results: Array<{ label: string; detail?: string } | null> = [];
-      const trimmed = out.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/i, "");
-      for (const raw of trimmed.split("\n")) {
-        const line = raw.trim();
-        if (!line) continue;
-        try {
-          const obj = JSON.parse(line);
-          if (typeof obj?.label === "string") {
-            results.push({ label: obj.label.slice(0, 80), detail: typeof obj.detail === "string" && obj.detail.trim() ? obj.detail.slice(0, 120) : undefined });
-          } else results.push(null);
-        } catch { results.push(null); }
-      }
-      while (results.length < calls.length) results.push(null);
-      resolve(results.slice(0, calls.length));
-    });
-    child.on("error", () => { clearTimeout(timer); resolve(calls.map(() => null)); });
-  });
-}
-
-/**
- * Extract a short non-technical detail line from a tool result. Uses
- * cheap pattern-matching heuristics rather than an LLM call — good enough
- * for common evaluate/network shapes, silent otherwise.
- *
- *   browser_evaluate with {total, blob, broken} → "18 of 21 thumbnails from Blob, 0 broken"
- *   browser_network_requests with many 403s     → "Spotted 84 failing image loads"
- *   browser_network_requests otherwise         → "Watched N requests"
- *   browser_take_screenshot                     → silent (label alone)
- */
-function toolDetail(kind: string, result?: string): string | undefined {
-  if (!result) return undefined;
-  const trimmed = result.trim();
-  if (kind === "browser_evaluate") {
-    // Look for a JSON object in the result text — MCP prefixes with "### Result {...}".
-    const jsonMatch = /\{[\s\S]*\}/.exec(trimmed);
-    if (!jsonMatch) return undefined;
-    try {
-      const obj = JSON.parse(jsonMatch[0]);
-      const flat = flattenForSummary(obj);
-      // Common thumbnail/image shapes.
-      if (typeof flat.total === "number" && typeof flat.blob === "number") {
-        const blobN = flat.blob;
-        const total = flat.total;
-        const broken = flat.broken ?? flat.tiktokCdn ?? 0;
-        if (total === 0) return "Grid looks empty";
-        if (blobN === total && !broken) return `All ${total} thumbnails loaded cleanly`;
-        if (blobN === 0) return `None of ${total} images loaded from Blob storage`;
-        return `${blobN} of ${total} thumbnails from Blob${broken ? `, ${broken} broken` : ""}`;
-      }
-      if (typeof flat.loaded === "number" && typeof flat.broken === "number") {
-        return `${flat.loaded} loaded, ${flat.broken} broken`;
-      }
-      if (typeof flat.count === "number") return `Counted ${flat.count}`;
-      return undefined;
-    } catch { return undefined; }
-  }
-  if (kind === "browser_network_requests") {
-    const failing = (trimmed.match(/\] [34][0-9]{2}\b/g) || []).length;
-    const total = (trimmed.match(/^\[(GET|POST|PUT|DELETE|PATCH)\]/gm) || []).length;
-    if (failing > 0) return `Spotted ${failing} failing request${failing === 1 ? "" : "s"}`;
-    if (total > 0) return `Watched ${total} requests`;
-    return undefined;
-  }
-  return undefined;
-}
-
-/**
- * Recursively find numeric leaves at depth ≤2 and merge into a flat map.
- * Handles shapes like `{counts: {total: 4, blob: 0}}` and `{total: 4, blob: 0}`.
- */
-function flattenForSummary(obj: any, depth = 2): Record<string, any> {
-  if (obj == null || typeof obj !== "object") return {};
-  const out: Record<string, any> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (typeof v === "number" || typeof v === "string") out[k] = v;
-    else if (depth > 0 && typeof v === "object") Object.assign(out, flattenForSummary(v, depth - 1));
-  }
-  return out;
-}
-
 async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
@@ -270,11 +149,6 @@ function sanitiseForSpeech(s: string): string {
   return s.replace(/[✓✗⚠✨📸🎬]/g, "").replace(/—/g, "—").replace(/·/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function bboxCenter(b?: BBox): { x: number; y: number } | undefined {
-  if (!b) return undefined;
-  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-}
-
 export interface SingleVideoEditOptions {
   artifacts: RunArtifacts;
   outPath: string;
@@ -285,14 +159,10 @@ export interface SingleVideoEditOptions {
   focus?: string;
 }
 
-/**
- * Build a trimmed master video from the raw recording by collapsing long idle
- * stretches. Returns the mapping from original → trimmed timestamps.
- */
 interface TrimSegment {
   rawStartS: number;
   rawEndS: number;
-  speed: number;          // playback rate for this segment (>1 means fast-forward)
+  speed: number;
   trimmedStartS: number;
   trimmedEndS: number;
 }
@@ -311,7 +181,6 @@ function buildTrimPlan(
     start: Math.max(0, w.start),
     end: Math.min(rawDurS, w.end),
   }));
-  // Merge overlapping/adjacent active windows.
   active.sort((a, b) => a.start - b.start);
   const merged: typeof active = [];
   for (const w of active) {
@@ -326,10 +195,6 @@ function buildTrimPlan(
   for (const w of merged) {
     const idleBefore = w.start - cursor;
     if (idleBefore > idleThresholdS) {
-      // First idle (page load / auth / setup) gets a longer cap so the
-      // opening reads naturally — users complained the opening was too
-      // fast to follow. Subsequent idle (agent thinking between tool
-      // calls) compresses harder to avoid static dead time.
       const cap = isFirstIdle ? 1.2 : 0.6;
       const idleTrimmedDurS = Math.min(idleBefore / idleSpeed, cap);
       const speed = idleBefore / Math.max(0.01, idleTrimmedDurS);
@@ -342,7 +207,6 @@ function buildTrimPlan(
       });
       trimmedCursor += idleTrimmedDurS;
     } else if (idleBefore > 0) {
-      // Short idle: keep at natural speed.
       segments.push({
         rawStartS: cursor,
         rawEndS: w.start,
@@ -364,7 +228,6 @@ function buildTrimPlan(
     cursor = w.end;
     isFirstIdle = false;
   }
-  // Tail after the last event — trim aggressively.
   if (cursor < rawDurS) {
     const tailDur = rawDurS - cursor;
     if (tailDur > idleThresholdS) {
@@ -397,14 +260,11 @@ function rawToTrimmed(rawS: number, plan: TrimSegment[]): number {
       return seg.trimmedStartS + localTrimmed;
     }
   }
-  // Fallback: clamp to last segment
   const last = plan[plan.length - 1];
   return last ? last.trimmedEndS : rawS;
 }
 
-/** Apply the trim plan to produce a single continuous MP4. */
 async function renderTrimmedMaster(rawMp4: string, outMp4: string, plan: TrimSegment[]): Promise<void> {
-  // Build a filter_complex that trims + setpts for each segment and concats.
   const videoParts: string[] = [];
   const concatInputs: string[] = [];
   for (let i = 0; i < plan.length; i++) {
@@ -432,6 +292,14 @@ async function renderTrimmedMaster(rawMp4: string, outMp4: string, plan: TrimSeg
   ]);
 }
 
+/**
+ * 2-pass renderer. Pass 1 trims the raw recording into a final-length
+ * master video. Pass 2 derives a complete scene list from that master
+ * (intro + per-tool moments + outro), asks Claude for ONE coherent
+ * narration script sized to those scenes, TTS each chunk, then chains the
+ * audio + captions back-to-back so the final video has continuous voice
+ * across the whole timeline with zero overlap and zero silence.
+ */
 export async function editSingleVideo({
   artifacts, outPath, voice = "Samantha", quick = false,
   prTitle, prBody, focus,
@@ -440,7 +308,7 @@ export async function editSingleVideo({
   const publicDir = path.join(runDir, "public");
   await mkdir(publicDir, { recursive: true });
 
-  // 1. Stage raw → MP4 for consistent frame rate.
+  // ── 1. Stage raw → MP4 for consistent frame rate.
   const stagedRaw = path.join(runDir, "raw.mp4");
   await runFfmpeg([
     "-i", artifacts.rawVideoPath,
@@ -451,103 +319,25 @@ export async function editSingleVideo({
   const rawDurS = await ffprobeDuration(stagedRaw);
   console.log(chalk.dim(`  raw: ${rawDurS.toFixed(1)}s @ ${artifacts.plan.viewport?.width ?? 1280}×${artifacts.plan.viewport?.height ?? 800}`));
 
-  const stepsMap = new Map<string, PlanStep>(((artifacts.plan.steps ?? artifacts.plan.goals ?? []) as any).map((s: any) => [s.id, s]));
+  const _stepsMap = new Map<string, PlanStep>(((artifacts.plan.steps ?? artifacts.plan.goals ?? []) as any).map((s: any) => [s.id, s]));
   const viewport = artifacts.plan.viewport ?? { width: 1280, height: 800 };
-  // Seed voice variation from the plan name (so two renders of the same PR
-  // keep the same voice, but different PRs alternate across the feed).
   const ttsBackend: TTSBackend = resolveBackend(voice, artifacts.plan.name);
   console.log(chalk.dim(`  voice-over: ${describeBackend(ttsBackend)}`));
 
-  // 2. Visible events.
-  // `navigate` is intentionally boring: the raw video always opens with a blank
-  // page-load frame and a slow hydration, and narrating "opening the preview"
-  // wastes the first 3-5 seconds. Treating navigate as idle lets the trim plan
-  // collapse everything before the first real interaction to ~0.6s.
+  // ── 2. Compute raw active windows from event + tool times. NO narration
+  //      yet — narration is generated in pass 2 once we know the final
+  //      master timeline.
   const BORING_KINDS = new Set(["script", "wait", "navigate"]);
   const visibleEvents = artifacts.events.filter((e) => !BORING_KINDS.has(e.kind));
-
-  // 3. Ask Claude for story narration UP FRONT so we know what each event's voice line is.
-  // No fallback — if Claude can't produce coherent narration, the whole render aborts.
-  // tik-test depends on the `claude` CLI everywhere else (plan, goal-agent), so
-  // silently degrading here would hide environment bugs behind a bad video.
-  const story: StoryOutput = await generateStory({
-    plan: artifacts.plan,
-    events: artifacts.events,
-    stepsById: stepsMap,
-    prTitle, prBody, focus,
-    visibleIndices: visibleEvents.map((ev) => artifacts.events.indexOf(ev)),
-  });
-
-  // 4. Generate voice-over for every event up front so we know exact voice durations.
-  //    TTS is the classic "15 sequential network calls that don't depend on each
-  //    other" trap — we run them concurrently (bounded pool) so this stage
-  //    stops being 25s of twiddling thumbs per PR. OpenAI's speech endpoint is
-  //    happy with ~6 parallel requests.
-  interface PreEvent {
-    ev: StepEvent;
-    voiceLine: string;
-    caption: string;
-    voiceSrc?: string;
-    voiceDurS: number;
-  }
-  // When per-tool voice is generated below (goal-agent runs that produce
-  // toolWindows), suppress per-event voice. Otherwise the goal-level voice
-  // plays during whatever the agent happens to be doing at goal start —
-  // typically login or navigation — and narrates the FEATURE ahead of when
-  // it actually appears on screen, creating an audible mismatch. Per-tool
-  // voice tracks the agent's actual moments; intro + outro carry the arc.
-  const hasToolVoice = !!(ttsBackend && artifacts.toolWindows?.length);
-  const preStaged = visibleEvents.map((ev, i) => {
-    const voiceLine = hasToolVoice ? "" : story.steps[i].voiceLine.trim();
-    // Caption is ALWAYS the sanitised voice text so on-screen subtitles
-    // match what the viewer actually hears word-for-word. Story.ts asks
-    // Claude for matching captionText but the model often drifts; using
-    // the voice text directly eliminates the drift.
-    const caption = sanitiseForSpeech(voiceLine);
-    return { i, ev, voiceLine, caption };
-  });
-
-  const preEvents: PreEvent[] = await runWithConcurrency(preStaged, 6, async ({ i, ev, voiceLine, caption }): Promise<PreEvent> => {
-    if (!ttsBackend || !voiceLine) return { ev, voiceLine, caption, voiceSrc: undefined, voiceDurS: 0 };
-    const fileName = `voice-${String(i).padStart(3, "0")}.wav`;
-    try {
-      await synth(ttsBackend, sanitiseForSpeech(voiceLine), path.join(publicDir, fileName));
-      const voiceDurS = await ffprobeDuration(path.join(publicDir, fileName));
-      return { ev, voiceLine, caption, voiceSrc: fileName, voiceDurS };
-    } catch (e) {
-      console.log(chalk.yellow(`  voice skipped for step ${i}: ${(e as Error).message.split("\n")[0]}`));
-      return { ev, voiceLine, caption, voiceSrc: undefined, voiceDurS: 0 };
-    }
-  });
-
-  // 5. Compute each event's raw-video active window — at least long enough for the voice line.
-  // The window starts where the event begins (minus a 0.1s lead-in) and ends at max(natural end, start + voice + 0.25 tail).
-  // Overlapping windows get merged so each event's audio has exclusive runway.
-  const rawWindows: ActiveWindow[] = [];
-  const preferredWindows: Array<{ start: number; end: number; voiceDurS: number }> = [];
-  // Skip event-level windows for goal-based runs ("intent" kind): those span
-  // the whole goal (often 90s+), swallowing the per-tool-call micro-windows
-  // so nothing inside the goal gets trimmed. Use tool windows alone instead.
   const hasToolWindows = !!(artifacts.toolWindows && artifacts.toolWindows.length > 0);
-  for (let i = 0; i < preEvents.length; i++) {
-    const { ev, voiceDurS } = preEvents[i];
+  const rawWindows: ActiveWindow[] = [];
+  for (const ev of visibleEvents) {
     if (hasToolWindows && ev.kind === "intent") continue;
-    const naturalStart = Math.max(0, ev.startMs / 1000 - 0.1);
-    const naturalEnd = Math.min(rawDurS, ev.endMs / 1000 + 0.25);
-    const voiceEnd = Math.min(rawDurS, naturalStart + voiceDurS + 0.25);
-    preferredWindows.push({ start: naturalStart, end: Math.max(naturalEnd, voiceEnd), voiceDurS });
+    rawWindows.push({
+      start: Math.max(0, ev.startMs / 1000 - 0.1),
+      end: Math.min(rawDurS, ev.endMs / 1000 + 0.25),
+    });
   }
-  // Sort + merge adjacent/overlapping windows but REMEMBER the boundaries of each event inside merged groups.
-  // We want each event to claim a non-overlapping span: if i's end > i+1's start, push i's end to exactly i+1's start.
-  for (let i = 0; i < preferredWindows.length; i++) {
-    const w = preferredWindows[i];
-    const next = preferredWindows[i + 1];
-    if (next && w.end > next.start) w.end = Math.max(w.start + 0.4, next.start);
-    rawWindows.push({ start: w.start, end: w.end });
-  }
-  // Add per-tool-call micro-windows so the trimmer compresses agent-thinking
-  // lulls WITHIN a goal event. Without these, a single 90s goal event is one
-  // big "active" window and nothing inside gets trimmed.
   if (artifacts.toolWindows && artifacts.toolWindows.length > 0) {
     for (const tw of artifacts.toolWindows) {
       const s = Math.max(0, Math.min(rawDurS, tw.startMs / 1000));
@@ -556,7 +346,7 @@ export async function editSingleVideo({
     }
   }
 
-  // 6. Build trim plan over those windows and render master.
+  // ── 3. Build trim plan + render master. After this we know `masterDurS`.
   const plan = buildTrimPlan(rawDurS, rawWindows);
   const masterMp4Rel = "master.mp4";
   const masterMp4 = path.join(publicDir, masterMp4Rel);
@@ -565,160 +355,164 @@ export async function editSingleVideo({
   const masterDurS = await ffprobeDuration(masterMp4);
   console.log(chalk.dim(`  master: ${masterDurS.toFixed(1)}s (from ${rawDurS.toFixed(1)}s raw)`));
 
-  // 7. Build final event list with timestamps remapped into the trimmed timeline.
-  const sv: SingleVideoEvent[] = [];
-  for (let i = 0; i < preEvents.length; i++) {
-    const { ev, caption, voiceSrc, voiceDurS } = preEvents[i];
-    const w = rawWindows[i];
-    const startS = rawToTrimmed(w.start, plan);
-    const endS = rawToTrimmed(w.end, plan);
-    const windowDurS = Math.max(0.4, endS - startS);
+  // ── 4. Build the SCENE LIST in composition timeline.
+  //      INTRO(0..introTargetS) → body moments(introTargetS+x..) → OUTRO.
+  //      Body moments come from non-skip tool windows mapped raw→trimmed,
+  //      coalesced so we don't end up with a chunk shorter than 1.6s.
+  const INTRO_TARGET_S = 4.5;
+  const OUTRO_TARGET_S = 4.0;
+  const MIN_CHUNK_S = 1.6;
 
-    // Compute audio playbackRate so voice FITS its window. Small safety margin (0.08s)
-    // prevents audio bleed into the next event's window.
-    let voicePlaybackRate: number | undefined;
-    if (voiceDurS > 0) {
-      const maxAudioS = Math.max(0.4, windowDurS - 0.08);
-      if (voiceDurS > maxAudioS) {
-        voicePlaybackRate = Math.min(1.6, voiceDurS / maxAudioS);
-      } else {
-        voicePlaybackRate = 1.0;
-      }
+  type BodyMoment = { startS: number; visibility: "silent" | "visible"; toolKind: string; toolInput?: string; toolResult?: string };
+  const surfacing = (artifacts.toolWindows ?? [])
+    .map((tw) => ({ tw, vis: classifyTool(tw.kind) }))
+    .filter((x) => x.vis !== "skip");
+
+  const bodyMomentsRaw: BodyMoment[] = surfacing
+    .map((s) => ({
+      startS: rawToTrimmed(s.tw.startMs / 1000, plan),
+      visibility: s.vis as "silent" | "visible",
+      toolKind: s.tw.kind,
+      toolInput: s.tw.input,
+      toolResult: s.tw.result,
+    }))
+    .sort((a, b) => a.startS - b.startS);
+
+  // Ensure first body moment starts at 0 — otherwise the opening seconds
+  // of the master have no chunk and would render silent.
+  const bodyMoments: BodyMoment[] = [];
+  if (bodyMomentsRaw.length === 0) {
+    bodyMoments.push({ startS: 0, visibility: "visible", toolKind: "intro-cover" });
+  } else {
+    if (bodyMomentsRaw[0].startS > 0.4) {
+      bodyMoments.push({ ...bodyMomentsRaw[0], startS: 0 });
+      for (let i = 1; i < bodyMomentsRaw.length; i++) bodyMoments.push(bodyMomentsRaw[i]);
+    } else {
+      bodyMoments.push(...bodyMomentsRaw);
+      bodyMoments[0] = { ...bodyMoments[0], startS: 0 };
     }
+  }
 
-    const center = bboxCenter(ev.bbox);
-    const isClick = ev.kind === "click" || ev.kind === "fill" || ev.kind === "press" || ev.kind === "hover";
-    const clickAtS = center && isClick
-      ? rawToTrimmed(Math.min(w.end - 0.1, ev.startMs / 1000 + 0.7), plan)
-      : undefined;
-    sv.push({
-      index: i,
-      kind: ev.kind,
-      importance: ev.importance,
-      outcome: ev.outcome,
-      description: ev.description,
-      startS, endS,
-      caption,
-      voiceSrc, voiceDurS,
-      voicePlaybackRate,
-      targetX: center?.x,
-      targetY: center?.y,
-      clickAtS,
+  // Coalesce moments closer than MIN_CHUNK_S into the previous one — keeps
+  // the narrator from having to write a 4-word filler line.
+  const coalesced: BodyMoment[] = [];
+  for (const m of bodyMoments) {
+    const last = coalesced[coalesced.length - 1];
+    if (last && m.startS - last.startS < MIN_CHUNK_S) {
+      // Merge into previous: keep prev's startS, but if THIS one is silent
+      // and prev was visible, keep visible (the visible action is what the
+      // viewer sees — silent investigation gets folded into its narration).
+      if (last.visibility === "silent" && m.visibility === "visible") {
+        last.visibility = "visible";
+        last.toolKind = m.toolKind;
+        last.toolInput = m.toolInput;
+        last.toolResult = m.toolResult;
+      }
+      continue;
+    }
+    coalesced.push({ ...m });
+  }
+
+  // Compose the full scene list (intro + body + outro) with composition
+  // timeline start times, then compute targetDurS = gap to next scene.
+  const sceneList: NarrationScene[] = [];
+  sceneList.push({
+    id: "intro", kind: "intro", visibility: "intro",
+    startS: 0, targetDurS: INTRO_TARGET_S,
+    context: `Title card. Open by naming the PROBLEM the PR addresses, then preview what we'll see in the next ${(masterDurS).toFixed(0)}s of screen recording.`,
+  });
+  for (let i = 0; i < coalesced.length; i++) {
+    const m = coalesced[i];
+    const composedStart = INTRO_TARGET_S + m.startS;
+    sceneList.push({
+      id: `m-${i}`, kind: "moment", visibility: m.visibility,
+      startS: composedStart, targetDurS: 0, // filled below
+      context: m.visibility === "silent"
+        ? `The screen is briefly static while the agent investigates with ${m.toolKind}. Narrate the WHY (what we're looking for, what should happen next).`
+        : `On-screen: the agent is performing ${m.toolKind}. Narrate the INTENT and what we should see appear.`,
+      toolKind: m.toolKind,
+      toolInput: m.toolInput,
+      toolResult: m.toolResult,
+    });
+  }
+  sceneList.push({
+    id: "outro", kind: "outro", visibility: "outro",
+    startS: INTRO_TARGET_S + masterDurS, targetDurS: OUTRO_TARGET_S,
+    context: "Closing card. ONE sentence asking for input or naming an open question. Don't summarize what was shown.",
+  });
+
+  // Fill targetDurS from gaps. Intro/outro keep their fixed targets.
+  for (let i = 0; i < sceneList.length - 1; i++) {
+    if (sceneList[i].kind === "moment") {
+      const gap = sceneList[i + 1].startS - sceneList[i].startS;
+      sceneList[i].targetDurS = Math.max(MIN_CHUNK_S, Math.min(14, gap));
+    }
+  }
+
+  // ── 5. Single Claude call → coherent narration sized to scene targets.
+  const narration = await generateTimedNarration({
+    plan: artifacts.plan, prTitle, prBody, focus,
+    scenes: sceneList,
+  });
+
+  // ── 6. TTS every chunk in parallel (intro + body + outro). One bounded pool.
+  const tts = await runWithConcurrency(sceneList, 6, async (s, i) => {
+    const text = narration.chunks[i].text;
+    if (!ttsBackend || !text.trim()) return { src: undefined as string | undefined, dur: 0 };
+    const fileName = `voice-${String(i).padStart(3, "0")}.wav`;
+    try {
+      await synth(ttsBackend, sanitiseForSpeech(text), path.join(publicDir, fileName));
+      return { src: fileName, dur: await ffprobeDuration(path.join(publicDir, fileName)) };
+    } catch (e) {
+      console.log(chalk.yellow(`  voice skipped for scene ${s.id}: ${(e as Error).message.split("\n")[0]}`));
+      return { src: undefined, dur: 0 };
+    }
+  });
+
+  // ── 7. Convert intro + body + outro into renderable shapes. Each body
+  //      chunk gets a playback rate that fits its voice into its window;
+  //      intro/outro stretch their Sequence to fit the voice.
+  const introTts = tts[0];
+  const outroTts = tts[tts.length - 1];
+  const bodyChunks: BodyChunk[] = [];
+  for (let i = 1; i < sceneList.length - 1; i++) {
+    const s = sceneList[i];
+    const c = narration.chunks[i];
+    const v = tts[i];
+    const next = sceneList[i + 1];
+    const durS = next.startS - s.startS; // composition gap = body gap (intro offset cancels)
+    let rate = 1;
+    if (v.dur > 0) {
+      // Aim to fit within the slot minus a small tail so the next chunk's
+      // first word never collides with the trailing breath.
+      const targetSpeechS = Math.max(0.5, durS - 0.08);
+      rate = Math.max(0.92, Math.min(1.45, v.dur / targetSpeechS));
+    }
+    bodyChunks.push({
+      startS: s.startS - INTRO_TARGET_S, // back to body-relative
+      durS,
+      text: sanitiseForSpeech(c.captionText),
+      voiceSrc: v.src,
+      voiceDurS: v.dur || undefined,
+      voicePlaybackRate: rate,
+      badgeLabel: s.visibility === "silent" ? c.badgeLabel?.trim() || undefined : undefined,
+      badgeDetail: s.visibility === "silent" ? c.badgeDetail?.trim() || undefined : undefined,
     });
   }
 
-  // 6. Intro/outro narration.
+  // ── 8. Intro / outro durations based on actual voice length.
+  const introDurS = Math.max(INTRO_TARGET_S, introTts.dur + 0.5);
+  const outroDurS = Math.max(OUTRO_TARGET_S, outroTts.dur + 0.5);
+  const introDurFrames = Math.round(introDurS * FPS);
+  const outroDurFrames = Math.round(outroDurS * FPS);
+  const introPlaybackRate = introTts.dur > 0 ? Math.max(0.95, Math.min(1.3, introTts.dur / Math.max(0.5, introDurS - 0.2))) : 1;
+  const outroPlaybackRate = outroTts.dur > 0 ? Math.max(0.95, Math.min(1.3, outroTts.dur / Math.max(0.5, outroDurS - 0.2))) : 1;
+
+  // ── 9. Stats for intro/outro cards.
   const passed = artifacts.events.filter((e) => e.outcome === "success").length;
   const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
   const skipped = artifacts.events.filter((e) => e.outcome === "skipped").length;
   const stats = { passed, failed, skipped, total: artifacts.events.length, durS: artifacts.totalMs / 1000 };
-
-  const introLine = story.intro;
-  const outroLine = story.outro;
-  let introVoiceSrc: string | undefined;
-  let introVoiceDurS = 0;
-  let outroVoiceSrc: string | undefined;
-  let outroVoiceDurS = 0;
-  if (ttsBackend) {
-    // Intro + outro can synth in parallel (they're independent).
-    const [introResult, outroResult] = await Promise.all([
-      (async () => {
-        try {
-          await synth(ttsBackend, sanitiseForSpeech(introLine), path.join(publicDir, "intro.wav"));
-          return { src: "intro.wav", dur: await ffprobeDuration(path.join(publicDir, "intro.wav")) };
-        } catch { return null; }
-      })(),
-      (async () => {
-        try {
-          await synth(ttsBackend, sanitiseForSpeech(outroLine), path.join(publicDir, "outro.wav"));
-          return { src: "outro.wav", dur: await ffprobeDuration(path.join(publicDir, "outro.wav")) };
-        } catch { return null; }
-      })(),
-    ]);
-    if (introResult) { introVoiceSrc = introResult.src; introVoiceDurS = introResult.dur; }
-    if (outroResult) { outroVoiceSrc = outroResult.src; outroVoiceDurS = outroResult.dur; }
-  }
-
-  const introDurFrames = Math.max(Math.round(FPS * 3.4), Math.round((introVoiceDurS + 0.6) * FPS));
-  const outroDurFrames = Math.max(Math.round(FPS * 3.2), Math.round((outroVoiceDurS + 0.6) * FPS));
-
-  // Build overlays that explain what the agent is doing during silent tool
-  // calls. Mapping: tool-window raw time → trimmed time via the trim plan
-  // (plus intro offset the composition adds). Skip kinds that are either
-  // user-visible already (click, navigate, scroll, press) or internal
-  // plumbing (ToolSearch, Read, Glob). The remaining tools get a friendly
-  // caption so a viewer understands why the screen appears still.
-  const toolOverlays: NonNullable<SingleVideoInput["toolOverlays"]> = [];
-  if (artifacts.toolWindows?.length) {
-    // Map raw→trimmed using the trim plan built earlier in this function.
-    const toTrimmed = (rawS: number): number => {
-      for (const seg of plan) {
-        if (rawS >= seg.rawStartS && rawS <= seg.rawEndS + 0.001) {
-          const fracRaw = (rawS - seg.rawStartS) / Math.max(0.001, seg.rawEndS - seg.rawStartS);
-          return seg.trimmedStartS + fracRaw * (seg.trimmedEndS - seg.trimmedStartS);
-        }
-      }
-      return masterDurS;
-    };
-    // Pick every tool call worth narrating. Silent tools additionally get
-    // an on-screen BADGE; visible tools (clicks, typing, nav) are shown in
-    // the browser recording, but we still voice them so there's continuous
-    // narration over the video instead of a single voice line per goal.
-    const surfacing = artifacts.toolWindows
-      .map((tw, idx) => ({ tw, idx, kind: classifyTool(tw.kind) as "silent" | "visible" | "skip" }))
-      .filter((x) => x.kind !== "skip");
-    let captions: Array<{ label: string; detail?: string } | null> = [];
-    if (surfacing.length > 0) {
-      console.log(chalk.dim(`  narrating ${surfacing.length} tool moments…`));
-      captions = await translateToolCaptions(surfacing.map((x) => x.tw));
-    }
-    // Stage per-tool entries. Silent tools keep their overlay badge (label
-    // shown on top of the frame); visible tools get VOICE ONLY so the
-    // caption doesn't fight the user-visible action on screen.
-    const staged: Array<{ startS: number; endS: number; label: string; detail?: string; kind: "silent" | "visible"; idx: number }> = [];
-    for (let i = 0; i < surfacing.length; i++) {
-      const s = surfacing[i];
-      const caption = captions[i];
-      if (!caption?.label) continue;
-      const sTrim = toTrimmed(s.tw.startMs / 1000);
-      const eTrim = Math.max(sTrim + 0.4, toTrimmed(s.tw.endMs / 1000));
-      if (eTrim - sTrim < 0.3) continue;
-      staged.push({ startS: sTrim, endS: eTrim, label: caption.label, detail: caption.detail, kind: s.kind as "silent" | "visible", idx: i });
-    }
-    if (ttsBackend && staged.length > 0) {
-      console.log(chalk.dim(`  voicing ${staged.length} tool moments…`));
-      await runWithConcurrency(staged, 4, async (ov, i) => {
-        const rawLine = ov.detail ? `${ov.label}. ${ov.detail}.` : `${ov.label}.`;
-        // Sanitise BEFORE splitting captions vs voice so they're identical.
-        const spokenLine = sanitiseForSpeech(rawLine);
-        const fileName = `overlay-${i}.wav`;
-        try {
-          await synth(ttsBackend, spokenLine, path.join(publicDir, fileName));
-          const dur = await ffprobeDuration(path.join(publicDir, fileName));
-          toolOverlays.push({
-            startS: ov.startS, endS: ov.endS,
-            // Silent tools: badge with label/detail on top of frame.
-            // Visible tools: no badge (viewer sees the action already).
-            label: ov.kind === "silent" ? ov.label : "",
-            detail: ov.kind === "silent" ? ov.detail : undefined,
-            // Caption must be exactly what TTS spoke so on-screen text
-            // matches the voice word-for-word.
-            captionText: spokenLine,
-            voiceSrc: fileName, voiceDurS: dur,
-          });
-        } catch {
-          if (ov.kind === "silent") {
-            toolOverlays.push({ startS: ov.startS, endS: ov.endS, label: ov.label, detail: ov.detail });
-          }
-        }
-      });
-    } else {
-      for (const ov of staged) {
-        if (ov.kind === "silent") toolOverlays.push({ startS: ov.startS, endS: ov.endS, label: ov.label, detail: ov.detail });
-      }
-    }
-    toolOverlays.sort((a, b) => a.startS - b.startS);
-  }
 
   const input: SingleVideoInput = {
     title: artifacts.plan.name || "Feature review",
@@ -726,20 +520,23 @@ export async function editSingleVideo({
     masterVideoSrc: masterMp4Rel,
     viewport,
     masterDurS,
-    events: sv,
     introDurFrames,
     outroDurFrames,
     stats,
-    introVoiceSrc,
-    introVoiceDurS: introVoiceDurS || undefined,
-    outroVoiceSrc,
-    outroVoiceDurS: outroVoiceDurS || undefined,
+    introVoiceSrc: introTts.src,
+    introVoiceDurS: introTts.dur || undefined,
+    introVoicePlaybackRate: introPlaybackRate,
+    introCaption: sanitiseForSpeech(narration.chunks[0].captionText),
+    outroVoiceSrc: outroTts.src,
+    outroVoiceDurS: outroTts.dur || undefined,
+    outroVoicePlaybackRate: outroPlaybackRate,
+    outroCaption: sanitiseForSpeech(narration.chunks[narration.chunks.length - 1].captionText),
     versionTag: getVersionTag(),
-    toolOverlays: toolOverlays.length > 0 ? toolOverlays : undefined,
+    bodyChunks,
   };
   await writeFile(path.join(runDir, "reel-input.json"), JSON.stringify(input, null, 2));
 
-  // 7. Bundle + render via Remotion.
+  // ── 10. Bundle + render via Remotion.
   console.log(chalk.dim("  bundling remotion project…"));
   const bundleOutput = await bundle({
     entryPoint: REMOTION_ENTRY,
@@ -755,10 +552,6 @@ export async function editSingleVideo({
     inputProps: input as any,
   });
 
-  // Segment parallelism: split composition into N processes, render in
-  // parallel via frameRange, concat with ffmpeg. Remotion's own `concurrency`
-  // only parallelizes tabs in one process — segments parallelize ACROSS
-  // processes so render + encode of different parts overlap.
   const totalFrames = composition.durationInFrames;
   const segmentsCfg = Math.max(1, Math.min(4, Number(process.env.TIK_RENDER_SEGMENTS) || 3));
   const segments = totalFrames < 240 ? 1 : segmentsCfg;
@@ -871,14 +664,4 @@ export async function editSingleVideo({
     await rm(publicDir, { recursive: true, force: true }).catch(() => {});
   }
   return outPath;
-}
-
-export async function renderPreviewGif(mp4Path: string, gifPath: string): Promise<void> {
-  const probeDur = await ffprobeDuration(mp4Path);
-  const speedMultiplier = probeDur > 26 ? probeDur / 22 : 1;
-  const palettePath = gifPath.replace(/\.gif$/i, ".palette.png");
-  const vf = `setpts=${(1 / speedMultiplier).toFixed(4)}*PTS,fps=10,scale=420:-2:flags=lanczos`;
-  await runFfmpeg(["-i", mp4Path, "-vf", `${vf},palettegen=stats_mode=diff:max_colors=128`, "-y", palettePath]);
-  await runFfmpeg(["-i", mp4Path, "-i", palettePath, "-lavfi", `${vf} [x]; [x][1:v] paletteuse=dither=sierra2_4a`, "-y", gifPath]);
-  await rm(palettePath, { force: true });
 }

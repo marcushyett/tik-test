@@ -1,5 +1,6 @@
 import { AbsoluteFill, Audio, useCurrentFrame, useVideoConfig, spring, interpolate, Easing, staticFile } from "remotion";
 import { Background } from "./Background";
+import { WordCaption } from "./WordCaption";
 
 interface Props {
   title: string;
@@ -7,6 +8,8 @@ interface Props {
   stats: { passed: number; failed: number; skipped: number; total: number; durS: number };
   voiceSrc?: string;
   voiceDurS?: number;
+  voicePlaybackRate?: number;
+  captionText?: string;
 }
 
 /**
@@ -115,22 +118,6 @@ const THEMES: Theme[] = [
     statAccent: "#ffc25c",
     statBg: "rgba(255,194,92,0.07)", statBorder: "1px solid rgba(255,122,26,0.25)",
   },
-  // blueprint — navy + pale-cyan, monospaced. Engineering doc vibe.
-  {
-    name: "blueprint",
-    bgAccent: "#5ed1ff", bgIntensity: 0.8,
-    pillGradient: "linear-gradient(135deg, #0a3d62, #1a7a9c)",
-    pillInk: "#d0f4ff",
-    pillLabel: "review · build",
-    pillShadow: "0 10px 30px rgba(10,61,98,0.55)",
-    titleFontFamily: "'JetBrains Mono', 'SF Mono', 'Menlo', monospace",
-    titleColor: "#e8f7ff",
-    titleShadow: "0 4px 18px rgba(0,0,0,0.45)",
-    titleWeight: 700, titleSpacing: "-0.015em",
-    summaryColor: "#9ec7e0",
-    statAccent: "#5ed1ff",
-    statBg: "rgba(94,209,255,0.06)", statBorder: "1px solid rgba(94,209,255,0.25)",
-  },
 ];
 
 function stableHash(s: string): number {
@@ -143,7 +130,7 @@ function pickTheme(seed: string): Theme {
   return THEMES[stableHash(seed) % THEMES.length];
 }
 
-export const Intro: React.FC<Props> = ({ title, summary, stats, voiceSrc }) => {
+export const Intro: React.FC<Props> = ({ title, summary, stats, voiceSrc, voiceDurS, voicePlaybackRate, captionText }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
   const theme = pickTheme(title || summary || "tik-test");
@@ -208,7 +195,19 @@ export const Intro: React.FC<Props> = ({ title, summary, stats, voiceSrc }) => {
           </div>
         </div>
       </AbsoluteFill>
-      {voiceSrc && <Audio src={staticFile(voiceSrc)} volume={1.1} />}
+      {captionText && (
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 240 }}>
+          <WordCaption
+            text={captionText}
+            durationInFrames={durationInFrames}
+            fps={fps}
+            accent={theme.statAccent}
+            voiceDurS={voiceDurS ? voiceDurS / (voicePlaybackRate ?? 1) : undefined}
+            voiceStartDelayS={0.05}
+          />
+        </div>
+      )}
+      {voiceSrc && <Audio src={staticFile(voiceSrc)} volume={1.1} playbackRate={voicePlaybackRate ?? 1} />}
     </AbsoluteFill>
   );
 };

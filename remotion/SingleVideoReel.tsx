@@ -1,25 +1,20 @@
-import { AbsoluteFill, Audio, Sequence, useCurrentFrame, useVideoConfig, interpolate, Easing, staticFile } from "remotion";
+import { AbsoluteFill, Audio, Sequence, useVideoConfig, staticFile } from "remotion";
 import { Video } from "@remotion/media";
 import { Background } from "./components/Background";
 import { Intro } from "./components/Intro";
 import { Outro } from "./components/Outro";
 import { WordCaption } from "./components/WordCaption";
+import { ToolBadge } from "./components/ToolBadge";
 
-export interface SingleVideoEvent {
-  index: number;
-  kind: string;
-  importance: "low" | "normal" | "high" | "critical";
-  outcome: "success" | "failure" | "skipped";
-  description: string;
+export interface BodyChunk {
   startS: number;
-  endS: number;
-  caption: string;
+  durS: number;
+  text: string;
   voiceSrc?: string;
-  voiceDurS?: number;            // natural voice length
-  voicePlaybackRate?: number;     // speed factor so voice fits the window (1.0..~1.5)
-  targetX?: number;
-  targetY?: number;
-  clickAtS?: number;
+  voiceDurS?: number;
+  voicePlaybackRate?: number;
+  badgeLabel?: string;
+  badgeDetail?: string;
 }
 
 export interface SingleVideoInput {
@@ -28,21 +23,22 @@ export interface SingleVideoInput {
   masterVideoSrc: string;
   viewport: { width: number; height: number };
   masterDurS: number;
-  events: SingleVideoEvent[];
   introDurFrames: number;
   outroDurFrames: number;
   stats: { passed: number; failed: number; skipped: number; total: number; durS: number };
   introVoiceSrc?: string;
   introVoiceDurS?: number;
+  introVoicePlaybackRate?: number;
+  introCaption?: string;
   outroVoiceSrc?: string;
   outroVoiceDurS?: number;
-  /** Persistent version badge (e.g. "v0.2.0 · 6590731") — rendered top-right
-   *  so a reviewer can tell at a glance which CLI build produced this video. */
+  outroVoicePlaybackRate?: number;
+  outroCaption?: string;
   versionTag?: string;
-  /** Overlay captions for silent/investigative tool calls (evaluate,
-   *  network_requests, screenshot-then-think). Times are TRIMMED master
-   *  seconds (BEFORE intro offset is added by the composition). */
-  toolOverlays?: Array<{ startS: number; endS: number; label: string; detail?: string; voiceSrc?: string; voiceDurS?: number; captionText?: string }>;
+  /** Body narration timeline. Sorted, non-overlapping, sums to masterDurS.
+   *  Each chunk renders ONE Audio + ONE WordCaption Sequence + optional
+   *  ToolBadge — guaranteed never to stack with siblings. */
+  bodyChunks: BodyChunk[];
 }
 
 export function computeSingleVideoDuration(input: SingleVideoInput, fps: number): number {
@@ -64,10 +60,12 @@ export const SingleVideoReel: React.FC<SingleVideoInput> = (props) => {
           stats={props.stats}
           voiceSrc={props.introVoiceSrc}
           voiceDurS={props.introVoiceDurS}
+          voicePlaybackRate={props.introVoicePlaybackRate}
+          captionText={props.introCaption}
         />
       </Sequence>
 
-      {/* Main body — the full trimmed recording with overlays. */}
+      {/* Body — full trimmed recording with back-to-back narration chunks. */}
       <Sequence from={props.introDurFrames} durationInFrames={masterFrames} layout="none">
         <SingleVideoBody input={props} />
       </Sequence>
@@ -79,22 +77,16 @@ export const SingleVideoReel: React.FC<SingleVideoInput> = (props) => {
           stats={props.stats}
           voiceSrc={props.outroVoiceSrc}
           voiceDurS={props.outroVoiceDurS}
+          voicePlaybackRate={props.outroVoicePlaybackRate}
+          captionText={props.outroCaption}
         />
       </Sequence>
 
-      {/* Persistent version badge — tiny, semi-transparent, top-right corner.
-          Tells a reviewer which CLI commit produced the video so old and new
-          videos in the feed are distinguishable at a glance. */}
       {props.versionTag && <VersionBadge tag={props.versionTag} />}
     </AbsoluteFill>
   );
 };
 
-// Version badge: persistent across the whole video, but MUST be cheap to
-// render. Earlier versions used backdrop-filter: blur which forces a
-// composited layer per frame and halved the Remotion encode throughput
-// (6–10 fps → 3 fps). Solid opaque pill achieves the same legibility at
-// effectively zero cost per frame.
 const VersionBadge: React.FC<{ tag: string }> = ({ tag }) => (
   <div
     style={{
@@ -119,299 +111,52 @@ const VersionBadge: React.FC<{ tag: string }> = ({ tag }) => (
 );
 
 const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
-  const frame = useCurrentFrame();
-  const { fps, width: OUT_W, height: OUT_H } = useVideoConfig();
-  const t = frame / fps;
-
-  // Which event are we currently on?
-  const currentIdx = input.events.findIndex((e) => t >= e.startS && t < e.endS);
-  const current = currentIdx >= 0 ? input.events[currentIdx] : undefined;
-
-  // The video band fills the ENTIRE canvas; the caption floats over the top bottom half.
-  // object-fit: contain keeps the whole viewport visible (never crops the UI), letting the
-  // gradient Background peek through above/below when aspect ratios mismatch.
-  const bandW = OUT_W;
-  const bandH = OUT_H;
-  const bandX = 0;
-  const bandY = 0;
-
-  // Where the video actually lands inside the band (contain layout).
-  // This is the math Chrome uses internally for object-fit: contain.
-  const vRatio = input.viewport.width / input.viewport.height;
-  const bandRatio = bandW / bandH;
-  let videoW = bandW;
-  let videoH = bandH;
-  if (vRatio > bandRatio) videoH = bandW / vRatio;
-  else videoW = bandH * vRatio;
-  const videoX = bandX + (bandW - videoW) / 2;
-  const videoY = bandY + (bandH - videoH) / 2;
-
-  // --- Pan/zoom driven by the current event's target ---
-  const tx = current?.targetX;
-  const ty = current?.targetY;
-  const vw = input.viewport.width;
-  const vh = input.viewport.height;
-  const hasFocus = tx !== undefined && ty !== undefined;
-
-  // Smoothly ramp into the event's zoom over 0.3s starting at startS, and
-  // ramp back to 1.0x over 0.35s ending at endS.
-  let zoom = 1.0;
-  let originXPct = 50;
-  let originYPct = 50;
-  if (current && hasFocus) {
-    const eLen = current.endS - current.startS;
-    const fadeIn = 0.3;
-    const fadeOut = 0.4;
-    const tLocal = t - current.startS;
-    const isImportant =
-      current.importance === "critical" ? 1.45 :
-      current.importance === "high" ? 1.3 :
-      current.outcome === "failure" ? 1.4 :
-      1.18;
-    let peak = isImportant;
-    // Soft ease in / out
-    let amt = 1;
-    if (tLocal < fadeIn) amt = Easing.bezier(0.22, 1, 0.36, 1)(tLocal / fadeIn);
-    else if (tLocal > eLen - fadeOut) amt = Easing.bezier(0.22, 1, 0.36, 1)(Math.max(0, (eLen - tLocal) / fadeOut));
-    zoom = 1.0 + (peak - 1.0) * amt;
-    originXPct = Math.min(90, Math.max(10, (tx! / vw) * 100));
-    originYPct = Math.min(90, Math.max(10, (ty! / vh) * 100));
-  }
-
-  // Each narration gets its OWN time window. The Sequence's durationInFrames
-  // guarantees the audio stops at the window's end, and playbackRate scales the
-  // natural voice length to fit. Result: zero audio overlap, ever.
-  const audioTracks = input.events
-    .filter((e) => !!e.voiceSrc)
-    .map((e) => {
-      const startFrame = Math.round(e.startS * fps);
-      const durFrames = Math.max(1, Math.round((e.endS - e.startS) * fps));
-      return (
-        <Sequence key={`a-${e.index}`} from={startFrame} durationInFrames={durFrames} layout="none">
-          <Audio
-            src={staticFile(e.voiceSrc!)}
-            volume={1.1}
-            playbackRate={e.voicePlaybackRate ?? 1}
-          />
-        </Sequence>
-      );
-    });
+  const { fps } = useVideoConfig();
 
   return (
     <AbsoluteFill>
-      <Background accent={pickAccent(current)} intensity={0.7} />
+      <Background accent="#00e5a0" intensity={0.7} />
 
-      {/* The master recording — baked zoom/pan applied purely via CSS transform here.
-          Since OffthreadVideo is one continuous source, Chrome stays hot and render is fast. */}
-      <div
-        style={{
-          position: "absolute",
-          left: bandX,
-          top: bandY,
-          width: bandW,
-          height: bandH,
-          overflow: "hidden",
-          background: "#0a0a0a",
-        }}
-      >
-        <div
-          style={{
-            width: "100%",
-            height: "100%",
-            transform: `scale(${zoom})`,
-            transformOrigin: `${originXPct}% ${originYPct}%`,
-            willChange: "transform",
-          }}
-        >
-          <Video
-            src={staticFile(input.masterVideoSrc)}
-            muted
-            style={{ width: "100%", height: "100%", objectFit: "contain" }}
-          />
-        </div>
+      {/* The trimmed master recording, full-bleed with object-fit: contain
+          so the gradient peeks through above/below at mismatched aspect
+          ratios. No pan/zoom — the chunked narration carries the story. */}
+      <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#0a0a0a" }}>
+        <Video
+          src={staticFile(input.masterVideoSrc)}
+          muted
+          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+        />
       </div>
 
-      {/* Click flash at the click moment */}
-      {current && current.clickAtS != null && hasFocus && (
-        <ClickFlashOverlay
-          t={t}
-          clickAtS={current.clickAtS}
-          targetX={tx!}
-          targetY={ty!}
-          viewport={input.viewport}
-          bandX={bandX}
-          bandY={bandY}
-          bandW={bandW}
-          bandH={bandH}
-          zoom={zoom}
-          originXPct={originXPct}
-          originYPct={originYPct}
-          accent={pickAccent(current)}
-        />
-      )}
-
-      {/* One captions Sequence per event so each word-reveal starts at t=0 for its event.
-          Only the currently-active sequence contributes visible DOM. */}
-      {input.events.map((e) => {
-        const startFrame = Math.round(e.startS * fps);
-        const durFrames = Math.max(1, Math.round((e.endS - e.startS) * fps));
+      {/* One Sequence per body chunk. Chunks are guaranteed non-overlapping
+          by the editor, so at any frame at most one Audio + one WordCaption
+          + at most one ToolBadge is mounted. No more caption stacking. */}
+      {input.bodyChunks.map((c, i) => {
+        const startFrame = Math.round(c.startS * fps);
+        const durFrames = Math.max(1, Math.round(c.durS * fps));
         return (
-          <Sequence key={`cap-${e.index}`} from={startFrame} durationInFrames={durFrames} layout="none">
+          <Sequence key={`chunk-${i}`} from={startFrame} durationInFrames={durFrames} layout="none">
+            {c.voiceSrc && (
+              <Audio
+                src={staticFile(c.voiceSrc)}
+                volume={1.1}
+                playbackRate={c.voicePlaybackRate ?? 1}
+              />
+            )}
+            {c.badgeLabel && <ToolBadge label={c.badgeLabel} detail={c.badgeDetail} />}
             <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 240 }}>
               <WordCaption
-                text={e.caption}
+                text={c.text}
                 durationInFrames={durFrames}
                 fps={fps}
-                accent={pickAccent(e)}
-                voiceDurS={e.voiceDurS}
-                voiceStartDelayS={0.0}
+                accent="#00e5a0"
+                voiceDurS={c.voiceDurS ? c.voiceDurS / (c.voicePlaybackRate ?? 1) : undefined}
+                voiceStartDelayS={0.05}
               />
             </div>
           </Sequence>
         );
       })}
-
-      {/* Agent-activity overlays — non-tech framing for silent tool calls
-          (browser_evaluate, network_requests, screenshots). The browser
-          screen is static during these, so without an overlay the viewer
-          sees nothing happening. We render a compact status card at the
-          top of the viewport explaining what the agent is checking. */}
-      {input.toolOverlays?.map((ov, i) => {
-        const startFrame = Math.round(ov.startS * fps);
-        const durFrames = Math.max(1, Math.round((ov.endS - ov.startS) * fps));
-        const voiceFrames = ov.voiceDurS ? Math.max(1, Math.round(ov.voiceDurS * fps)) : 0;
-        const seqFrames = Math.max(durFrames, voiceFrames);
-        const showBadge = !!ov.label;
-        return (
-          <Sequence key={`tov-${i}`} from={startFrame} durationInFrames={seqFrames} layout="none">
-            {showBadge && <ToolActivityBadge label={ov.label} detail={ov.detail} />}
-            {ov.voiceSrc && <Audio src={staticFile(ov.voiceSrc)} volume={1} />}
-            {ov.captionText && (
-              <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 240 }}>
-                <WordCaption
-                  text={ov.captionText}
-                  durationInFrames={seqFrames}
-                  fps={fps}
-                  accent="#8ab6ff"
-                  voiceDurS={ov.voiceDurS ?? seqFrames / fps}
-                  voiceStartDelayS={0.0}
-                />
-              </div>
-            )}
-          </Sequence>
-        );
-      })}
-
-      {audioTracks}
     </AbsoluteFill>
   );
 };
-
-const ToolActivityBadge: React.FC<{ label: string; detail?: string }> = ({ label, detail }) => {
-  const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-  // Fade in/out at the window edges so the card doesn't snap.
-  const tLocal = frame / fps;
-  const fadeInDur = 0.25;
-  const opacity = interpolate(tLocal, [0, fadeInDur], [0, 1], { easing: Easing.out(Easing.ease), extrapolateRight: "clamp" });
-  return (
-    <div
-      style={{
-        position: "absolute",
-        top: 100,
-        left: "50%",
-        transform: "translateX(-50%)",
-        padding: "10px 16px",
-        borderRadius: 14,
-        background: "rgba(10,12,18,0.85)",
-        border: "1px solid rgba(255,255,255,0.12)",
-        color: "rgba(255,255,255,0.96)",
-        fontFamily: "'Geist', 'Inter', system-ui, sans-serif",
-        fontWeight: 600,
-        fontSize: 22,
-        letterSpacing: "-0.005em",
-        maxWidth: "82%",
-        textAlign: "center",
-        lineHeight: 1.25,
-        opacity,
-        boxShadow: "0 6px 22px rgba(0,0,0,0.4)",
-        pointerEvents: "none",
-        zIndex: 1500,
-      }}
-    >
-      <div style={{ fontSize: 11, opacity: 0.55, textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 4, fontWeight: 700 }}>
-        Agent
-      </div>
-      <div>{label}</div>
-      {detail && (
-        <div
-          style={{
-            fontFamily: "'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace",
-            fontSize: 13,
-            opacity: 0.7,
-            fontWeight: 500,
-            marginTop: 6,
-            letterSpacing: 0,
-            color: "#9be0c8",
-          }}
-        >
-          {detail}
-        </div>
-      )}
-    </div>
-  );
-};
-
-interface ClickFlashProps {
-  t: number;
-  clickAtS: number;
-  targetX: number;
-  targetY: number;
-  viewport: { width: number; height: number };
-  bandX: number; bandY: number; bandW: number; bandH: number;
-  zoom: number;
-  originXPct: number;
-  originYPct: number;
-  accent: string;
-}
-
-const ClickFlashOverlay: React.FC<ClickFlashProps> = ({ t, clickAtS, targetX, targetY, viewport, bandX, bandY, bandW, bandH, zoom, originXPct, originYPct, accent }) => {
-  const tLocal = t - clickAtS;
-  if (tLocal < 0 || tLocal > 0.6) return null;
-
-  // Map target (viewport coords) → screen position, respecting zoom/origin.
-  const nx = targetX / viewport.width;
-  const ny = targetY / viewport.height;
-  const pre = { x: bandX + nx * bandW, y: bandY + ny * bandH };
-  const ox = bandX + (originXPct / 100) * bandW;
-  const oy = bandY + (originYPct / 100) * bandH;
-  const post = { x: ox + (pre.x - ox) * zoom, y: oy + (pre.y - oy) * zoom };
-
-  const ringScale = interpolate(tLocal, [0, 0.5], [0.3, 2.2], { extrapolateRight: "clamp", easing: Easing.out(Easing.cubic) });
-  const ringOpacity = interpolate(tLocal, [0, 0.5], [0.95, 0], { extrapolateRight: "clamp" });
-
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: post.x,
-        top: post.y,
-        width: 260,
-        height: 260,
-        borderRadius: "50%",
-        border: `7px solid ${accent}`,
-        transform: `translate(-50%, -50%) scale(${ringScale})`,
-        opacity: ringOpacity,
-        boxShadow: `0 0 64px ${accent}`,
-      }}
-    />
-  );
-};
-
-function pickAccent(ev?: SingleVideoEvent): string {
-  if (!ev) return "#00e5a0";
-  if (ev.outcome === "failure") return "#ff4757";
-  if (ev.importance === "critical") return "#ffc54a";
-  if (ev.importance === "high") return "#00e5a0";
-  return "#8b7dff";
-}
