@@ -37,7 +37,7 @@ tik-test puts a **45-60s narrated video** on every PR: happy path, edge cases, b
 | What | Why |
 |---|---|
 | **A web app with a public preview URL** | tik-test drives a real browser. Vercel, Netlify, Render, ngrok-tunneled localhost. |
-| **A `claude.md` (or `CLAUDE.md`) at the repo root** | tells the agent the URL, viewport, login/setup. Five lines is enough. |
+| **A `## TikTest` section in your repo's `README.md`** | tells the agent the URL, login, and what's risky in this PR. See [Telling tik-test how to test your app](#telling-tik-test-how-to-test-your-app) below. |
 | **A Claude Code Max subscription** OR **an Anthropic API key** | tik-test invokes `claude` CLI directly so cost comes out of your subscription. OAuth recommended; API key works. |
 | **CI permissions** | `contents: write`, `pull-requests: write`, `id-token: write`. |
 
@@ -45,6 +45,49 @@ tik-test puts a **45-60s narrated video** on every PR: happy path, edge cases, b
 
 - `OPENAI_API_KEY` for voice narration (silent on Linux without it).
 - `VERCEL_AUTOMATION_BYPASS_SECRET` for protected previews.
+
+---
+
+## Telling tik-test how to test your app
+
+Add a `## TikTest` section to your repo's `README.md`. The agent reads it before every run; nothing else in your repo needs to change. Put a short product description at the top (so the narrator can frame the PR), then the four structured sub-sections:
+
+```markdown
+## TikTest
+
+[Product context.] Acme is a project tracker for engineering teams.
+The recent change adds bulk archive — try selecting 5 tasks and
+archiving them in one click.
+
+### URL
+https://acme-pr-42.vercel.app
+
+### Login
+email: review-bot@acme.app
+password: hunter2
+
+### Setup
+start: npm run dev
+# `start:` prefix runs this in the background before the test phase
+
+### Test Plan
+[optional — omit and Claude generates one from the PR diff. Use it
+ only when you want deterministic coverage. JSON schema in the docs.]
+```
+
+What each part does:
+
+| Field | What it's for |
+|---|---|
+| Product context (the prose before the sub-sections) | Frames the narrator's intro, anchors the agent's plan in what your app actually does, and highlights what's risky in this PR. Two or three paragraphs is the sweet spot. |
+| `### URL` | The preview URL the agent navigates to. Auto-detected from `deployment_status` events in CI; this is the fallback. |
+| `### Login` | Natural-language credentials or magic-link instructions. Translated into Playwright actions during a one-shot setup phase before the test agent takes over. |
+| `### Setup` | Either a `start:` prefix to run a background process, or natural-language pre-test setup. |
+| `### Test Plan` (optional) | A JSON block with explicit goals, for when you want deterministic coverage. |
+
+That section is the **only** thing tik-test reads from your repo. Everything in our prompts is generic; nothing is hardcoded about any particular app.
+
+> **Legacy:** earlier docs recommended a separate `claude.md` file. That still works as a fallback. New repos should put everything in `README.md`.
 
 ---
 
@@ -168,31 +211,15 @@ Useful flags:
 
 ---
 
-## Config (`claude.md`)
+## Inline test plan (optional)
 
-```md
----
-name: Taskpad
-viewport: 900x760
----
-
-## URL
-http://localhost:4173
-
-## Focus
-What problem this PR solves and what's risky.
-
-## Setup
-start: npm run dev
-```
-
-**Optional inline plan.** Omit and Claude generates one from the diff. Provide it under `## Test Plan` for deterministic coverage:
+By default the agent generates a plan from the PR diff plus your `## TikTest` section. For deterministic coverage, add a `### Test Plan` sub-section with a JSON goals list:
 
 ```json
 {
   "name": "Theater mode",
   "summary": "Verify the new full-screen viewer keeps keyboard shortcuts working.",
-  "startUrl": "http://localhost:4173",
+  "startUrl": "https://acme-pr-42.vercel.app",
   "goals": [
     { "id": "open-theater", "intent": "Open the Inspiration grid and click Theater on any card.", "shortLabel": "Open Theater" },
     { "id": "kbd-shortcuts", "intent": "While in Theater mode, press Down, S, then Esc, verifying each works.", "shortLabel": "Keyboard nav", "importance": "high" }
@@ -202,7 +229,7 @@ start: npm run dev
 
 **Goal fields:** `intent` (required) · `shortLabel` (3-5 word checklist headline) · `success` (observable success condition) · `importance` (`low` · `normal` · `high` · `critical`).
 
-**Discovery order** for `tik-test pr`: `claude.md` → `CLAUDE.md` → `.claude/claude.md` → `tik-test.md` → `README.md`.
+**Discovery order** when running `tik-test pr`: `README.md` (with `## TikTest`) preferred; falls back to `claude.md` → `CLAUDE.md` → `.claude/claude.md` → `tik-test.md` → bare `README.md`.
 
 ---
 

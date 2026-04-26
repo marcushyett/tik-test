@@ -20,7 +20,7 @@ program
 program
   .command("run")
   .description("Run a test plan against a URL and produce a TikTok-style highlight video")
-  .requiredOption("-c, --config <path>", "path to claude.md config", "claude.md")
+  .requiredOption("-c, --config <path>", "path to README.md (preferred) or legacy claude.md config", "README.md")
   .option("-u, --url <url>", "override URL from config")
   .option("-o, --out-dir <dir>", "output directory", "runs")
   .option("--headed", "run browser in headed mode")

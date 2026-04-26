@@ -53,10 +53,15 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     await runGit(tmp, ["checkout", `tik-test-pr-${ref.number}`]);
   }
 
-  // Locate config (claude.md or README). Prefer claude.md → CLAUDE.md → tik-test.md → README.md.
+  // Locate config: README.md with a `## TikTest` section is preferred; legacy
+  // claude.md / tik-test.md / etc. are fallbacks.
   const configPath = await findConfig(workDir);
   if (!configPath) {
-    throw new Error(`Could not find claude.md or README.md in ${workDir}. Add a claude.md with a URL / setup / focus section for tik-test.`);
+    throw new Error(
+      `Could not find README.md (or fallback config) in ${workDir}. ` +
+      `Add a "## TikTest" section to your README.md describing the preview URL, login, and what's risky in this PR. ` +
+      `See https://github.com/marcushyett/tik-test for the schema.`,
+    );
   }
   console.log(chalk.dim(`  config: ${path.relative(workDir, configPath)}`));
 
@@ -99,7 +104,10 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
 
   // If URL still missing, bail with guidance.
   if (!cfg.url) {
-    throw new Error(`No testable URL. Set "url:" in your claude.md frontmatter, a "## URL" section, the PR description, or pass --url. Vercel preview URL auto-detection also available.`);
+    throw new Error(
+      `No testable URL. Add a "### URL" sub-section under "## TikTest" in your README.md, ` +
+      `or pass --url. Vercel preview URL auto-detection runs automatically.`,
+    );
   }
 
   let serverProc: { kill: () => void } | null = null;
@@ -343,8 +351,23 @@ function extractPreviewUrlFromComments(comments: Array<{ body?: string }>): stri
 }
 
 async function findConfig(workDir: string): Promise<string | null> {
-  const candidates = ["claude.md", "CLAUDE.md", ".claude/claude.md", "tik-test.md", "README.md"];
-  for (const rel of candidates) {
+  // README.md with a `## TikTest` section is the canonical config — every
+  // adopting repo already has a README, and putting tik-test instructions
+  // there keeps everything about how to test next to everything else about
+  // the project. claude.md / tik-test.md are kept as fallbacks for repos
+  // that already invested in them or that use Claude Code's claude.md
+  // convention for other reasons.
+  const readmes = ["README.md", "readme.md", "Readme.md"];
+  for (const rel of readmes) {
+    const full = path.join(workDir, rel);
+    try {
+      const raw = await readFile(full, "utf8");
+      if (/^##\s+tik[- ]?test\b.*$/im.test(raw)) return full;
+    } catch {}
+  }
+  // Legacy fallbacks.
+  const fallbacks = ["claude.md", "CLAUDE.md", ".claude/claude.md", "tik-test.md", ...readmes];
+  for (const rel of fallbacks) {
     const full = path.join(workDir, rel);
     try {
       const s = await stat(full);

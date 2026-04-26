@@ -2,10 +2,8 @@
 
 A tiny single-file todo app, used as the bundled tik-test demo. It's also a
 worked example of what a real consumer repo needs to wire tik-test into its
-PR review flow.
-
-You can drop this folder into its own repository and everything below will
-still work — `claude.md` is the only tik-test-specific file.
+PR review flow. You can drop this folder into its own repository and
+everything below will still work.
 
 ## Run locally
 
@@ -14,25 +12,55 @@ python3 -m http.server 4173 --directory .
 # open http://localhost:4173
 ```
 
-That's the whole app — `index.html` is self-contained.
+`index.html` is self-contained; no build step.
 
-## How tik-test reviews PRs to this app
+## TikTest
 
-`claude.md` (already in this folder) tells tik-test:
+Taskpad is a lightweight todo list. Recent work has added a priority
+selector on the new-task form, a High-priority filter, a search input,
+a sort dropdown (Newest / Oldest / Priority / Alphabetical), and toast
+confirmations when tasks change state.
 
-- Where the app lives (`http://localhost:4173`)
-- What recently changed (the `## Focus` section — narrators open the video with this)
-- Which selectors to prefer (`## Selectors`)
-- An exhaustive `## Test Plan` JSON — every flow tik-test should exercise
+When tik-test runs, please thoroughly validate:
 
-When tik-test runs on a PR, it reads `claude.md`, generates a plan based on
-the diff + focus, drives Playwright through it, and posts a 9:16 video back
-to the PR with a formal review (`request-changes-on-fail` by default).
+- Adding tasks at each priority level (low / normal / high).
+- Toggling tasks done/undone and the strike-through styling.
+- Every filter (All / Active / Done / High priority) surfaces the correct subset.
+- Search narrows the list correctly. Try uppercase AND lowercase variants of the same query.
+- Each sort option visibly reorders the rows. "Priority" sort should put the most-important work AT THE TOP.
+- Switching filter while a search is active keeps the search applied.
+- Deleting a task removes it and the stats update.
+- "Clear completed" removes only done tasks.
+
+### URL
+
+http://localhost:4173
+
+### Setup
+
+start: python3 -m http.server 4173
+
+The `start:` prefix tells tik-test to run this command in the background
+before the test phase. No auth required; the app is a single static page.
+
+### Login
+
+The login gate accepts any email plus the password `hunter2`.
+
+### Selectors
+
+Prefer `data-testid` attributes:
+
+- `new-task-input`, `new-task-priority`, `add-task`
+- `search-row`, `search-input`, `clear-search`
+- `filters` container, buttons match `[data-filter="all"]`, `[data-filter="active"]`, `[data-filter="done"]`, `[data-filter="high"]`
+- `sort-select` (option values: `newest`, `oldest`, `priority`, `alpha`)
+- `tasks` (ul), `task-<id>`, `toggle-<id>`, `del-<id>`
+- `stats`, `counter`, `clear-done`, `empty`, `no-match`, `toast`
 
 ## Wire it into GitHub Actions
 
-Add this workflow to `.github/workflows/tik-test.yml` in your repo — that's
-the entire setup:
+Add this workflow to `.github/workflows/tik-test.yml`:
 
 ```yaml
 name: tik-test review
@@ -73,7 +101,7 @@ Add **one** required secret (Settings → Secrets → Actions):
 
 | Secret | Value |
 |---|---|
-| `CLAUDE_CODE_OAUTH_TOKEN` | Generated locally with `claude setup-token`. Uses your Claude Max subscription — no per-request billing. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Generated locally with `claude setup-token`. Uses your Claude Max subscription, no per-request billing. |
 
 Optional:
 
@@ -84,16 +112,6 @@ Optional:
 | `ANTHROPIC_API_KEY` | Pay-per-use alternative to `CLAUDE_CODE_OAUTH_TOKEN`. |
 
 That's it. Open a PR; tik-test posts a video and a formal review.
-
-## Editing the test plan
-
-`claude.md` has a `## Test Plan` JSON block. Each step is one of:
-`navigate`, `click`, `fill`, `press`, `hover`, `wait`,
-`assert-visible`, `assert-text`, `screenshot`, or `script`.
-
-You can also delete the `## Test Plan` block entirely — Claude will generate
-one from the `## Focus` section + the PR diff. The hand-written plan above
-exists so the demo is deterministic across runs.
 
 ## License
 
