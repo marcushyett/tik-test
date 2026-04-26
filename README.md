@@ -52,7 +52,7 @@ Before you wire tik-test into a repo, make sure you have:
 
 ## How it's designed (and what it won't suit)
 
-tik-test was built around a particular way of shipping: **small, focused PRs that touch one user-facing slice at a time** — what Alistair Cockburn calls **Elephant Carpaccio**, the practice of slicing work into thin vertical slices that each ship end-to-end value. If that's how your team works, tik-test fits the gap perfectly. If you ship 2,000-line PRs that bundle ten unrelated features, **you'll need to break them up** — or the video will skim two of the ten and miss the rest.
+tik-test was built around a particular way of shipping: **small, focused PRs that touch one user-facing slice at a time** — what Alistair Cockburn calls [Elephant Carpaccio](https://alistaircockburn.com/Elephant-Carpaccio), the practice of slicing work into nano-slices that each ship end-to-end value. If that's how your team works, tik-test fits the gap perfectly. If you ship 2,000-line PRs that bundle ten unrelated features, **you'll need to break them up** — or the video will skim two of the ten and miss the rest.
 
 ### Works well
 
