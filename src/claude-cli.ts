@@ -9,6 +9,7 @@
  * is the one place to fix bugs in the spawn / signal / encoding plumbing.
  */
 import { spawn } from "node:child_process";
+import { getKnob, overrideHint } from "./timeouts.js";
 
 export interface RunClaudeOptions {
   /** The prompt body — passed via `claude -p <prompt>`. */
@@ -20,6 +21,10 @@ export interface RunClaudeOptions {
   /** Short label included in error messages so a stack trace tells us
    *  which call site failed without grepping. */
   label: string;
+  /** Env-var name of the timeout knob (e.g. `TIK_PLAN_TIMEOUT_MS`).
+   *  When set, a timeout error includes "bump <env> or pass <action-input>"
+   *  so the user knows EXACTLY what to change instead of grep-hunting. */
+  timeoutKnob?: string;
 }
 
 /**
@@ -28,7 +33,7 @@ export interface RunClaudeOptions {
  * / spawn error. The returned string is whatever `claude` printed to
  * stdout — callers parse JSON / extract narration / etc. as needed.
  */
-export function runClaude({ prompt, timeoutMs, model, label }: RunClaudeOptions): Promise<string> {
+export function runClaude({ prompt, timeoutMs, model, label, timeoutKnob }: RunClaudeOptions): Promise<string> {
   return new Promise((resolve, reject) => {
     const args = ["-p", prompt, "--output-format", "text"];
     if (model) args.push("--model", model);
@@ -37,7 +42,9 @@ export function runClaude({ prompt, timeoutMs, model, label }: RunClaudeOptions)
     let err = "";
     const timer = setTimeout(() => {
       try { child.kill("SIGKILL"); } catch {}
-      reject(new Error(`${label} claude timed out after ${timeoutMs}ms`));
+      const knob = timeoutKnob ? getKnob(timeoutKnob) : undefined;
+      const hint = knob ? ` — ${overrideHint(knob)} to raise the limit` : "";
+      reject(new Error(`${label} claude timed out after ${timeoutMs}ms${hint}`));
     }, timeoutMs);
     child.stdout.on("data", (b: Buffer) => (out += b.toString()));
     child.stderr.on("data", (b: Buffer) => (err += b.toString()));

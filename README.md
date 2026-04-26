@@ -64,11 +64,15 @@ If your PR is backend-only, tik-test will still produce a video — but it will 
 
 ## Demo
 
-**What the output looks like** (v12, 52s, Taskpad dogfood):
+A real PR run against the bundled Taskpad demo — agent caught two
+deliberately-planted bugs (case-sensitive search, priority-sort
+reversed) and posted a request-changes review:
 
-```
-~/Desktop/tik-test-v12.mp4
-```
+<a href="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4">
+  <img src="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.gif" alt="tik-test demo — 9:16 video review of a PR" width="320" />
+</a>
+
+▶ **[Play with sound (3 min, narrated)](https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4)** — the GIF above loops silently; the MP4 has the full voice-over, captions, and outro AI-checks list.
 
 **Real-world PR review:** [yolodex-ai/personadex#282](https://github.com/yolodex-ai/personadex/pull/282#issuecomment-4301341770) — 19/19 steps green through a Theater-mode flow (magic-link sign-in → Inspiration grid → `▶ Theater` → ↓ → S → Esc).
 
@@ -268,6 +272,8 @@ That's it. The action installs Node + ffmpeg + Playwright, builds tik-test, auto
 | `agent-timeout` | No | `600` (s) | Per-goal agent timeout. Bump for slow page loads or PRs touching many surfaces. |
 | `narration-timeout` | No | `540` (s) | Narration-generation Claude call timeout. Bump for very long runs that produce 12+ tool moments. |
 
+> The Action exposes **9 more typed inputs** for fine-tuning — `setup-timeout`, `feature-finder-timeout`, `min-chunk-seconds`, `max-body-scenes`, `checklist-min-items`, `checklist-max-items`, `intro-seconds`, `outro-seconds`, `outro-hold-seconds`. See the [Advanced](#advanced) section below or run `node dist/cli.js config` for defaults + risks of changing.
+
 ¹ Provide one of the two — OAuth token recommended for cost control.
 
 ### Secrets to add
@@ -325,10 +331,14 @@ That's expected fallback behaviour: if any post-process step crashes (TTS, narra
 
 ## Advanced
 
+> 💡 **Tip:** run `node dist/cli.js config` to print every knob with its current value, default, override hint, and risks of going lower or higher — same data as below, scoped to your environment so you can see what's already overridden.
+
 <details>
 <summary><strong>Every env-var knob — defaults, rationale, and risks of changing them</strong></summary>
 
 Everything below is a **last-resort override** — defaults are tuned for a typical PR (1-3 goals, 30-60s recording, 8-12 narration scenes, 6-10 checklist items) on a Claude Max subscription. Bump only after you've seen the corresponding default fail in your run.
+
+**Action users:** every knob below has a matching typed input on the GitHub Action (kebab-case version of the env-var, dropping the `TIK_` prefix and `_MS` suffix). Prefer the typed input in YAML — it's friendlier to read.
 
 ### Voice / TTS
 
@@ -356,7 +366,7 @@ Everything below is a **last-resort override** — defaults are tuned for a typi
 
 ### Claude CLI timeouts (millisecond)
 
-The GitHub Action exposes the three most useful as **typed seconds inputs** (`plan-timeout`, `agent-timeout`, `narration-timeout`) — prefer those in YAML. The env vars below are for direct CLI use or wiring into custom integrations.
+The GitHub Action exposes all five as typed seconds inputs (`plan-timeout`, `agent-timeout`, `narration-timeout`, `setup-timeout`, `feature-finder-timeout`) — prefer those in YAML. The env vars below are for direct CLI use or wiring into custom integrations.
 
 | Var | Default | Rationale | Risk: lower | Risk: higher |
 |---|---|---|---|---|

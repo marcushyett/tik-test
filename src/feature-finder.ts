@@ -158,7 +158,7 @@ Return ONLY the JSON array.`;
 
   let reply: string;
   try {
-    reply = await runClaude({ prompt, timeoutMs: FEATURE_FINDER_TIMEOUT_MS, label: "feature-finder" });
+    reply = await runClaude({ prompt, timeoutMs: FEATURE_FINDER_TIMEOUT_MS, label: "feature-finder", timeoutKnob: "TIK_FEATURE_FINDER_TIMEOUT_MS" });
   } catch (e) {
     console.log(chalk.yellow(`    finder claude call failed: ${(e as Error).message.split("\n")[0]}`));
     return false;

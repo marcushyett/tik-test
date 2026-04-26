@@ -162,7 +162,7 @@ export async function generateTimedNarration(ctx: NarrationContext): Promise<Tim
   }
   const prompt = buildPrompt(ctx);
   console.log(chalk.dim(`  asking claude to write timed narration for ${ctx.scenes.length} scenes…`));
-  const raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "narration" });
+  const raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "narration", timeoutKnob: "TIK_NARRATION_TIMEOUT_MS" });
   const json = extractJson(raw);
   let parsed: TimedNarration;
   try {

@@ -124,7 +124,7 @@ Rules:
 
 Return ONLY the JSON array.`;
 
-  const raw = await runClaude({ prompt, timeoutMs: SETUP_TIMEOUT_MS, label: "setup" });
+  const raw = await runClaude({ prompt, timeoutMs: SETUP_TIMEOUT_MS, label: "setup", timeoutKnob: "TIK_SETUP_TIMEOUT_MS" });
   let actions: SetupAction[];
   try {
     actions = parseActions(raw);

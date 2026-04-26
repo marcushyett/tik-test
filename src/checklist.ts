@@ -145,7 +145,7 @@ export async function generateChecklist(ctx: ChecklistContext): Promise<Checklis
   console.log(chalk.dim(`  asking claude to synthesise the outro checklist…`));
   let raw: string;
   try {
-    raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "checklist" });
+    raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "checklist", timeoutKnob: "TIK_NARRATION_TIMEOUT_MS" });
   } catch (e) {
     console.log(chalk.yellow(`  checklist generation failed (${(e as Error).message.split("\n")[0]}); falling back to goal-level rows`));
     return null;

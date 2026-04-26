@@ -8,90 +8,230 @@
  * Defaults are tuned for a typical PR (1-3 goals, 30-60s of recording,
  * 8-12 narration scenes, 6-10 checklist items) on the Claude Max
  * subscription. Each value is overridable via the matching env var below
- * — and the GitHub Action surfaces the most useful ones as typed inputs.
+ * — and the GitHub Action surfaces every one as a typed input.
+ *
+ * The KNOBS table at the top is the SINGLE SOURCE OF TRUTH for what's
+ * configurable. The exported constants below are derived from it; the
+ * `tik-test config` subcommand reads it for display; action.yml inputs
+ * mirror its `actionInput` field. Add a new knob in ONE place.
  *
  * Filename is `timeouts.ts` for backwards-import-compat — file now also
  * houses the scene/checklist knobs since they live in the same "policy"
  * layer of the codebase.
  */
 
-function envInt(key: string, fallback: number, kind: "ms" | "items" | "seconds"): number {
+export interface Knob {
+  /** Env var name — `TIK_*`. */
+  key: string;
+  /** Matching GitHub Action input name (kebab-case). Omit if not exposed. */
+  actionInput?: string;
+  /** Default applied when the env var is unset/invalid. */
+  default: number;
+  /** Whether the value is integer-only (`int`) or accepts floats (`float`). */
+  kind: "int" | "float";
+  /** Display unit. Used in `tik-test config` output and error messages. */
+  unit: "ms" | "seconds" | "items";
+  /** One-line summary — what this knob caps. */
+  description: string;
+  /** What goes wrong if you set it lower than default. */
+  riskLower: string;
+  /** What goes wrong if you set it higher than default. */
+  riskHigher: string;
+}
+
+/**
+ * Source of truth. Order matters — `tik-test config` prints in this order,
+ * so keep related knobs grouped (timeouts → scene density → checklist →
+ * intro/outro).
+ */
+export const KNOBS: Knob[] = [
+  // ── Claude CLI timeouts ──────────────────────────────────────────────
+  {
+    key: "TIK_PLAN_TIMEOUT_MS",
+    actionInput: "plan-timeout",
+    default: 240_000,
+    kind: "int",
+    unit: "ms",
+    description: "One-shot plan-generation `claude` call (digests PR diff + claude.md, emits 1-3 goals).",
+    riskLower: "small diffs may still take 60s+; too low and you time out before plan is even drafted",
+    riskHigher: "wastes CI budget on hung Claude processes",
+  },
+  {
+    key: "TIK_AGENT_TIMEOUT_MS",
+    actionInput: "agent-timeout",
+    default: 600_000,
+    kind: "int",
+    unit: "ms",
+    description: "EACH per-goal browser-driving `claude` call. A goal hitting this ceiling is a stuck/looping agent.",
+    riskLower: "real cold starts (Vercel preview waking up) can eat 90s alone — be generous",
+    riskHigher: "hung agents drain the 25-min job budget; a wedged agent rarely recovers",
+  },
+  {
+    key: "TIK_NARRATION_TIMEOUT_MS",
+    actionInput: "narration-timeout",
+    default: 540_000,
+    kind: "int",
+    unit: "ms",
+    description: "ONE Claude call that produces intro + outro + every scene line for the whole video.",
+    riskLower: "long runs (15+ scenes) regularly hit 6+ min; too low forces silent-fallback path",
+    riskHigher: "doesn't help if Claude is wedged; trim scenes via TIK_MAX_BODY_SCENES instead",
+  },
+  {
+    key: "TIK_SETUP_TIMEOUT_MS",
+    actionInput: "setup-timeout",
+    default: 60_000,
+    kind: "int",
+    unit: "ms",
+    description: "One-shot setup-suggester `claude` call (reads your repo, suggests how to start the app).",
+    riskLower: "setup may misfire on slow networks",
+    riskHigher: "almost never doing useful work past 60s",
+  },
+  {
+    key: "TIK_FEATURE_FINDER_TIMEOUT_MS",
+    actionInput: "feature-finder-timeout",
+    default: 60_000,
+    kind: "int",
+    unit: "ms",
+    description: "Fallback `claude` call when `startUrl` lands on a 404 — searches for a working URL.",
+    riskLower: "fallback may give up on apps with slow routing",
+    riskHigher: "almost never doing useful work past 60s",
+  },
+
+  // ── Body narration density ────────────────────────────────────────────
+  {
+    key: "TIK_MIN_CHUNK_S",
+    actionInput: "min-chunk-seconds",
+    default: 3.5,
+    kind: "float",
+    unit: "seconds",
+    description: "Minimum body chunk length — shorter consecutive moments coalesce into the previous chunk.",
+    riskLower: "<2s = many tiny scenes, narration prompt blows up, sonnet timeouts",
+    riskHigher: ">6s = scenes feel sluggish, captions repeat themselves on screen",
+  },
+  {
+    key: "TIK_MAX_BODY_SCENES",
+    actionInput: "max-body-scenes",
+    default: 12,
+    kind: "int",
+    unit: "items",
+    description: "Hard ceiling on body scenes after coalescing. Above this we sample evenly.",
+    riskLower: "<8 misses interesting moments — agent clicks then jump-cut",
+    riskHigher: ">14 risks narration call timing out; bump TIK_NARRATION_TIMEOUT_MS too",
+  },
+
+  // ── Outro checklist sizing ────────────────────────────────────────────
+  {
+    key: "TIK_CHECKLIST_MIN_ITEMS",
+    actionInput: "checklist-min-items",
+    default: 4,
+    kind: "int",
+    unit: "items",
+    description: "Minimum items the LLM must produce — below this we treat the call as failed (fall back to one row per goal).",
+    riskLower: "<3 = checklist always looks empty even on small PRs",
+    riskHigher: ">6 = LLM frequently 'fails' on tiny PRs that legitimately have only 3 things to check",
+  },
+  {
+    key: "TIK_CHECKLIST_MAX_ITEMS",
+    actionInput: "checklist-max-items",
+    default: 10,
+    kind: "int",
+    unit: "items",
+    description: "Maximum items rendered. Dense layout shrinks rows past 7. Empirically the largest count that stays scannable in 9:16.",
+    riskLower: "<6 hides legitimately interesting checks",
+    riskHigher: ">12 overflows the safe band — items get clipped on mobile",
+  },
+
+  // ── Intro / outro durations ───────────────────────────────────────────
+  {
+    key: "TIK_INTRO_TARGET_S",
+    actionInput: "intro-seconds",
+    default: 4.5,
+    kind: "float",
+    unit: "seconds",
+    description: "Title-card window. Tells the narrator how long the intro line should be.",
+    riskLower: "<3s = title flashes by, viewers miss PR context",
+    riskHigher: ">6s = boring opening, viewers swipe away",
+  },
+  {
+    key: "TIK_OUTRO_TARGET_S",
+    actionInput: "outro-seconds",
+    default: 4.0,
+    kind: "float",
+    unit: "seconds",
+    description: "Outro narration window.",
+    riskLower: "<3s = narrator races through the wrap-up",
+    riskHigher: ">5s = drags after the action ends",
+  },
+  {
+    key: "TIK_OUTRO_HOLD_S",
+    actionInput: "outro-hold-seconds",
+    default: 3.5,
+    kind: "float",
+    unit: "seconds",
+    description: "Extra time the outro Sequence holds AFTER the voice ends so the checklist stays readable.",
+    riskLower: "<2s = reviewers can't finish reading the checklist",
+    riskHigher: ">5s = video feels long; auto-advance laggy",
+  },
+];
+
+const KNOBS_BY_KEY: Map<string, Knob> = new Map(KNOBS.map((k) => [k.key, k]));
+
+/** Lookup helper for error-message formatters that have only the env-var
+ *  name (e.g. when a `runClaude` call times out). Returns `undefined` for
+ *  unknown keys — caller falls back to a generic message. */
+export function getKnob(key: string): Knob | undefined {
+  return KNOBS_BY_KEY.get(key);
+}
+
+/** Format a "how to override this" hint suitable for an error message
+ *  or the `tik-test config` listing. Mentions the env var AND, if the
+ *  knob is exposed by the GitHub Action, the action input name too. */
+export function overrideHint(knob: Knob): string {
+  const base = `set env var ${knob.key}`;
+  if (knob.actionInput) return `${base} OR pass \`${knob.actionInput}\` input to the GitHub Action`;
+  return base;
+}
+
+function envInt(key: string, fallback: number): number {
   const raw = process.env[key];
   if (!raw) return fallback;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n <= 0) {
-    console.warn(`tik-test: ignoring invalid ${key}="${raw}" (expected positive integer ${kind}), using default ${fallback}`);
+    console.warn(`tik-test: ignoring invalid ${key}="${raw}" (expected positive integer), using default ${fallback}`);
     return fallback;
   }
   return n;
 }
-function envFloat(key: string, fallback: number, kind: string): number {
+function envFloat(key: string, fallback: number): number {
   const raw = process.env[key];
   if (!raw) return fallback;
   const n = Number.parseFloat(raw);
   if (!Number.isFinite(n) || n <= 0) {
-    console.warn(`tik-test: ignoring invalid ${key}="${raw}" (expected positive ${kind}), using default ${fallback}`);
+    console.warn(`tik-test: ignoring invalid ${key}="${raw}" (expected positive number), using default ${fallback}`);
     return fallback;
   }
   return n;
 }
 
-// ── Timeouts ─────────────────────────────────────────────────────────────
+/** Resolve the current value for a knob — env override or default,
+ *  with logging on invalid values. */
+export function resolveKnob(knob: Knob): number {
+  return knob.kind === "int" ? envInt(knob.key, knob.default) : envFloat(knob.key, knob.default);
+}
 
-/** Plan generation: ONE Claude call that produces 1-3 goals. Default 4 min. */
-export const PLAN_TIMEOUT_MS = envInt("TIK_PLAN_TIMEOUT_MS", 240_000, "ms");
+// ── Exported constants ─────────────────────────────────────────────────
+// One per KNOBS entry; the rest of the codebase imports these directly so
+// the metadata table is invisible to callers that just need the number.
 
-/** Per-goal agent runtime: the agent drives the browser via Playwright MCP
- *  until it emits OUTCOME. A goal hitting this ceiling is a stuck/looping
- *  agent — bump only if your app legitimately needs >10 min per goal.
- *  Default 10 min. */
-export const AGENT_TIMEOUT_MS = envInt("TIK_AGENT_TIMEOUT_MS", 600_000, "ms");
-
-/** Narration generation: ONE Claude call that produces intro + outro +
- *  per-scene voice lines for the whole video. Default 9 min. */
-export const NARRATION_TIMEOUT_MS = envInt("TIK_NARRATION_TIMEOUT_MS", 540_000, "ms");
-
-/** Setup-step suggester. Default 60s. */
-export const SETUP_TIMEOUT_MS = envInt("TIK_SETUP_TIMEOUT_MS", 60_000, "ms");
-
-/** Feature finder. Default 60s. */
-export const FEATURE_FINDER_TIMEOUT_MS = envInt("TIK_FEATURE_FINDER_TIMEOUT_MS", 60_000, "ms");
-
-// ── Body narration density ────────────────────────────────────────────────
-
-/** Minimum body chunk duration in seconds — shorter consecutive moments
- *  coalesce into the previous chunk. Larger value = fewer scenes = faster
- *  narration call (avoids sonnet timeouts on very long runs). Smaller =
- *  more granular narration but more risk of timeout. Default 3.5s. */
-export const MIN_CHUNK_S = envFloat("TIK_MIN_CHUNK_S", 3.5, "seconds");
-
-/** Hard ceiling on body scenes after coalescing. Above this we sample
- *  evenly so the prompt stays bounded. Bumping past 14 risks the
- *  narration-generation Claude call timing out on a 25+ tool run. */
-export const MAX_BODY_SCENES = envInt("TIK_MAX_BODY_SCENES", 12, "items");
-
-// ── Outro checklist ───────────────────────────────────────────────────────
-
-/** Minimum checklist items the LLM should produce — below this we treat
- *  the call as failed and fall back to one row per goal. */
-export const CHECKLIST_MIN_ITEMS = envInt("TIK_CHECKLIST_MIN_ITEMS", 4, "items");
-
-/** Maximum checklist items rendered. Set higher and the dense layout
- *  shrinks rows; rows still must fit inside the 9:16 safe band. Default
- *  10 — empirically the largest count that stays scannable. */
-export const CHECKLIST_MAX_ITEMS = envInt("TIK_CHECKLIST_MAX_ITEMS", 10, "items");
-
-// ── Intro / outro durations ───────────────────────────────────────────────
-
-/** Target intro narration window in seconds. Used to size the title-card
- *  Sequence and as the speak-time guidance to Claude. Default 4.5s. */
-export const INTRO_TARGET_S = envFloat("TIK_INTRO_TARGET_S", 4.5, "seconds");
-
-/** Target outro narration window in seconds. Default 4.0s. */
-export const OUTRO_TARGET_S = envFloat("TIK_OUTRO_TARGET_S", 4.0, "seconds");
-
-/** Extra seconds the outro Sequence holds AFTER the voice ends — the
- *  checklist sits readable on the last frame for this long. Bump if your
- *  reviewers want longer to read the list before auto-advancing.
- *  Default 3.5s. */
-export const OUTRO_HOLD_S = envFloat("TIK_OUTRO_HOLD_S", 3.5, "seconds");
+export const PLAN_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_PLAN_TIMEOUT_MS")!);
+export const AGENT_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_AGENT_TIMEOUT_MS")!);
+export const NARRATION_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_NARRATION_TIMEOUT_MS")!);
+export const SETUP_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_SETUP_TIMEOUT_MS")!);
+export const FEATURE_FINDER_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_FEATURE_FINDER_TIMEOUT_MS")!);
+export const MIN_CHUNK_S = resolveKnob(KNOBS_BY_KEY.get("TIK_MIN_CHUNK_S")!);
+export const MAX_BODY_SCENES = resolveKnob(KNOBS_BY_KEY.get("TIK_MAX_BODY_SCENES")!);
+export const CHECKLIST_MIN_ITEMS = resolveKnob(KNOBS_BY_KEY.get("TIK_CHECKLIST_MIN_ITEMS")!);
+export const CHECKLIST_MAX_ITEMS = resolveKnob(KNOBS_BY_KEY.get("TIK_CHECKLIST_MAX_ITEMS")!);
+export const INTRO_TARGET_S = resolveKnob(KNOBS_BY_KEY.get("TIK_INTRO_TARGET_S")!);
+export const OUTRO_TARGET_S = resolveKnob(KNOBS_BY_KEY.get("TIK_OUTRO_TARGET_S")!);
+export const OUTRO_HOLD_S = resolveKnob(KNOBS_BY_KEY.get("TIK_OUTRO_HOLD_S")!);

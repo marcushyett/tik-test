@@ -9,6 +9,7 @@ import { runPlan } from "./runner.js";
 import { editSingleVideo } from "./single-video-editor.js";
 import { startViewer } from "./viewer.js";
 import { runForPR } from "./pr.js";
+import { KNOBS, resolveKnob } from "./timeouts.js";
 
 const program = new Command();
 program
@@ -113,6 +114,46 @@ program
   .action(async (opts) => {
     process.env.TIK_RUNS_DIR = path.resolve(opts.dir);
     await startViewer(Number(opts.port));
+  });
+
+program
+  .command("config")
+  .description("Print every configurable knob — current value, default, env var, and matching GitHub Action input")
+  .option("--json", "emit machine-readable JSON instead of the human table")
+  .action((opts) => {
+    if (opts.json) {
+      const rows = KNOBS.map((k) => ({
+        env: k.key,
+        actionInput: k.actionInput ?? null,
+        default: k.default,
+        current: resolveKnob(k),
+        unit: k.unit,
+        overridden: process.env[k.key] != null && process.env[k.key] !== "",
+        description: k.description,
+      }));
+      console.log(JSON.stringify(rows, null, 2));
+      return;
+    }
+    console.log(chalk.bold("\ntik-test configuration\n"));
+    for (const knob of KNOBS) {
+      const current = resolveKnob(knob);
+      const overridden = process.env[knob.key] != null && process.env[knob.key] !== "";
+      const valueStr = `${current}${knob.unit === "ms" ? "" : ` ${knob.unit}`}`;
+      const defaultStr = current === knob.default ? "" : chalk.dim(`  (default ${knob.default})`);
+      const tag = overridden ? chalk.yellow(" [env override]") : "";
+      console.log(`  ${chalk.bold(knob.key)}${tag}`);
+      console.log(`    ${chalk.dim(knob.description)}`);
+      console.log(`    current: ${chalk.cyan(valueStr)}${defaultStr}`);
+      const overrideLine = knob.actionInput
+        ? `set ${chalk.bold(knob.key)}=… or pass ${chalk.bold(knob.actionInput + ": …")} to the Action`
+        : `set ${chalk.bold(knob.key)}=…`;
+      console.log(`    override: ${overrideLine}`);
+      console.log(`    risks:    ${chalk.dim(`lower → ${knob.riskLower}`)}`);
+      console.log(`              ${chalk.dim(`higher → ${knob.riskHigher}`)}`);
+      console.log("");
+    }
+    console.log(chalk.dim("Defaults are tuned for a typical PR (1-3 goals, 30-60s recording, 8-12 narration scenes)."));
+    console.log(chalk.dim("Bump only after you've seen the corresponding default fail in your run."));
   });
 
 function buildVercelBypass(secret: string | undefined, url: string): { extraHTTPHeaders?: Record<string, string>; cookies?: Array<any> } {

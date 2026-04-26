@@ -57,7 +57,7 @@ export async function generatePlan(cfg: Config): Promise<TestPlan> {
   }
   const prompt = PLAN_PROMPT.replace("{{CONTEXT}}", configToPromptContext(cfg));
   console.log(chalk.dim("  calling claude CLI to generate test plan…"));
-  const raw = await runClaude({ prompt, timeoutMs: PLAN_TIMEOUT_MS, label: "plan" });
+  const raw = await runClaude({ prompt, timeoutMs: PLAN_TIMEOUT_MS, label: "plan", timeoutKnob: "TIK_PLAN_TIMEOUT_MS" });
   const json = extractJson(raw);
   let plan: TestPlan;
   try {

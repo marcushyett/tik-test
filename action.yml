@@ -52,27 +52,63 @@ inputs:
     description: Subdirectory of the consumer repo containing `claude.md`. Defaults to the workspace root. Useful for monorepos.
     required: false
     default: ''
+  # ── Claude CLI timeouts (seconds) ─────────────────────────────────────
+  # These are the inputs you'll most often tune. See `tik-test config` for
+  # every knob and the README's Advanced section for risks of changing.
   plan-timeout:
-    description: |
-      Seconds before the plan-generation `claude` call is killed.
-      Bump if your repo has a long PR description / large diff that makes
-      planning slow. Default 240 (4 min).
+    description: 'Seconds before plan-generation `claude` call is killed. Default 240 (4 min). Bump for huge diffs.'
     required: false
     default: '240'
   agent-timeout:
-    description: |
-      Seconds before EACH per-goal browser-driving `claude` call is killed.
-      Bump for apps with very slow page loads or PRs that touch many surfaces.
-      Default 600 (10 min).
+    description: 'Seconds before EACH per-goal browser-driving `claude` call is killed. Default 600 (10 min). Bump for slow page loads.'
     required: false
     default: '600'
   narration-timeout:
-    description: |
-      Seconds before the narration-generation `claude` call is killed.
-      Bump for runs that produce many tool moments (sonnet writes one
-      coherent script for all of them in one call). Default 540 (9 min).
+    description: 'Seconds before narration-generation `claude` call is killed. Default 540 (9 min). Bump for long runs (12+ tool moments).'
     required: false
     default: '540'
+  setup-timeout:
+    description: 'Seconds before setup-suggester `claude` call is killed. Default 60.'
+    required: false
+    default: '60'
+  feature-finder-timeout:
+    description: 'Seconds before fallback feature-finder `claude` call is killed (only fires on a 404 startUrl). Default 60.'
+    required: false
+    default: '60'
+
+  # ── Body-narration density ────────────────────────────────────────────
+  min-chunk-seconds:
+    description: 'Minimum body chunk length — shorter consecutive moments coalesce. Default 3.5. Lower = more scenes (risk: narration timeout); higher = sluggish pacing.'
+    required: false
+    default: '3.5'
+  max-body-scenes:
+    description: 'Hard ceiling on body scenes after coalescing. Default 12. Above ~14 risks narration timeout (also bump narration-timeout).'
+    required: false
+    default: '12'
+
+  # ── Outro checklist sizing ────────────────────────────────────────────
+  checklist-min-items:
+    description: 'Minimum items the LLM must produce before the call is treated as failed. Default 4.'
+    required: false
+    default: '4'
+  checklist-max-items:
+    description: 'Maximum checklist items rendered on the outro card. Default 10. Above ~12 overflows the safe band on mobile.'
+    required: false
+    default: '10'
+
+  # ── Intro / outro durations (seconds) ─────────────────────────────────
+  intro-seconds:
+    description: 'Title-card window. Default 4.5.'
+    required: false
+    default: '4.5'
+  outro-seconds:
+    description: 'Outro narration window (before the post-voice hold). Default 4.0.'
+    required: false
+    default: '4.0'
+  outro-hold-seconds:
+    description: 'Extra time the outro Sequence holds AFTER the voice ends so the checklist stays readable. Default 3.5.'
+    required: false
+    default: '3.5'
 
 runs:
   using: composite
@@ -187,10 +223,22 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         WORKING_DIR: ${{ inputs.working-directory }}
         # Convert seconds-from-input → milliseconds-for-Node so each Claude
-        # CLI subprocess inherits the right timeout. See src/timeouts.ts.
+        # CLI subprocess inherits the right timeout. See src/timeouts.ts
+        # for the full knob table; every knob there has a matching input
+        # above and an env-var below — keep them in sync.
         TIK_PLAN_TIMEOUT_MS: ${{ inputs.plan-timeout && format('{0}000', inputs.plan-timeout) || '' }}
         TIK_AGENT_TIMEOUT_MS: ${{ inputs.agent-timeout && format('{0}000', inputs.agent-timeout) || '' }}
         TIK_NARRATION_TIMEOUT_MS: ${{ inputs.narration-timeout && format('{0}000', inputs.narration-timeout) || '' }}
+        TIK_SETUP_TIMEOUT_MS: ${{ inputs.setup-timeout && format('{0}000', inputs.setup-timeout) || '' }}
+        TIK_FEATURE_FINDER_TIMEOUT_MS: ${{ inputs.feature-finder-timeout && format('{0}000', inputs.feature-finder-timeout) || '' }}
+        # Non-timeout knobs pass through as-is (already in their target unit).
+        TIK_MIN_CHUNK_S: ${{ inputs.min-chunk-seconds }}
+        TIK_MAX_BODY_SCENES: ${{ inputs.max-body-scenes }}
+        TIK_CHECKLIST_MIN_ITEMS: ${{ inputs.checklist-min-items }}
+        TIK_CHECKLIST_MAX_ITEMS: ${{ inputs.checklist-max-items }}
+        TIK_INTRO_TARGET_S: ${{ inputs.intro-seconds }}
+        TIK_OUTRO_TARGET_S: ${{ inputs.outro-seconds }}
+        TIK_OUTRO_HOLD_S: ${{ inputs.outro-hold-seconds }}
       run: |
         ARGS=( pr "$PR_NUMBER" --skip-clone --asset-repo "$ASSET_REPO" --review "$REVIEW_MODE" )
         [[ "$REQUIRE_PASS" == "true" ]] && ARGS+=( --require-pass )
