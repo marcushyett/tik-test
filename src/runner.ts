@@ -1,23 +1,11 @@
 import { mkdir, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
-import { chromium, type Browser, type BrowserContext, type Page, type Locator } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import chalk from "chalk";
-import type { BBox, PlanStep, RunArtifacts, StepEvent, TestPlan } from "./types.js";
+import type { PlanStep, RunArtifacts, StepEvent, TestPlan } from "./types.js";
 import { runSetup } from "./setup.js";
 import { findFeature, isFeaturePageReady } from "./feature-finder.js";
 import { runGoal } from "./goal-agent.js";
-
-function resolveSelector(target: string): string {
-  const t = target.trim();
-  const roleMatch = /^role=([a-z]+)(?:\[name=(.+)\])?$/i.exec(t);
-  if (roleMatch) {
-    const role = roleMatch[1];
-    const name = roleMatch[2]?.replace(/^["']|["']$/g, "");
-    return name ? `role=${role}[name="${name}"]` : `role=${role}`;
-  }
-  if (t.startsWith("text=") || t.startsWith("role=") || t.startsWith("//") || t.startsWith("[") || t.startsWith("#") || t.startsWith(".")) return t;
-  return t;
-}
 
 /**
  * Wait for all visible <img> elements on the page to finish loading (or fail
@@ -115,224 +103,6 @@ async function settleMedia(page: Page): Promise<void> {
   } catch {}
 }
 
-async function captureBBox(page: Page, locator: Locator, at: "before" | "after"): Promise<BBox | undefined> {
-  try {
-    const box = await locator.boundingBox();
-    if (!box) return undefined;
-    const vp = page.viewportSize() ?? { width: 1280, height: 800 };
-    return { x: box.x, y: box.y, width: box.width, height: box.height, viewportWidth: vp.width, viewportHeight: vp.height, at };
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Track where we last put the cursor so humanMove can draw an eased path
- * from there to the target instead of teleporting. Playwright's `steps`
- * option fires N intermediate mousemove events but completes in ~zero wall
- * time — so the synthetic cursor lerps to the target in a blur. We instead
- * chunk the move into ~24 frames spread over ~640ms so the viewer's eye can
- * follow the pointer.
- */
-let lastCursor: { x: number; y: number } | null = null;
-
-function easeInOutCubic(t: number): number {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-}
-
-async function humanMove(page: Page, box: { x: number; y: number; width: number; height: number }): Promise<void> {
-  const vp = page.viewportSize() ?? { width: 1280, height: 800 };
-  const targetX = box.x + box.width / 2;
-  const targetY = box.y + box.height / 2;
-  const from = lastCursor ?? { x: vp.width / 2, y: vp.height * 0.62 };
-  const dx = targetX - from.x;
-  const dy = targetY - from.y;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-  if (distance < 4) {
-    await page.mouse.move(targetX, targetY);
-    lastCursor = { x: targetX, y: targetY };
-    return;
-  }
-  // Slower motion — the viewer needs to follow the pointer to the target,
-  // so paths run 700-1500ms regardless of distance. Short paths no longer
-  // teleport; long paths don't overshoot but give the eye time to track.
-  const durationMs = Math.max(700, Math.min(1500, distance * 1.4));
-  const frames = 28;
-  const frameMs = Math.round(durationMs / frames);
-  // Perpendicular offset so the path arcs slightly — feels less robotic than a
-  // straight line. Magnitude scales with distance but caps at ~40px.
-  const arc = Math.min(40, distance * 0.18) * (Math.random() > 0.5 ? 1 : -1);
-  const perpX = -dy / distance;
-  const perpY = dx / distance;
-  for (let i = 1; i <= frames; i++) {
-    const t = easeInOutCubic(i / frames);
-    // sin(π t) peaks mid-path, so the arc bulges at 50% then relaxes.
-    const bulge = Math.sin(Math.PI * (i / frames)) * arc;
-    const x = from.x + dx * t + perpX * bulge + (Math.random() - 0.5) * 0.6;
-    const y = from.y + dy * t + perpY * bulge + (Math.random() - 0.5) * 0.6;
-    await page.mouse.move(x, y);
-    await page.waitForTimeout(frameMs);
-  }
-  lastCursor = { x: targetX, y: targetY };
-}
-
-/**
- * "Look here" gesture — pulses a ring on the page without actually clicking.
- * Used on assert-visible / assert-text so the viewer can see what the narrator
- * is referring to ("look at the green toast"). The pan-zoom already tracks the
- * bbox; this just draws attention within the frame.
- */
-async function pulseFocus(page: Page, box: { x: number; y: number; width: number; height: number }): Promise<void> {
-  const cx = box.x + box.width / 2;
-  const cy = box.y + box.height / 2;
-  await page.evaluate(([x, y]) => {
-    const fn = (window as any).__tikPulse as undefined | ((x: number, y: number) => void);
-    if (fn) fn(x, y);
-  }, [cx, cy]);
-}
-
-async function runStep(page: Page, step: PlanStep, startUrl: string): Promise<{ notes?: string; bbox?: BBox }> {
-  const timeout = 15_000;
-  // Intent-kind steps are handled by the goal-agent path upstream, not here.
-  if (step.kind === "intent") return {};
-  switch (step.kind) {
-    case "navigate": {
-      // URL-guessing by the plan generator is routinely wrong — Claude can't
-      // know whether the real route is /chat or /gruns/chat from a diff's
-      // file paths alone, and wrong guesses 404. Always navigate to the
-      // startUrl (preview root) and let the next plan step click its way
-      // into the feature, like a user would.
-      const requested = step.target
-        ? (step.target.startsWith("http") ? step.target : new URL(step.target, startUrl).toString())
-        : startUrl;
-      const url = requested !== startUrl ? startUrl : requested;
-      if (requested !== startUrl) {
-        console.log(chalk.dim(`    (ignoring plan's guessed URL ${requested} — going to preview root instead)`));
-      }
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout });
-      await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => {});
-      // Prime lazy-loaded thumbnails + wait for them to actually render.
-      await settleMedia(page);
-      return {};
-    }
-    case "click": {
-      if (!step.target) throw new Error("click step requires target");
-      const locator = page.locator(resolveSelector(step.target)).first();
-      await locator.waitFor({ state: "visible", timeout });
-      const bbox = await captureBBox(page, locator, "before");
-      await page.waitForTimeout(1350); // "thinking" beat — reader locates the button first
-      if (bbox) await humanMove(page, bbox);
-      await page.waitForTimeout(750); // pointer hovers briefly before the click
-      await locator.click({ timeout });
-      await page.waitForTimeout(2400); // let the UI reaction play out on-screen
-      return { bbox };
-    }
-    case "fill": {
-      if (!step.target) throw new Error("fill step requires target");
-      const locator = page.locator(resolveSelector(step.target)).first();
-      await locator.waitFor({ state: "visible", timeout });
-      const bbox = await captureBBox(page, locator, "before");
-      await page.waitForTimeout(900);
-      if (bbox) await humanMove(page, bbox);
-      await page.waitForTimeout(500);
-      await locator.click({ timeout });
-      await page.keyboard.press("Meta+A").catch(() => {});
-      await page.keyboard.press("Delete").catch(() => {});
-      // Visible typing — each key is a distinct frame for the viewer to read.
-      await locator.type(step.value ?? "", { delay: 220 });
-      await page.waitForTimeout(1500);
-      return { bbox };
-    }
-    case "press": {
-      const key = step.value ?? step.target ?? "Enter";
-      if (step.target && step.target !== key) {
-        const locator = page.locator(resolveSelector(step.target)).first();
-        const bbox = await captureBBox(page, locator, "before");
-        await locator.press(key, { timeout });
-        return { bbox };
-      }
-      await page.keyboard.press(key);
-      return {};
-    }
-    case "hover": {
-      if (!step.target) throw new Error("hover step requires target");
-      const locator = page.locator(resolveSelector(step.target)).first();
-      await locator.waitFor({ state: "visible", timeout });
-      const bbox = await captureBBox(page, locator, "before");
-      await locator.hover({ timeout });
-      return { bbox };
-    }
-    case "wait": {
-      // Hard cap so a Claude-authored plan that asks for "wait 30000ms to let
-      // cache revalidate" doesn't balloon the video. Long settle times are
-      // covered by the editor's idle-compression anyway.
-      const ms = Math.min(3000, Number(step.value ?? "800"));
-      await page.waitForTimeout(ms);
-      return { notes: `waited ${ms}ms` };
-    }
-    case "assert-visible": {
-      if (!step.target) throw new Error("assert-visible requires target");
-      const locator = page.locator(resolveSelector(step.target)).first();
-      await locator.waitFor({ state: "visible", timeout });
-      const bbox = await captureBBox(page, locator, "after");
-      // POINT at what we're confirming so the video/pan-zoom tracks it, and
-      // pulse a ring so the narration ("look — the toast") has something visual.
-      if (bbox) {
-        await humanMove(page, bbox);
-        await page.waitForTimeout(250);
-        await pulseFocus(page, bbox);
-        await page.waitForTimeout(850);
-      }
-      return { notes: "visible — ok", bbox };
-    }
-    case "assert-text": {
-      if (!step.target) throw new Error("assert-text requires target");
-      // Claude sometimes emits assert-text without a value (mistakes it for
-      // assert-visible). Fall back to visibility check rather than fail the
-      // step for a plan-generator quirk.
-      if (!step.value) {
-        const locator = page.locator(resolveSelector(step.target)).first();
-        await locator.waitFor({ state: "visible", timeout });
-        const bbox = await captureBBox(page, locator, "after");
-        if (bbox) {
-          await humanMove(page, bbox);
-          await page.waitForTimeout(250);
-          await pulseFocus(page, bbox);
-          await page.waitForTimeout(750);
-        }
-        return { notes: "visible — ok (value missing, treated as assert-visible)", bbox };
-      }
-      const locator = page.locator(resolveSelector(step.target)).first();
-      await locator.waitFor({ state: "visible", timeout });
-      const text = (await locator.innerText()).trim();
-      if (!text.includes(step.value)) throw new Error(`Expected text to include "${step.value}", got "${text.slice(0, 80)}"`);
-      const bbox = await captureBBox(page, locator, "after");
-      // Hover + pulse on the asserted element so the viewer can see what the
-      // voice-over is talking about.
-      if (bbox) {
-        await humanMove(page, bbox);
-        await page.waitForTimeout(250);
-        await pulseFocus(page, bbox);
-        await page.waitForTimeout(950);
-      }
-      return { notes: `contains: ${step.value}`, bbox };
-    }
-    case "screenshot": {
-      // handled by runner
-      return {};
-    }
-    case "script": {
-      if (!step.value) throw new Error("script requires value");
-      // Claude-authored script values routinely use top-level `return`,
-      // which is invalid when evaluate treats the string as a program.
-      // Wrap in an IIFE so the script runs in function scope and returns
-      // behave as expected.
-      const wrapped = `(async () => { ${step.value} })()`;
-      await page.evaluate(wrapped);
-      return {};
-    }
-  }
-}
 
 export interface RunOptions {
   plan: TestPlan;
@@ -668,165 +438,102 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       }
     }
 
-    // GOAL-BASED PATH: autonomous agent executes each goal end-to-end,
-    // figuring out selectors and sequences on the fly. This is the
-    // preferred shape for plans generated from the current prompt.
-    if (plan.goals && plan.goals.length > 0) {
-      // Build PR context once — the agent gets it every turn, so the
-      // diff/comments inform click decisions even without pre-planned
-      // selectors. Order by signal density: title, reviewer comments
-      // (often contain explicit "make sure to test X" hints), body, diff.
-      // Order the context so reviewer instructions are impossible to miss:
-      // REVIEWER NOTES first (loud + explicit that they're authoritative),
-      // then PR title, body, diff. Agent keeps ignoring buried comment
-      // directives; the heading + top placement + all-caps label fix that.
-      const ctxParts: string[] = [];
-      if (comments && comments.trim()) {
-        ctxParts.push(
-          `REVIEWER NOTES (AUTHORITATIVE — these are instructions from people who already tested this PR. If any note says "do X before you assert Y", you MUST do X. Ignoring a reviewer note and declaring failure is itself a failure.):\n${comments.trim()}`,
-        );
-      }
-      if (prTitle) ctxParts.push(`PR TITLE:\n${prTitle.trim()}`);
-      if (prBody && prBody.trim()) ctxParts.push(`PR DESCRIPTION:\n${prBody.trim()}`);
-      if (diff && diff.trim()) ctxParts.push(`CODE DIFF (truncated):\n${diff.trim()}`);
-      const prContext = ctxParts.join("\n\n---\n\n");
-      // toolWindows declared at outer scope below; collect here.
-      for (let gi = 0; gi < plan.goals.length; gi++) {
-        const goal = plan.goals[gi];
-        const t0 = performance.now();
-        const startMs = Math.max(0, Math.round(t0 - runStart));
-        const goalStartedAtWall = Date.now();
-        logLine(chalk.cyan("▶"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any);
-        let result: Awaited<ReturnType<typeof runGoal>>;
-        try {
-          result = await runGoal(page, goal, prContext, cdpEndpoint);
-        } catch (e) {
-          result = { outcome: "failure", note: (e as Error).message.split("\n")[0], actions: [], bbox: undefined };
-        }
-        const endMs = Math.max(startMs + 50, Math.round(performance.now() - runStart));
-        // Convert each tool-call's wall-clock `startedAt` into an active
-        // window in raw-video timeline terms. Span 2.5s per call so the
-        // viewer can actually see what happened; the trim planner keeps
-        // non-active agent-thinking gaps between them bounded.
-        for (let ai = 0; ai < result.actions.length; ai++) {
-          const a = result.actions[ai];
-          if (!a.startedAt) continue;
-          const windowStart = startMs + (a.startedAt - goalStartedAtWall);
-          const next = result.actions[ai + 1];
-          const nextStart = next?.startedAt ? startMs + (next.startedAt - goalStartedAtWall) : windowStart + 2500;
-          const windowEnd = Math.min(nextStart, windowStart + 2800);
-          if (windowEnd > windowStart) {
-            toolWindows.push({
-              startMs: Math.max(0, windowStart),
-              endMs: windowEnd,
-              kind: a.kind,
-              input: a.value || a.target,
-              result: a.result,
-            });
-          }
-        }
-        let screenshotPath: string | undefined;
-        try {
-          const p = path.join(shotsDir, `${goal.id}.png`);
-          await page.screenshot({ path: p, fullPage: false });
-          screenshotPath = p;
-        } catch {}
-        // Persist the full agent trace (tool inputs + truncated results)
-        // per goal so we can debug why the agent over-explored after the
-        // fact. Without this, stream-json output is lost at process exit.
-        try {
-          await writeFile(
-            path.join(runDir, `agent-trace-${goal.id}.json`),
-            JSON.stringify({ goal, outcome: result.outcome, note: result.note, actions: result.actions }, null, 2),
-          );
-        } catch {}
-        events.push({
-          stepId: goal.id,
-          description: goal.intent,
-          kind: "intent",
-          importance: goal.importance ?? "normal",
-          startMs,
-          endMs,
-          outcome: result.outcome,
-          error: result.outcome === "failure" ? result.note : undefined,
-          notes: result.note,
-          screenshotPath,
-          bbox: result.bbox,
-        });
-        if (result.outcome === "success") {
-          logLine(chalk.green("✓"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
-        } else {
-          logLine(chalk.red("✗"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
-        }
-        // Small dwell between goals so the video has a visible pause between beats.
-        await page.waitForTimeout(800);
-      }
-      // Tail dwell for editor to hold on the final goal's result.
-      await page.waitForTimeout(1500);
-    } else {
-    // LEGACY STEP-BASED PATH — only used when claude.md ships a pre-baked
-    // step-based plan (no goals). New plans always use goals.
-    // If the first plan step is also a navigate to the same start URL, skip
-    // the duplicate hop — setup may have already moved us to a different URL.
-    const legacySteps = plan.steps ?? [];
-    const first = legacySteps[0];
-    const firstIsDupNav = first?.kind === "navigate" && (!first.target || first.target === plan.startUrl);
-    const stepsToRun = firstIsDupNav ? legacySteps.slice(1) : legacySteps;
-    for (const step of stepsToRun) {
+    // The autonomous goal-agent executes each goal end-to-end, figuring out
+    // selectors and sequences on the fly. This is the only execution path —
+    // plans are always goal-based now (the legacy scripted step path was
+    // removed). If we somehow get a plan with no goals, fail fast.
+    if (!plan.goals || plan.goals.length === 0) {
+      throw new Error("plan has no goals — the goal-agent path is the only supported execution path. The plan generator must always emit goals.");
+    }
+
+    // Build PR context once — the agent gets it every turn, so the
+    // diff/comments inform click decisions even without pre-planned
+    // selectors. Order so reviewer instructions are impossible to miss:
+    // REVIEWER NOTES first (loud + explicit that they're authoritative),
+    // then PR title, body, diff.
+    const ctxParts: string[] = [];
+    if (comments && comments.trim()) {
+      ctxParts.push(
+        `REVIEWER NOTES (AUTHORITATIVE — these are instructions from people who already tested this PR. If any note says "do X before you assert Y", you MUST do X. Ignoring a reviewer note and declaring failure is itself a failure.):\n${comments.trim()}`,
+      );
+    }
+    if (prTitle) ctxParts.push(`PR TITLE:\n${prTitle.trim()}`);
+    if (prBody && prBody.trim()) ctxParts.push(`PR DESCRIPTION:\n${prBody.trim()}`);
+    if (diff && diff.trim()) ctxParts.push(`CODE DIFF (truncated):\n${diff.trim()}`);
+    const prContext = ctxParts.join("\n\n---\n\n");
+
+    for (let gi = 0; gi < plan.goals.length; gi++) {
+      const goal = plan.goals[gi];
       const t0 = performance.now();
       const startMs = Math.max(0, Math.round(t0 - runStart));
-      let outcome: StepEvent["outcome"] = "success";
-      let error: string | undefined;
-      let notes: string | undefined;
-      let screenshotPath: string | undefined;
-      logLine(chalk.cyan("▶"), step);
-      let bbox: BBox | undefined;
+      const goalStartedAtWall = Date.now();
+      logLine(chalk.cyan("▶"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any);
+      let result: Awaited<ReturnType<typeof runGoal>>;
       try {
-        const res = await runStep(page, step, plan.startUrl);
-        notes = res.notes;
-        bbox = res.bbox;
-        if (step.kind === "screenshot" || step.importance === "critical" || step.importance === "high") {
-          const p = path.join(shotsDir, `${step.id}.png`);
-          await page.screenshot({ path: p, fullPage: false });
-          screenshotPath = p;
-        }
+        result = await runGoal(page, goal, prContext, cdpEndpoint);
       } catch (e) {
-        outcome = step.optional ? "skipped" : "failure";
-        error = (e as Error).message.split("\n")[0];
-        try {
-          const p = path.join(shotsDir, `${step.id}-fail.png`);
-          await page.screenshot({ path: p, fullPage: false });
-          screenshotPath = p;
-        } catch {}
-        logLine(chalk.red("✗"), step, error);
+        result = { outcome: "failure", note: (e as Error).message.split("\n")[0], actions: [], bbox: undefined };
       }
       const endMs = Math.max(startMs + 50, Math.round(performance.now() - runStart));
+      // Convert each tool-call's wall-clock `startedAt` into an active
+      // window in raw-video timeline terms. Span 2.5s per call so the
+      // viewer can actually see what happened; the trim planner keeps
+      // non-active agent-thinking gaps between them bounded.
+      for (let ai = 0; ai < result.actions.length; ai++) {
+        const a = result.actions[ai];
+        if (!a.startedAt) continue;
+        const windowStart = startMs + (a.startedAt - goalStartedAtWall);
+        const next = result.actions[ai + 1];
+        const nextStart = next?.startedAt ? startMs + (next.startedAt - goalStartedAtWall) : windowStart + 2500;
+        const windowEnd = Math.min(nextStart, windowStart + 2800);
+        if (windowEnd > windowStart) {
+          toolWindows.push({
+            startMs: Math.max(0, windowStart),
+            endMs: windowEnd,
+            kind: a.kind,
+            input: a.value || a.target,
+            result: a.result,
+          });
+        }
+      }
+      let screenshotPath: string | undefined;
+      try {
+        const p = path.join(shotsDir, `${goal.id}.png`);
+        await page.screenshot({ path: p, fullPage: false });
+        screenshotPath = p;
+      } catch {}
+      // Persist the full agent trace (tool inputs + truncated results)
+      // per goal so we can debug why the agent over-explored after the
+      // fact. Without this, stream-json output is lost at process exit.
+      try {
+        await writeFile(
+          path.join(runDir, `agent-trace-${goal.id}.json`),
+          JSON.stringify({ goal, outcome: result.outcome, note: result.note, actions: result.actions }, null, 2),
+        );
+      } catch {}
       events.push({
-        stepId: step.id,
-        description: step.description,
-        kind: step.kind,
-        importance: step.importance ?? "normal",
+        stepId: goal.id,
+        description: goal.intent,
+        kind: "intent",
+        importance: goal.importance ?? "normal",
         startMs,
         endMs,
-        outcome,
-        error,
-        notes,
+        outcome: result.outcome,
+        error: result.outcome === "failure" ? result.note : undefined,
+        notes: result.note,
         screenshotPath,
-        bbox,
+        bbox: result.bbox,
       });
-      if (outcome === "success") logLine(chalk.green("✓"), step, notes ?? "");
-      // Extra dwell so the editor has ample footage — critical beats get longer, since the
-      // voice-over on them tends to be more expansive.
-      const dwell =
-        outcome === "failure" ? 1600 :
-        step.importance === "critical" ? 1400 :
-        step.importance === "high" ? 1100 :
-        800;
-      await page.waitForTimeout(dwell);
+      if (result.outcome === "success") {
+        logLine(chalk.green("✓"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
+      } else {
+        logLine(chalk.red("✗"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
+      }
+      // Small dwell between goals so the video has a visible pause between beats.
+      await page.waitForTimeout(800);
     }
-    // Extra tail dwell so the final step has video content for the editor to hold on.
+    // Tail dwell for editor to hold on the final goal's result.
     await page.waitForTimeout(1500);
-    } // end legacy step branch
   } finally {
     // Close page first to flush video
     await page.close();

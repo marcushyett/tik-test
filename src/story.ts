@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import chalk from "chalk";
 import type { PlanStep, StepEvent, TestPlan } from "./types.js";
-import type { NarrationOutput } from "./narrator.js";
 
 export interface StoryContext {
   plan: TestPlan;
@@ -13,10 +12,17 @@ export interface StoryContext {
   visibleIndices: number[]; // indices into `events` that are included in the reel
 }
 
+export interface StoryStep {
+  voiceLine: string;
+  captionText: string;
+  titleSlideLabel: string;
+  titleSlideText: string;
+}
+
 export interface StoryOutput {
   intro: string;
   outro: string;
-  steps: Array<Pick<NarrationOutput, "voiceLine" | "captionText" | "titleSlideLabel" | "titleSlideText">>;
+  steps: StoryStep[];
 }
 
 const PROMPT = `You are the narrator of a short video where you walk a colleague

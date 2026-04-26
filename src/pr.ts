@@ -8,7 +8,7 @@ import { loadConfig } from "./config.js";
 import { generatePlan } from "./plan.js";
 import { runPlan } from "./runner.js";
 import { editSingleVideo } from "./single-video-editor.js";
-import { editHighlightReel, renderPreviewGif } from "./editor.js";
+import { renderPreviewGif } from "./preview-gif.js";
 
 export interface PROptions {
   outDir: string;

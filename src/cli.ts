@@ -6,7 +6,6 @@ import { mkdir } from "node:fs/promises";
 import { loadConfig } from "./config.js";
 import { generatePlan } from "./plan.js";
 import { runPlan } from "./runner.js";
-import { editHighlightReel } from "./editor.js";
 import { editSingleVideo } from "./single-video-editor.js";
 import { startViewer } from "./viewer.js";
 import { runForPR } from "./pr.js";
@@ -28,7 +27,6 @@ program
   .option("--voice <name>", "macOS `say` voice name for narration", "Samantha")
   .option("--no-voice", "disable narration voice-over")
   .option("--quick", "low-resolution draft render for quicker iteration")
-  .option("--legacy-reel", "use the old per-step clip slicer instead of the single-video overlay pipeline")
   .option("--vercel-bypass <secret>", "Vercel Protection Bypass secret (also: VERCEL_AUTOMATION_BYPASS_SECRET env)")
   .option("--open", "start the viewer after the run completes")
   .action(async (opts) => {
@@ -55,24 +53,13 @@ program
     console.log(chalk.bold("\n3/3  editing highlight reel"));
     const outPath = path.join(runDir, "highlights.mp4");
     const voice = opts.voice === false ? null : (opts.voice as string);
-    if (opts.legacyReel) {
-      await editHighlightReel({
-        artifacts, outPath,
-        musicPath: cfg.music,
-        voice,
-        quick: !!opts.quick,
-        focus: cfg.focus,
-        prTitle: cfg.name,
-      });
-    } else {
-      await editSingleVideo({
-        artifacts, outPath,
-        voice,
-        quick: !!opts.quick,
-        focus: cfg.focus,
-        prTitle: cfg.name,
-      });
-    }
+    await editSingleVideo({
+      artifacts, outPath,
+      voice,
+      quick: !!opts.quick,
+      focus: cfg.focus,
+      prTitle: cfg.name,
+    });
     console.log(chalk.green(`     ✓ ${path.relative(process.cwd(), outPath)}`));
 
     console.log(chalk.bold("\n✓ done"));
