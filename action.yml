@@ -67,10 +67,6 @@ inputs:
     description: 'Seconds before narration-generation `claude` call is killed. Default 540 (9 min). Bump for long runs (12+ tool moments).'
     required: false
     default: '540'
-  setup-timeout:
-    description: 'Seconds before setup-suggester `claude` call is killed. Default 60.'
-    required: false
-    default: '60'
   feature-finder-timeout:
     description: 'Seconds before fallback feature-finder `claude` call is killed (only fires on a 404 startUrl). Default 60.'
     required: false
@@ -229,7 +225,6 @@ runs:
         TIK_PLAN_TIMEOUT_MS: ${{ inputs.plan-timeout && format('{0}000', inputs.plan-timeout) || '' }}
         TIK_AGENT_TIMEOUT_MS: ${{ inputs.agent-timeout && format('{0}000', inputs.agent-timeout) || '' }}
         TIK_NARRATION_TIMEOUT_MS: ${{ inputs.narration-timeout && format('{0}000', inputs.narration-timeout) || '' }}
-        TIK_SETUP_TIMEOUT_MS: ${{ inputs.setup-timeout && format('{0}000', inputs.setup-timeout) || '' }}
         TIK_FEATURE_FINDER_TIMEOUT_MS: ${{ inputs.feature-finder-timeout && format('{0}000', inputs.feature-finder-timeout) || '' }}
         # Non-timeout knobs pass through as-is (already in their target unit).
         TIK_MIN_CHUNK_S: ${{ inputs.min-chunk-seconds }}

@@ -53,22 +53,33 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     await runGit(tmp, ["checkout", `tik-test-pr-${ref.number}`]);
   }
 
-  // Locate config: README.md with a `## TikTest` section is preferred; legacy
-  // claude.md / tik-test.md / etc. are fallbacks.
+  // Locate config: tiktest.md at root preferred; legacy fallbacks below.
   const configPath = await findConfig(workDir);
   if (!configPath) {
     throw new Error(
-      `Could not find README.md (or fallback config) in ${workDir}. ` +
-      `Add a "## TikTest" section to your README.md describing the preview URL, login, and what's risky in this PR. ` +
-      `See https://github.com/marcushyett/tik-test for the schema.`,
+      `Could not find tiktest.md (or fallback config) in ${workDir}. ` +
+      `Add a tiktest.md to your repo root with the preview URL, login, and what the app does. ` +
+      `See https://github.com/marcushyett/tik-test for the format.`,
     );
   }
   console.log(chalk.dim(`  config: ${path.relative(workDir, configPath)}`));
 
   const cfg = await loadConfig(configPath, opts.urlOverride ?? meta.previewUrl);
-  if (!cfg.focus && meta.body) {
-    // Use the PR body as focus context for test plan generation.
-    cfg.focus = `PR #${ref.number}: ${meta.title}\n\n${meta.body}`;
+  // PR body + title become the PR-specific testing notes. tiktest.md is
+  // the project-level setup (URL, login, app description); the PR
+  // description is where authors say what's risky in THIS change. We
+  // pass them as separate labelled inputs so the plan generator and the
+  // goal-agent both see the distinction.
+  if (meta.body || meta.title) {
+    cfg.prContext = `PR #${ref.number}: ${meta.title ?? ""}\n\n${meta.body ?? ""}`.trim();
+  }
+  if (!cfg.projectContext) {
+    console.log(chalk.yellow(`  no project setup found — agent will infer from the screen`));
+    console.log(chalk.dim(`    add a tiktest.md to your repo root describing the URL, login, and what the app does.`));
+  }
+  if (!cfg.prContext) {
+    console.log(chalk.yellow(`  no PR description — agent will plan from the diff alone`));
+    console.log(chalk.dim(`    a short "what to test" note in the PR body would help.`));
   }
   // Human-authored PR comments — teammate hints like "make sure you test X"
   // or bug reports that the plan should probe. We exclude tik-test's own
@@ -78,16 +89,6 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     cfg.comments = meta.comments.slice(0, 6_000); // prompt-safe cap
   }
 
-  // The setup phase reads the SAME natural-language blob the plan phase
-  // gets (`cfg.focus`), and uses Claude to extract login/setup steps from
-  // it. There's no separate parse — the agent reads the markdown and
-  // figures out which parts are pre-test bootstrap vs. what-to-test.
-  if (cfg.focus) {
-    cfg.tiktestSetup = cfg.focus;
-  } else {
-    console.log(chalk.yellow(`  no testing instructions found — running without pre-test setup`));
-    console.log(chalk.dim(`    add a tiktest.md to your repo root describing the URL, login, and what's risky.`));
-  }
   // Feed the PR diff to the plan generator so it can target the exact files
   // and selectors the PR touches — "read the code" exhaustiveness, not just
   // "read the PR body" surface guessing. Truncated to keep us inside the
@@ -104,8 +105,8 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
   // If URL still missing, bail with guidance.
   if (!cfg.url) {
     throw new Error(
-      `No testable URL. Add a "### URL" sub-section under "## TikTest" in your README.md, ` +
-      `or pass --url. Vercel preview URL auto-detection runs automatically.`,
+      `No testable URL. Put a preview URL in your tiktest.md, or pass --url. ` +
+      `Vercel preview URL auto-detection runs automatically in CI.`,
     );
   }
 
@@ -141,7 +142,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     if (bypass) console.log(chalk.dim("  vercel protection bypass enabled"));
     const artifacts = await runPlan({
       plan, runDir, extraHTTPHeaders, cookies,
-      setupInstructions: cfg.tiktestSetup,
+      projectContext: cfg.projectContext,
       diff: cfg.diff,
       comments: cfg.comments,
       prTitle: meta.title,
@@ -173,7 +174,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
       quick: opts.quick,
       prTitle: meta.title,
       prBody: meta.body,
-      focus: cfg.focus,
+      focus: cfg.projectContext,
     });
     console.log(chalk.green(`     ✓ ${outPath}`));
 

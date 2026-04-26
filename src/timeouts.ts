@@ -77,16 +77,6 @@ export const KNOBS: Knob[] = [
     riskHigher: "doesn't help if Claude is wedged; trim scenes via TIK_MAX_BODY_SCENES instead",
   },
   {
-    key: "TIK_SETUP_TIMEOUT_MS",
-    actionInput: "setup-timeout",
-    default: 60_000,
-    kind: "int",
-    unit: "ms",
-    description: "One-shot setup-suggester `claude` call (reads your repo, suggests how to start the app).",
-    riskLower: "setup may misfire on slow networks",
-    riskHigher: "almost never doing useful work past 60s",
-  },
-  {
     key: "TIK_FEATURE_FINDER_TIMEOUT_MS",
     actionInput: "feature-finder-timeout",
     default: 60_000,
@@ -226,7 +216,6 @@ export function resolveKnob(knob: Knob): number {
 export const PLAN_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_PLAN_TIMEOUT_MS")!);
 export const AGENT_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_AGENT_TIMEOUT_MS")!);
 export const NARRATION_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_NARRATION_TIMEOUT_MS")!);
-export const SETUP_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_SETUP_TIMEOUT_MS")!);
 export const FEATURE_FINDER_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_FEATURE_FINDER_TIMEOUT_MS")!);
 export const MIN_CHUNK_S = resolveKnob(KNOBS_BY_KEY.get("TIK_MIN_CHUNK_S")!);
 export const MAX_BODY_SCENES = resolveKnob(KNOBS_BY_KEY.get("TIK_MAX_BODY_SCENES")!);

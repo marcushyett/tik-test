@@ -58,7 +58,7 @@ program
       artifacts, outPath,
       voice,
       quick: !!opts.quick,
-      focus: cfg.focus,
+      focus: cfg.projectContext,
       prTitle: cfg.name,
     });
     console.log(chalk.green(`     ✓ ${path.relative(process.cwd(), outPath)}`));

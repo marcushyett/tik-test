@@ -3,7 +3,6 @@ import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import chalk from "chalk";
 import type { RunArtifacts, StepEvent, TestPlan } from "./types.js";
-import { runSetup } from "./setup.js";
 import { findFeature, isFeaturePageReady } from "./feature-finder.js";
 import { runGoal } from "./goal-agent.js";
 
@@ -111,10 +110,10 @@ export interface RunOptions {
   extraHTTPHeaders?: Record<string, string>;
   cookies?: Array<{ name: string; value: string; domain?: string; path?: string; url?: string }>;
   storageStatePath?: string;
-  /** Natural-language pre-test setup/login instructions from the repo's
-   *  README "TikTest" section. Executed after initial navigation, before the
-   *  plan steps run, so the plan sees an already-authed app. */
-  setupInstructions?: string;
+  /** Project-level context from the repo's tiktest.md (or fallback). Passed
+   *  to each goal-agent so it can sign in autonomously when the page shows
+   *  a login screen. Includes URL, login credentials, app description. */
+  projectContext?: string;
   /** PR diff (truncated) — used by the feature-finder to pick where to
    *  navigate when the plan's startUrl lands on a 404 or an unrelated page. */
   diff?: string;
@@ -257,7 +256,7 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 `;
 
-export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, setupInstructions, diff, comments, prTitle, prBody }: RunOptions): Promise<RunArtifacts> {
+export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, projectContext, diff, comments, prTitle, prBody }: RunOptions): Promise<RunArtifacts> {
   await mkdir(runDir, { recursive: true });
   const videoDir = path.join(runDir, "video");
   await mkdir(videoDir, { recursive: true });
@@ -393,36 +392,13 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
     await settleMedia(page);
 
-    // Pre-test setup: execute README's TikTest instructions (auth, seeding,
-    // etc.) so the plan runs against a prepared, logged-in app. If setup
-    // fails we WARN and continue — the goal-agent is autonomous and can
-    // drive sign-in itself from the snapshot. Aborting here on a flaky
-    // Claude-generated setup step was wasting runs.
-    if (setupInstructions) {
-      try {
-        await runSetup(page, setupInstructions, plan.startUrl);
-      } catch (e) {
-        console.log(chalk.yellow(`  ! setup failed but continuing — agent will handle from here: ${(e as Error).message.split("\n")[0]}`));
-      }
-      // After auth, the app likely redirected us to a dashboard. Re-navigate
-      // to the plan's start URL so the plan's first step is on the feature
-      // page (not wherever the post-auth redirect dropped us).
-      const postSetupUrl = page.url();
-      try {
-        const samePage = new URL(postSetupUrl).pathname === new URL(plan.startUrl).pathname;
-        if (!samePage) {
-          console.log(chalk.dim(`  returning to ${new URL(plan.startUrl).pathname} after setup (was ${new URL(postSetupUrl).pathname})`));
-          await page.goto(plan.startUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
-          await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
-          await settleMedia(page);
-          await page.waitForTimeout(800);
-        } else {
-          await settleMedia(page);
-        }
-      } catch {}
-    }
+    // No pre-test setup phase: login + seeding are now the goal-agent's
+    // responsibility. Each goal-agent receives the project context (which
+    // contains login credentials if any) in its system prompt and signs
+    // in autonomously when the page shows a login screen. The browser
+    // session persists across goals so login only happens once.
 
-    // Feature-finder: if setup left us on a 404, still-on-sign-in, or
+    // Feature-finder: if the start URL leaves us on a 404, sign-in, or
     // otherwise blank page, ask Claude to navigate from home to wherever
     // the PR's feature actually lives. This replaces the old "just run
     // the plan and hope every step finds its target" behaviour with an
@@ -446,12 +422,15 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       throw new Error("plan has no goals — the goal-agent path is the only supported execution path. The plan generator must always emit goals.");
     }
 
-    // Build PR context once — the agent gets it every turn, so the
-    // diff/comments inform click decisions even without pre-planned
-    // selectors. Order so reviewer instructions are impossible to miss:
-    // REVIEWER NOTES first (loud + explicit that they're authoritative),
-    // then PR title, body, diff.
+    // Build the per-turn context once. Order so the most actionable info
+    // is impossible to miss: project setup (so the agent knows how to log
+    // in if needed), then reviewer notes, then PR metadata, then diff.
     const ctxParts: string[] = [];
+    if (projectContext && projectContext.trim()) {
+      ctxParts.push(
+        `PROJECT SETUP (from the repo's tiktest.md — applies to every PR for this app, includes login credentials if any. If the page shows a login screen, sign in using these credentials before doing anything else):\n${projectContext.trim()}`,
+      );
+    }
     if (comments && comments.trim()) {
       ctxParts.push(
         `REVIEWER NOTES (AUTHORITATIVE — these are instructions from people who already tested this PR. If any note says "do X before you assert Y", you MUST do X. Ignoring a reviewer note and declaring failure is itself a failure.):\n${comments.trim()}`,

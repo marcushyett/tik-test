@@ -75,18 +75,21 @@ export interface Config {
   url: string;
   name?: string;
   viewport?: { width: number; height: number };
+  /** `start: <cmd>` directive parsed from the project markdown. Spawned
+   *  as a background process before the test phase so local-dev runs
+   *  can launch the app server. Not used in CI (deployment_status events
+   *  supply a real URL). */
   setup?: string;
-  login?: string;
-  /** README "TikTest" section — natural-language login / pre-test setup
-   *  instructions. Executed before plan generation so the rest of the run
-   *  assumes an already-authed, test-ready page. */
-  tiktestSetup?: string;
-  focus?: string;
+  /** Project-level natural-language setup blob from tiktest.md (or fallback
+   *  README.md `## TikTest` section). Describes the app, login, where the
+   *  preview lives, etc. Stable across PRs; the same content reaches every
+   *  Claude call. The agent reads it during plan generation AND during
+   *  goal execution (so it can sign in autonomously when needed). */
+  projectContext?: string;
   /**
    * Raw PR diff, truncated to a prompt-safe size. Populated by `tik-test pr`
-   * from `gh pr diff`, not by human-written claude.md files. Lets the plan
-   * generator target the specific files/lines a PR touches instead of
-   * guessing from the PR body alone.
+   * from `gh pr diff`. Lets the plan generator target the specific files
+   * and lines a PR touches instead of guessing from the PR body alone.
    */
   diff?: string;
   /**
@@ -97,6 +100,9 @@ export interface Config {
    * purely diff-driven coverage.
    */
   comments?: string;
+  /** PR-specific testing notes assembled from PR title + body. Distinct
+   *  from projectContext: changes per PR, lives in the PR description. */
+  prContext?: string;
   plan?: TestPlan;
   music?: string;
 }

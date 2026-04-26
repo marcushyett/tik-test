@@ -41,9 +41,15 @@ GOAL-WRITING GUIDANCE:
 RULES (strict):
 - \`startUrl\` MUST equal Context's Target URL EXACTLY — preview root, NO sub-path appended.
 - DO NOT include click sequences, selectors, data-testids, CSS, or URL paths in goal text. Trust the agent.
-- DO NOT write login/auth goals — the setup phase handles that.
+- DO NOT write a separate "log in" goal. If the project setup mentions login credentials, the goal-agent will sign in autonomously when the page shows a login screen — its system prompt includes the same project setup you see in Context. Just write goals as if the agent is already on the test-ready surface.
 - Keep \`intent\` short (8-16 words). Keep \`success\` concrete and observable (6-14 words).
 - \`shortLabel\` is for the on-video checklist a reviewer reads in <1s per goal. Strip articles, keep the verb + noun. ≤32 chars. NOT a sentence. Good: "Today filter shows today only". Bad: "Add a task due today and verify the Today filter shows it correctly".
+
+INPUT SOURCES (the Context block below contains a mix; prioritise like this):
+- "This PR (from PR title + description)" — the AUTHOR'S explicit guidance for what to test in this change. If they said "make sure to try X with empty input", that's your primary goal. If absent, fall back to the diff.
+- "PR comments (teammate feedback)" — reviewer hints, sometimes authoritative ("you must trigger a fresh fetch first").
+- "PR code diff" — what actually changed; use to cross-check the description and find risky surfaces the author forgot to mention.
+- "Project setup (from tiktest.md)" — applies to every PR for this app. Use it for app context and to know login is handled. Do NOT generate goals based on tiktest.md content alone; this PR is what's being tested.
 
 Context:
 {{CONTEXT}}

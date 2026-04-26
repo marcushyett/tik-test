@@ -124,10 +124,11 @@ export async function loadConfig(configPath: string, urlOverride?: string): Prom
     name: data.name,
     viewport,
     setup,
-    // The blob is the agent's primary context. Both plan generation
-    // (cfg.focus) and the setup phase (cfg.tiktestSetup) get the whole
-    // thing and decide for themselves what's relevant.
-    focus: blob || undefined,
+    // The whole blob is the agent's project-level context. The plan
+    // generator reads it as "what does this app do, how do I sign in".
+    // Each goal-agent reads it as "credentials I can use if the page
+    // shows me a login screen."
+    projectContext: blob || undefined,
     plan,
     music: data.music,
   };
@@ -137,7 +138,8 @@ export function configToPromptContext(cfg: Config): string {
   const parts: string[] = [];
   parts.push(`Target URL: ${cfg.url}`);
   if (cfg.name) parts.push(`App: ${cfg.name}`);
-  if (cfg.focus) parts.push(`Testing instructions (free-form, written by the repo author):\n${cfg.focus}`);
+  if (cfg.projectContext) parts.push(`Project setup (from tiktest.md — applies to every PR for this app, includes login info):\n${cfg.projectContext}`);
+  if (cfg.prContext) parts.push(`This PR (from PR title + description — what specifically to test in this change):\n${cfg.prContext}`);
   if (cfg.diff) parts.push(`PR code diff (authoritative — test the surfaces these hunks touch):\n${cfg.diff}`);
   if (cfg.comments) parts.push(`PR comments (teammate feedback / suggestions — incorporate any "make sure to test X" hints):\n${cfg.comments}`);
   return parts.join("\n\n");
