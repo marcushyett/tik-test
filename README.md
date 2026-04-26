@@ -79,10 +79,6 @@ Two ways tik-test learns where to point the browser. Pick whichever fits your se
 
 If both are present the auto-detected preview URL wins.
 
-### Discovery order
-
-If `tiktest.md` doesn't exist, tik-test falls back to `README.md` with a `## TikTest` (or `## Testing` / `## How to test`) heading, then `claude.md` / `CLAUDE.md` / `.claude/claude.md`, then bare `README.md`. The earlier path always wins.
-
 ---
 
 ## How it's designed (and what it won't suit)
