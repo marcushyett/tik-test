@@ -64,35 +64,42 @@ export function DecisionForm({ repo, prNumber, prTitle, onDone, onSkip, onPause,
   };
 
   return (
-    <div className="fade-up glass rounded-2xl p-5">
+    <div className="fade-up glass min-w-0 max-w-full overflow-hidden rounded-2xl p-4 sm:p-5">
       <div className="mb-4">
         <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-primary">your review</div>
-        <div className="mt-1 text-[17px] font-medium leading-snug tracking-tight">
+        <div className="mt-1 break-words text-[17px] font-medium leading-snug tracking-tight">
           How does {pickShort(prTitle)} land?
         </div>
       </div>
 
-      <div className="flex gap-2">
+      {/* min-w-0 + grid (instead of flex) lets the long button labels
+          shrink instead of pushing the comment-only button off the edge
+          on narrow screens. The third column is `auto` so the icon-only
+          button stays its natural size. */}
+      <div className="grid min-w-0 grid-cols-[1fr_1fr_auto] gap-2">
         <Button
           onClick={() => setVerdict("approve")}
           variant={verdict === "approve" ? "default" : "outline"}
           size="lg"
-          className="flex-1"
+          className="min-w-0 px-2 sm:px-4"
         >
-          <Check className="h-5 w-5" /> Approve
+          <Check className="h-5 w-5 shrink-0" /> <span className="truncate">Approve</span>
         </Button>
         <Button
           onClick={() => setVerdict("changes")}
           variant={verdict === "changes" ? "destructive" : "outline"}
           size="lg"
-          className="flex-1"
+          className="min-w-0 px-2 sm:px-4"
         >
-          <X className="h-5 w-5" /> Request changes
+          <X className="h-5 w-5 shrink-0" />
+          <span className="hidden truncate sm:inline">Request changes</span>
+          <span className="truncate sm:hidden">Changes</span>
         </Button>
         <Button
           onClick={() => setVerdict("comment")}
           variant={verdict === "comment" ? "accent" : "outline"}
-          size="lg"
+          size="default"
+          className="px-3"
           aria-label="Comment only"
         >
           <MessageSquare className="h-5 w-5" />

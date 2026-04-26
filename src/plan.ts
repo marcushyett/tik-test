@@ -17,6 +17,7 @@ Output ONLY a single JSON object (no prose, no markdown fences):
   "goals": Array<{
     "id": string,                // short kebab-case id
     "intent": string,            // natural-language goal — describes WHAT to do, not which selectors to use
+    "shortLabel": string,        // SCANNABLE headline for the outro checklist — 3-5 words, ≤32 chars total. Examples: "Add task with due date", "Today filter shows today only", "Overdue badge after one day". NEVER duplicate the verbose intent — strip context, keep the verb + noun.
     "success": string,           // observable condition, e.g. "Full-screen overlay is visible with counter showing 1 / N"
     "importance": "low"|"normal"|"high"|"critical"
   }>
@@ -41,6 +42,7 @@ RULES (strict):
 - DO NOT include click sequences, selectors, data-testids, CSS, or URL paths in goal text. Trust the agent.
 - DO NOT write login/auth goals — the setup phase handles that.
 - Keep \`intent\` short (8-16 words). Keep \`success\` concrete and observable (6-14 words).
+- \`shortLabel\` is for the on-video checklist a reviewer reads in <1s per goal. Strip articles, keep the verb + noun. ≤32 chars. NOT a sentence. Good: "Today filter shows today only". Bad: "Add a task due today and verify the Today filter shows it correctly".
 
 Context:
 {{CONTEXT}}

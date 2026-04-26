@@ -20,6 +20,10 @@ import type { BBox, Goal } from "./types.js";
 export interface GoalResult {
   outcome: "success" | "failure";
   note?: string;
+  /** 5-9 word headline of what happened, suitable for the on-video
+   *  checklist. Falls back to a truncation of `note` if the agent fails
+   *  to emit a SHORTNOTE line. */
+  shortNote?: string;
   bbox?: BBox;
   /** One entry per tool call. `result` is a short string preview of the tool's
    *  output (truncated) so the video editor can overlay what the agent learned
@@ -76,11 +80,17 @@ function buildSystemPrompt(): string {
     "- Start with browser_snapshot to read the current screen.",
     "- REVIEWER NOTES in the user message are AUTHORITATIVE — a reviewer has already tested this PR and is telling you the happy path. Follow their instructions first.",
     "",
-    "When the user would know the feature works (or doesn't), you're done. Emit OUTCOME, stop.",
+    "When the user would know the feature works (or doesn't), you're done. Emit OUTCOME + SHORTNOTE, stop.",
     "",
-    "Every goal ends with ONE line, exactly:",
-    "OUTCOME: success — short reason",
-    "OUTCOME: failure — short reason",
+    "Every goal ends with TWO lines, exactly in this order:",
+    "OUTCOME: success — full reason (up to 30 words, the PR comment uses this verbatim)",
+    "SHORTNOTE: 5-9 word headline for the on-video checklist — ≤60 chars, scannable in 1s",
+    "",
+    "On failure use the same shape:",
+    "OUTCOME: failure — full reason (state expected vs actual, plain language, no jargon)",
+    "SHORTNOTE: 5-9 words naming WHAT broke (e.g. \"today filter empty despite today badge\")",
+    "",
+    "SHORTNOTE rules: no articles, no preamble (\"the test\", \"we saw\"), no apologies. Skip restating the goal — say what HAPPENED. Pass: name the WHO/WHAT that worked. Fail: name the EXPECTATION that failed.",
   ].join("\n");
 }
 
@@ -94,10 +104,18 @@ function buildUserMessage(goal: Goal, prContext: string): string {
   return parts.join("\n");
 }
 
-function extractOutcome(text: string): { outcome: "success" | "failure"; note: string } | null {
-  const m = /OUTCOME:\s*(success|failure)\s*[—\-:]\s*(.+)/i.exec(text);
-  if (!m) return null;
-  return { outcome: m[1].toLowerCase() as "success" | "failure", note: m[2].trim().slice(0, 200) };
+function extractOutcome(text: string): { outcome: "success" | "failure"; note: string; shortNote?: string } | null {
+  // OUTCOME: <success|failure> — <note>     (single-line; up to next line break)
+  const om = /OUTCOME:\s*(success|failure)\s*[—\-:]\s*([^\n\r]+)/i.exec(text);
+  if (!om) return null;
+  // SHORTNOTE: <5-9 word headline>          (optional; agent may forget)
+  const sm = /SHORTNOTE:\s*([^\n\r]+)/i.exec(text);
+  const shortNote = sm ? sm[1].trim().slice(0, 80) : undefined;
+  return {
+    outcome: om[1].toLowerCase() as "success" | "failure",
+    note: om[2].trim().slice(0, 200),
+    shortNote,
+  };
 }
 
 /**
@@ -114,6 +132,7 @@ export async function runGoal(
   const history: GoalResult["actions"] = [];
   let outcome: "success" | "failure" = "failure";
   let note: string | undefined = "agent did not emit OUTCOME";
+  let shortNote: string | undefined;
 
   // Write MCP config to a temp file; the CLI accepts an inline JSON string
   // via --mcp-config but putting it in a file keeps the command line clean
@@ -201,6 +220,7 @@ export async function runGoal(
                 if (parsed) {
                   outcome = parsed.outcome;
                   note = parsed.note;
+                  shortNote = parsed.shortNote;
                   // Agent has concluded — kill the CLI now instead of waiting
                   // for it to finish its next assistant-only turn. Every
                   // second we let it linger is a second of dead video.
@@ -247,7 +267,7 @@ export async function runGoal(
       if (stderrBuf && history.length === 0) {
         note = `claude CLI stderr: ${stderrBuf.split("\n")[0].slice(0, 140)}`;
       }
-      resolve({ outcome, note, actions: history });
+      resolve({ outcome, note, shortNote, actions: history });
     });
 
     // Send the user message as a single stream-json user event.

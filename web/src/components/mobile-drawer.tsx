@@ -115,7 +115,11 @@ export function MobileDrawer({
           <div className="h-1.5 w-10 rounded-full bg-muted-foreground/30" />
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-10">{children}</div>
+        {/* `overflow-x-hidden` belts-and-braces against any child that
+             tries to spill horizontally (the decision form's button row
+             was the offender). Padding tightened from px-5 → px-4 to give
+             ~8 extra pixels per side back to the form. */}
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 pb-10">{children}</div>
       </div>
     </>
   );

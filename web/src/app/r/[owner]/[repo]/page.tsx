@@ -10,13 +10,24 @@ export default async function RepoFeedPage({ params }: { params: Promise<Params>
   const prs = await listPRsWithVideos(owner, repo);
 
   return (
-    <main className="flex flex-1 flex-col pb-12 pt-6">
-      <header className="mb-4 flex items-center justify-between px-6">
-        <Link href="/" className="inline-flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground">
+    // Mobile: video is full-bleed (h-[100dvh] inside VideoFeed) and the
+    // header sits ON TOP of it as a translucent overlay, NOT above it
+    // pushing the video down. Desktop keeps the in-flow header.
+    <main className="flex flex-1 flex-col md:pb-12 md:pt-6">
+      <header
+        className="
+          fixed inset-x-0 top-0 z-50 flex items-center justify-between
+          bg-gradient-to-b from-black/60 via-black/30 to-transparent
+          px-4 py-3 pt-[max(0.75rem,env(safe-area-inset-top))]
+          backdrop-blur-[2px]
+          md:static md:mb-4 md:bg-none md:px-6 md:py-0 md:pt-0 md:backdrop-blur-none
+        "
+      >
+        <Link href="/" className="inline-flex items-center gap-2 text-xs text-white/85 hover:text-white md:text-muted-foreground md:hover:text-foreground">
           <ArrowLeft className="h-3.5 w-3.5" /> All repos
         </Link>
-        <div className="text-xs text-muted-foreground">
-          <span className="font-semibold text-foreground">{owner}/{repo}</span> · {prs.length} PR{prs.length === 1 ? "" : "s"} to review
+        <div className="text-xs text-white/85 md:text-muted-foreground">
+          <span className="font-semibold text-white md:text-foreground">{owner}/{repo}</span> · {prs.length} PR{prs.length === 1 ? "" : "s"}
         </div>
       </header>
       <VideoFeed repo={{ owner, name: repo }} prs={prs} />

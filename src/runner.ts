@@ -521,6 +521,13 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
         outcome: result.outcome,
         error: result.outcome === "failure" ? result.note : undefined,
         notes: result.note,
+        // For the on-video checklist. Falls back to a 32-char truncation
+        // of the verbose intent if the planner skipped shortLabel; falls
+        // back to a 60-char truncation of the long note if the agent
+        // skipped SHORTNOTE. Both fallbacks are safety nets — the planner
+        // / agent prompts demand these fields.
+        shortLabel: goal.shortLabel?.trim() || goal.intent.replace(/\s+/g, " ").slice(0, 32),
+        shortNote: result.shortNote?.trim() || result.note?.replace(/\s+/g, " ").slice(0, 60),
         screenshotPath,
         bbox: result.bbox,
       });

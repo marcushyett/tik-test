@@ -39,12 +39,34 @@ export interface SingleVideoInput {
    *  Each chunk renders ONE Audio + ONE WordCaption Sequence + optional
    *  ToolBadge — guaranteed never to stack with siblings. */
   bodyChunks: BodyChunk[];
+  checklist?: Array<{ outcome: "success" | "failure" | "skipped"; label: string; note?: string }>;
 }
 
 export function computeSingleVideoDuration(input: SingleVideoInput, fps: number): number {
   const masterFrames = Math.round(input.masterDurS * fps);
   return input.introDurFrames + masterFrames + input.outroDurFrames;
 }
+
+/**
+ * SAFE-AREA RULES — read this before adding ANY new on-screen element.
+ *
+ * The rendered video is 9:16 and plays full-bleed inside the tik-test web
+ * viewer (and inside Slack / Twitter / iOS native players). The viewer
+ * overlays its own UI ON TOP of the video so it doesn't push the video
+ * down — meaning these zones of the rendered frame may be partially
+ * covered by player chrome at any moment:
+ *
+ *   - TOP ~120px      (viewer header bar: "All repos" link + repo title,
+ *                      plus iOS / Android browser status bar)
+ *   - BOTTOM ~280px   (caption band, OUR progress bar, mute button,
+ *                      mobile drawer peek pill, iOS home indicator,
+ *                      embedded-player native controls)
+ *   - TOP-RIGHT 120×120 (version badge — see VersionBadge below)
+ *
+ * Put NO content in those zones. Centre the action in the middle 560px.
+ * Captions live in the bottom safe band intentionally — but new title
+ * text, stats blocks, badges, etc. must respect the rules above.
+ */
 
 export const SingleVideoReel: React.FC<SingleVideoInput> = (props) => {
   const { fps } = useVideoConfig();
@@ -75,6 +97,7 @@ export const SingleVideoReel: React.FC<SingleVideoInput> = (props) => {
         <Outro
           title={props.title}
           stats={props.stats}
+          checklist={props.checklist}
           voiceSrc={props.outroVoiceSrc}
           voiceDurS={props.outroVoiceDurS}
           voicePlaybackRate={props.outroVoicePlaybackRate}

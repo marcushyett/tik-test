@@ -26,6 +26,9 @@ export interface Goal {
   /** Natural-language goal — what we want an autonomous agent to verify.
    *  Generic example: "Navigate to the new feature page and exercise the primary action." */
   intent: string;
+  /** SHORT (3-5 words, ≤32 chars) headline rendered on the outro checklist.
+   *  Must be scannable — the reviewer reads ten of these in 3 seconds. */
+  shortLabel?: string;
   /** Optional observable success condition the agent should stop at. */
   success?: string;
   importance?: "low" | "normal" | "high" | "critical";
@@ -66,6 +69,10 @@ export interface StepEvent {
   error?: string;
   screenshotPath?: string;
   notes?: string;
+  /** Short headline copied from Goal.shortLabel — for the outro checklist. */
+  shortLabel?: string;
+  /** Short outcome explanation produced by the goal-agent (5-9 words). */
+  shortNote?: string;
   bbox?: BBox;
 }
 

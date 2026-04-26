@@ -67,6 +67,15 @@ export interface BodyChunk {
   badgeDetail?: string;
 }
 
+/** One row on the outro checklist. Replaces the abstract pass/fail
+ *  blocks with the actual goals the agent ran, scannable by a reviewer
+ *  in seconds. `note` is shown on a second line (smaller) when present. */
+export interface ChecklistItem {
+  outcome: "success" | "failure" | "skipped";
+  label: string;
+  note?: string;
+}
+
 export interface SingleVideoInput {
   title: string;
   summary: string;
@@ -88,6 +97,8 @@ export interface SingleVideoInput {
   /** Body narration timeline — back-to-back chunks that cover the full
    *  master duration. Each chunk owns its voice + caption + optional badge. */
   bodyChunks: BodyChunk[];
+  /** Per-goal results rendered as a vertical checklist on the outro. */
+  checklist?: ChecklistItem[];
 }
 
 /**
@@ -521,6 +532,22 @@ export async function editSingleVideo({
   const skipped = artifacts.events.filter((e) => e.outcome === "skipped").length;
   const stats = { passed, failed, skipped, total: artifacts.events.length, durS: artifacts.totalMs / 1000 };
 
+  // Build the outro checklist from the goal-level events. Cap at 6 items
+  // so the outro never overflows; if there are more, surface the first
+  // few + the failures (since failures are what the reviewer cares about).
+  const goalEvents = artifacts.events.filter((e) => e.kind === "intent");
+  const ranked = [...goalEvents].sort((a, b) => {
+    // Failures first so they're never hidden by truncation.
+    const aFail = a.outcome === "failure" ? 0 : 1;
+    const bFail = b.outcome === "failure" ? 0 : 1;
+    return aFail - bFail;
+  });
+  const checklist: ChecklistItem[] = ranked.slice(0, 6).map((e) => ({
+    outcome: e.outcome,
+    label: (e.shortLabel ?? e.description).replace(/\s+/g, " ").slice(0, 36).trim(),
+    note: e.shortNote?.replace(/\s+/g, " ").slice(0, 64).trim() || undefined,
+  }));
+
   const input: SingleVideoInput = {
     title: artifacts.plan.name || "Feature review",
     summary: artifacts.plan.summary || artifacts.plan.startUrl,
@@ -540,6 +567,7 @@ export async function editSingleVideo({
     outroCaption: sanitiseForSpeech(narration.chunks[narration.chunks.length - 1].captionText),
     versionTag: getVersionTag(),
     bodyChunks,
+    checklist: checklist.length > 0 ? checklist : undefined,
   };
   await writeFile(path.join(runDir, "reel-input.json"), JSON.stringify(input, null, 2));
 

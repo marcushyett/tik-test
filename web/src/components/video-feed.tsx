@@ -373,18 +373,26 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
 
 /**
  * TikTok / IG Reels-style progress bar — thin track pinned to the very
- * bottom of the video frame, fills left→right as playback advances. The
- * bar is also a click target for scrubbing: click anywhere on the track
- * and the video jumps to that point.
+ * bottom of the video frame, fills left→right as playback advances.
+ * Click OR drag anywhere on the track to scrub the video. While dragging
+ * we paint the bar from the cursor position (not from currentTime) so
+ * the indicator stays under the finger even when the browser hasn't
+ * yet completed the seek.
  */
 function ProgressBar({ videoRef }: { videoRef: React.RefObject<HTMLVideoElement | null> }) {
   const [progress, setProgress] = useState(0);
+  const [scrubbing, setScrubbing] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);
+  // Remember play state at drag-start so we can resume it on release.
+  const wasPlayingRef = useRef(false);
 
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     const onTime = () => {
+      // While the user is actively scrubbing the bar paints from the
+      // cursor — don't let timeupdate from the seeking video override it.
+      if (scrubbing) return;
       const dur = v.duration;
       setProgress(Number.isFinite(dur) && dur > 0 ? v.currentTime / dur : 0);
     };
@@ -396,29 +404,67 @@ function ProgressBar({ videoRef }: { videoRef: React.RefObject<HTMLVideoElement 
       v.removeEventListener("loadedmetadata", onTime);
       v.removeEventListener("seeked", onTime);
     };
-  }, [videoRef]);
+  }, [videoRef, scrubbing]);
 
-  const onScrub = (e: React.MouseEvent<HTMLDivElement>) => {
-    e.stopPropagation();
+  const seekToClient = (clientX: number) => {
     const v = videoRef.current;
     const track = trackRef.current;
     if (!v || !track || !Number.isFinite(v.duration)) return;
     const rect = track.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     v.currentTime = ratio * v.duration;
+    setProgress(ratio);
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const v = videoRef.current;
+    if (!v) return;
+    wasPlayingRef.current = !v.paused;
+    if (!v.paused) v.pause();
+    setScrubbing(true);
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    seekToClient(e.clientX);
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!scrubbing) return;
+    e.stopPropagation();
+    seekToClient(e.clientX);
+  };
+
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!scrubbing) return;
+    e.stopPropagation();
+    setScrubbing(false);
+    try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId); } catch {}
+    const v = videoRef.current;
+    if (v && wasPlayingRef.current) void v.play().catch(() => {});
   };
 
   return (
     <div
       ref={trackRef}
-      onClick={onScrub}
-      className="absolute inset-x-0 bottom-0 z-20 h-2 cursor-pointer bg-white/15 hover:h-3 transition-[height] duration-150"
-      aria-label="Video progress"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      className={`absolute inset-x-0 bottom-0 z-20 cursor-pointer touch-none bg-white/15 transition-[height] duration-150 ${scrubbing ? "h-3" : "h-2 hover:h-3"}`}
+      aria-label="Video progress (drag to scrub)"
     >
       <div
         className="h-full bg-white/95 shadow-[0_0_6px_rgba(255,255,255,0.5)]"
         style={{ width: `${(progress * 100).toFixed(2)}%` }}
       />
+      {/* Knob — visible while scrubbing so the user sees exactly where
+          their finger is on the timeline. */}
+      {scrubbing && (
+        <div
+          className="pointer-events-none absolute top-1/2 -translate-y-1/2 -translate-x-1/2 h-4 w-4 rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.7)]"
+          style={{ left: `${(progress * 100).toFixed(2)}%` }}
+        />
+      )}
     </div>
   );
 }
