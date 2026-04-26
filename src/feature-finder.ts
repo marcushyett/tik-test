@@ -8,6 +8,7 @@
  * the regular plan takes over against a correctly-positioned page.
  */
 import { spawn } from "node:child_process";
+import { FEATURE_FINDER_TIMEOUT_MS } from "./timeouts.js";
 import type { Page } from "playwright";
 import chalk from "chalk";
 import type { TestPlan } from "./types.js";
@@ -57,7 +58,7 @@ export async function isFeaturePageReady(page: Page): Promise<{ ready: boolean; 
   return { ready: true };
 }
 
-function runClaude(prompt: string, timeoutMs = 60_000): Promise<string> {
+function runClaude(prompt: string, timeoutMs = FEATURE_FINDER_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn("claude", ["-p", prompt, "--output-format", "text"], { stdio: ["ignore", "pipe", "pipe"] });
     let out = ""; let err = "";

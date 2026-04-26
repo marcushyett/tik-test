@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import chalk from "chalk";
 import type { Config, TestPlan } from "./types.js";
 import { configToPromptContext } from "./config.js";
+import { PLAN_TIMEOUT_MS } from "./timeouts.js";
 
 const PLAN_PROMPT = `You are generating a GOAL-BASED test plan for a web app. An autonomous AI agent will execute each goal by driving the browser — clicking, typing, reading the page — and decide HOW to achieve it based on what's actually on-screen. You DO NOT write selectors, URLs, or click sequences. You write GOALS and CONTEXT. Trust the agent.
 
@@ -101,7 +102,7 @@ Context:
 
 Return ONLY the JSON. LEGACY UNUSED.`;
 
-function runClaude(prompt: string, timeoutMs = 240_000): Promise<string> {
+function runClaude(prompt: string, timeoutMs = PLAN_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn("claude", ["-p", prompt, "--output-format", "text"], {
       stdio: ["ignore", "pipe", "pipe"],

@@ -52,6 +52,27 @@ inputs:
     description: Subdirectory of the consumer repo containing `claude.md`. Defaults to the workspace root. Useful for monorepos.
     required: false
     default: ''
+  plan-timeout:
+    description: |
+      Seconds before the plan-generation `claude` call is killed.
+      Bump if your repo has a long PR description / large diff that makes
+      planning slow. Default 240 (4 min).
+    required: false
+    default: '240'
+  agent-timeout:
+    description: |
+      Seconds before EACH per-goal browser-driving `claude` call is killed.
+      Bump for apps with very slow page loads or PRs that touch many surfaces.
+      Default 600 (10 min).
+    required: false
+    default: '600'
+  narration-timeout:
+    description: |
+      Seconds before the narration-generation `claude` call is killed.
+      Bump for runs that produce many tool moments (sonnet writes one
+      coherent script for all of them in one call). Default 540 (9 min).
+    required: false
+    default: '540'
 
 runs:
   using: composite
@@ -165,6 +186,11 @@ runs:
         ASSET_REPO: ${{ github.repository }}
         ACTION_PATH: ${{ github.action_path }}
         WORKING_DIR: ${{ inputs.working-directory }}
+        # Convert seconds-from-input → milliseconds-for-Node so each Claude
+        # CLI subprocess inherits the right timeout. See src/timeouts.ts.
+        TIK_PLAN_TIMEOUT_MS: ${{ inputs.plan-timeout && format('{0}000', inputs.plan-timeout) || '' }}
+        TIK_AGENT_TIMEOUT_MS: ${{ inputs.agent-timeout && format('{0}000', inputs.agent-timeout) || '' }}
+        TIK_NARRATION_TIMEOUT_MS: ${{ inputs.narration-timeout && format('{0}000', inputs.narration-timeout) || '' }}
       run: |
         ARGS=( pr "$PR_NUMBER" --skip-clone --asset-repo "$ASSET_REPO" --review "$REVIEW_MODE" )
         [[ "$REQUIRE_PASS" == "true" ]] && ARGS+=( --require-pass )

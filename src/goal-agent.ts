@@ -16,6 +16,7 @@ import path from "node:path";
 import type { Page } from "playwright";
 import chalk from "chalk";
 import type { BBox, Goal } from "./types.js";
+import { AGENT_TIMEOUT_MS } from "./timeouts.js";
 
 export interface GoalResult {
   outcome: "success" | "failure";
@@ -36,10 +37,9 @@ export interface GoalResult {
 // should test as fast and thoroughly as possible; the editor trims the raw
 // video down to the highlight reel. These only catch runaway sessions.
 const MAX_TURNS_PER_GOAL = 80;
-// Very generous safety ceiling — only to catch truly stuck sessions. Agent
-// can take multiple minutes inspecting if the goal requires it. The final
-// video is what matters and that's editor responsibility.
-const CLAUDE_TIMEOUT_MS = 600_000;
+// Per-goal CLI runtime ceiling. Configurable via TIK_AGENT_TIMEOUT_MS env
+// (or `agent-timeout` action input). Default 10 min. See src/timeouts.ts.
+const CLAUDE_TIMEOUT_MS = AGENT_TIMEOUT_MS;
 
 function buildSystemPrompt(): string {
   return [

@@ -221,6 +221,9 @@ That's it. The action installs Node + ffmpeg + Playwright, builds tik-test, auto
 | `require-pass` | No | `true` | Exit non-zero when any test step fails (turns the check red). |
 | `quick` | No | `true` | Draft 540×960 render (~2 min). Set `false` for full-res. |
 | `working-directory` | No | repo root | Subdirectory containing `claude.md`. Useful for monorepos. |
+| `plan-timeout` | No | `240` (s) | Plan-generation Claude call timeout. Bump for huge diffs. |
+| `agent-timeout` | No | `600` (s) | Per-goal agent timeout. Bump for slow page loads or PRs touching many surfaces. |
+| `narration-timeout` | No | `540` (s) | Narration-generation Claude call timeout. Bump for very long runs that produce 12+ tool moments. |
 
 ¹ Provide one of the two — OAuth token recommended for cost control.
 
@@ -265,6 +268,20 @@ This repo dogfoods the action: see [`.github/workflows/tik-test.yml`](.github/wo
 | `TIK_KEEP_CLONE=1` | Keep the temp directory tik-test clones PRs into. |
 | `TIK_FFMPEG_DEBUG=1` | Print every ffmpeg invocation. |
 | `TIK_REMOTION_DEBUG=1` | Verbose logs from the Remotion renderer. |
+
+### Timeouts (millisecond overrides for the `claude` CLI calls)
+
+When using the GitHub Action prefer the typed inputs above (`plan-timeout`, `agent-timeout`, `narration-timeout`) — they're seconds, friendlier to read in YAML. From the CLI / a custom integration set the env vars below directly:
+
+| Var | Default | What it caps |
+|---|---|---|
+| `TIK_PLAN_TIMEOUT_MS` | `240000` (4 min) | One-shot plan-generation `claude` call. |
+| `TIK_AGENT_TIMEOUT_MS` | `600000` (10 min) | EACH per-goal browser-driving `claude` call. |
+| `TIK_NARRATION_TIMEOUT_MS` | `540000` (9 min) | One-shot narration-generation `claude` call (writes intro + outro + every scene line). |
+| `TIK_SETUP_TIMEOUT_MS` | `60000` (1 min) | One-shot setup-suggester `claude` call. |
+| `TIK_FEATURE_FINDER_TIMEOUT_MS` | `60000` (1 min) | One-shot fallback `claude` call when `startUrl` lands on a 404. |
+
+Bump them when you're seeing `claude CLI timed out after Xms` in the logs. Defaults are tuned for a typical PR (1–3 goals, 30–60s recording, 8–12 narration scenes) on a Claude Max subscription.
 
 ---
 

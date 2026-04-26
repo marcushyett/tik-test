@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import chalk from "chalk";
 import type { TestPlan } from "./types.js";
+import { NARRATION_TIMEOUT_MS } from "./timeouts.js";
 
 /**
  * One narration "scene" — a slot in the final video that needs spoken
@@ -144,7 +145,7 @@ function buildPrompt(ctx: NarrationContext): string {
     .replace("{{SCENES}}", sceneLines);
 }
 
-function runClaude(prompt: string, timeoutMs = 540_000): Promise<string> {
+function runClaude(prompt: string, timeoutMs = NARRATION_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     // Sonnet is fast enough for templated narration (12-16 short chunks) and
     // keeps the editor under 90s on this stage. Opus on the same prompt was

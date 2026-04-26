@@ -10,6 +10,7 @@
 import { spawn } from "node:child_process";
 import type { Page } from "playwright";
 import chalk from "chalk";
+import { SETUP_TIMEOUT_MS } from "./timeouts.js";
 
 type SetupAction =
   | { action: "navigate"; url: string }
@@ -19,7 +20,7 @@ type SetupAction =
   | { action: "wait"; ms?: number }
   | { action: "assert_visible"; target: string };
 
-function runClaude(prompt: string, timeoutMs = 60_000): Promise<string> {
+function runClaude(prompt: string, timeoutMs = SETUP_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn("claude", ["-p", prompt, "--output-format", "text"], {
       stdio: ["ignore", "pipe", "pipe"],
