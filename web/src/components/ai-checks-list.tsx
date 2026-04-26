@@ -1,16 +1,12 @@
 "use client";
 
-import { Bot, Check, MinusCircle, X } from "lucide-react";
+import { Bot, Check, Minus, MinusCircle, X } from "lucide-react";
 import type { ChecklistItem } from "@/lib/marker";
 
 /**
  * Native render of the LLM-synthesised "AI checks" list — same data the
  * video's outro shows on the final frame, surfaced inline so reviewers
  * don't have to play the MP4 to scan it.
- *
- * Headed with an explicit "AI checks · NOT CI / NOT GitHub tasks"
- * disclaimer so the rows aren't misread as live build status or as a
- * GitHub task-list a reviewer is expected to tick off.
  */
 export function AIChecksList({ items }: { items: ChecklistItem[] }) {
   if (items.length === 0) return null;
@@ -27,14 +23,26 @@ export function AIChecksList({ items }: { items: ChecklistItem[] }) {
             AI checks
           </span>
         </div>
-        <div className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums">
-          {failed > 0 && <span className="text-destructive">❌ {failed}</span>}
-          {passed > 0 && <span className="text-primary">✅ {passed}</span>}
-          {skipped > 0 && <span className="text-muted-foreground">⏭️ {skipped}</span>}
+        <div className="flex shrink-0 items-center gap-2 font-mono text-[11px] tabular-nums">
+          {failed > 0 && (
+            <span className="inline-flex items-center gap-1 text-destructive">
+              <X className="h-3 w-3" strokeWidth={2.5} />
+              {failed}
+            </span>
+          )}
+          {passed > 0 && (
+            <span className="inline-flex items-center gap-1 text-primary">
+              <Check className="h-3 w-3" strokeWidth={2.5} />
+              {passed}
+            </span>
+          )}
+          {skipped > 0 && (
+            <span className="inline-flex items-center gap-1 text-muted-foreground">
+              <MinusCircle className="h-3 w-3" strokeWidth={2} />
+              {skipped}
+            </span>
+          )}
         </div>
-      </div>
-      <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-        Checks the AI agent ran while filming. Not CI status, not a GitHub task list.
       </div>
       <ul className="mt-3 flex flex-col gap-1.5">
         {items.map((it, i) => (
@@ -67,22 +75,13 @@ export function AIChecksList({ items }: { items: ChecklistItem[] }) {
 }
 
 function Glyph({ outcome }: { outcome: ChecklistItem["outcome"] }) {
-  const base = "mt-0.5 h-4 w-4 shrink-0 rounded-full";
-  if (outcome === "failure") {
-    return (
-      <span className={`${base} bg-destructive text-destructive-foreground flex items-center justify-center`}>
-        <X className="h-2.5 w-2.5" strokeWidth={3} />
-      </span>
-    );
-  }
-  if (outcome === "skipped") {
-    return <MinusCircle className={`${base} text-muted-foreground`} strokeWidth={2.2} />;
-  }
-  return (
-    <span className={`${base} bg-primary text-primary-foreground flex items-center justify-center`}>
-      <Check className="h-2.5 w-2.5" strokeWidth={3} />
-    </span>
-  );
+  // Outline glyphs in the tone colour — no filled circle. Filled circles
+  // with a white check/X read as ✅/❌ emoji at a glance, which clashes
+  // with the rest of the app's understated lucide-icon vocabulary.
+  const base = "mt-0.5 h-4 w-4 shrink-0";
+  if (outcome === "failure") return <X className={`${base} text-destructive`} strokeWidth={2.4} />;
+  if (outcome === "skipped") return <Minus className={`${base} text-muted-foreground`} strokeWidth={2.2} />;
+  return <Check className={`${base} text-primary`} strokeWidth={2.4} />;
 }
 
 /** Compact pass/fail pill for the collapsed mobile drawer peek. */
@@ -96,8 +95,16 @@ export function AIChecksBadge({ items }: { items: ChecklistItem[] }) {
       title={`tik-test AI checks: ${passed} passed · ${failed} failed`}
     >
       <Bot className="h-3 w-3 shrink-0" />
-      {failed > 0 && <span className="text-[hsl(0,80%,75%)]">❌ {failed}</span>}
-      <span>✅ {passed}</span>
+      {failed > 0 && (
+        <span className="inline-flex items-center gap-0.5 text-[hsl(0,80%,75%)]">
+          <X className="h-2.5 w-2.5" strokeWidth={2.5} />
+          {failed}
+        </span>
+      )}
+      <span className="inline-flex items-center gap-0.5">
+        <Check className="h-2.5 w-2.5" strokeWidth={2.5} />
+        {passed}
+      </span>
     </span>
   );
 }

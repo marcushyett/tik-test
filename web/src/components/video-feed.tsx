@@ -278,16 +278,49 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
     const btn = (handler: () => void) => (e: React.MouseEvent) => { e.stopPropagation(); handler(); };
 
     // TikTok-style overlay: big play/pause centered with skip buttons either
-    // side. Opacity 1 while paused (so the viewer sees affordances), fades to
-    // 0 while playing but comes back on hover. The overlay ITSELF takes
-    // clicks (background area → togglePlay) so tapping anywhere on the video
-    // pauses; buttons stopPropagation so they do their specific action.
+    // side. While paused the controls are pinned visible so the viewer sees
+    // affordances. While playing they auto-hide after a short inactivity
+    // window — the previous `hover:opacity-100` rule kept controls stuck on
+    // any time the cursor was inside the video frame, blocking the actual UI
+    // we're filming. Activity (pointermove, click, button taps) re-shows
+    // them and resets the timer.
+    const HIDE_AFTER_MS = 2500;
+    const [controlsVisible, setControlsVisible] = useState(true);
+    const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const clearHideTimer = () => {
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    };
+    const scheduleHide = useCallback(() => {
+      clearHideTimer();
+      hideTimerRef.current = setTimeout(() => setControlsVisible(false), HIDE_AFTER_MS);
+    }, []);
+    const bumpActivity = useCallback(() => {
+      setControlsVisible(true);
+      if (playing) scheduleHide();
+    }, [playing, scheduleHide]);
+    useEffect(() => {
+      if (!playing) {
+        clearHideTimer();
+        setControlsVisible(true);
+      } else {
+        scheduleHide();
+      }
+      return clearHideTimer;
+    }, [playing, scheduleHide]);
+
     const overlayClass = `absolute inset-0 flex items-center justify-center gap-8 sm:gap-12 transition-opacity duration-300 cursor-pointer ${
-      playing ? "opacity-0 hover:opacity-100" : "opacity-100"
+      controlsVisible ? "opacity-100" : "opacity-0"
     }`;
 
     return (
-      <div className={wrapClass} style={aspect === "9/16" ? { aspectRatio: "9 / 16" } : undefined}>
+      <div
+        className={wrapClass}
+        style={aspect === "9/16" ? { aspectRatio: "9 / 16" } : undefined}
+        onPointerMove={bumpActivity}
+      >
         {/* key={src} forces React to unmount the previous video element when
             the src changes. Without it the browser keeps the old audio track
             alive while loading the new src, producing overlapping voices.
