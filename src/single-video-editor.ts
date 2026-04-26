@@ -372,11 +372,15 @@ export async function editSingleVideo({
   //      coalesced so we don't end up with a chunk shorter than 1.6s.
   const INTRO_TARGET_S = 4.5;
   const OUTRO_TARGET_S = 4.0;
-  // Bigger chunks = fewer scenes = faster narration call. 2.5s is roughly
-  // one short sentence (~6 words) so the narrator still has room to breathe
+  // Bigger chunks = fewer scenes = faster narration call. 3.5s is roughly
+  // one full sentence (~10 words) so the narrator still has room to breathe
   // per scene, but we don't blow past Claude's narration timeout on long
   // PR runs with 25+ tool windows.
-  const MIN_CHUNK_S = 2.5;
+  const MIN_CHUNK_S = 3.5;
+  // Hard ceiling on body scenes — even with coalescing, very long runs can
+  // produce 18+ chunks which push sonnet past the timeout. Above this we
+  // sample evenly so the prompt stays bounded.
+  const MAX_BODY_SCENES = 12;
 
   type BodyMoment = { startS: number; visibility: "silent" | "visible"; toolKind: string; toolInput?: string; toolResult?: string };
   const surfacing = (artifacts.toolWindows ?? [])
@@ -410,7 +414,7 @@ export async function editSingleVideo({
 
   // Coalesce moments closer than MIN_CHUNK_S into the previous one — keeps
   // the narrator from having to write a 4-word filler line.
-  const coalesced: BodyMoment[] = [];
+  let coalesced: BodyMoment[] = [];
   for (const m of bodyMoments) {
     const last = coalesced[coalesced.length - 1];
     if (last && m.startS - last.startS < MIN_CHUNK_S) {
@@ -426,6 +430,17 @@ export async function editSingleVideo({
       continue;
     }
     coalesced.push({ ...m });
+  }
+  // Hard ceiling: too many scenes blow past the narration CLI timeout.
+  // Sample evenly while always keeping the first (anchored to 0) and last.
+  if (coalesced.length > MAX_BODY_SCENES) {
+    const stride = (coalesced.length - 1) / (MAX_BODY_SCENES - 1);
+    const sampled: BodyMoment[] = [];
+    for (let i = 0; i < MAX_BODY_SCENES; i++) {
+      sampled.push(coalesced[Math.round(i * stride)]);
+    }
+    console.log(chalk.dim(`  capped body scenes ${coalesced.length} → ${sampled.length} for narration timeout safety`));
+    coalesced = sampled;
   }
 
   // Compose the full scene list (intro + body + outro) with composition

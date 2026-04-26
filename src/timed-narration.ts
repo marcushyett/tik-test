@@ -144,7 +144,7 @@ function buildPrompt(ctx: NarrationContext): string {
     .replace("{{SCENES}}", sceneLines);
 }
 
-function runClaude(prompt: string, timeoutMs = 360_000): Promise<string> {
+function runClaude(prompt: string, timeoutMs = 540_000): Promise<string> {
   return new Promise((resolve, reject) => {
     // Sonnet is fast enough for templated narration (12-16 short chunks) and
     // keeps the editor under 90s on this stage. Opus on the same prompt was
