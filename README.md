@@ -78,7 +78,7 @@ That's it. Claude reads both, plus the diff, and generates the plan.
 - **No structured parsing.** Both files are fed to Claude as natural-language markdown. Claude decides what's relevant.
 - **One regex, for the URL.** First `https?://` in `tiktest.md` (so the browser can boot before the agent runs). In CI, `deployment_status` events supply the URL anyway and this never fires.
 - **`start: <cmd>`** anywhere in `tiktest.md` is recognised as a background-process directive for local dev runs.
-- **Login is the agent's job.** No separate setup phase. If `tiktest.md` mentions credentials, the goal-agent signs in autonomously when it sees a login screen.
+- **Sign-in is a separate pre-test phase.** It uses the same agent infrastructure as goals but runs BEFORE the visible goals start. It doesn't count toward the 1-3 goal budget, doesn't appear in the outro checklist, and doesn't get filmed as a tested behaviour. Its sole job is to get past any auth gate using the credentials in `tiktest.md`. If `tiktest.md` doesn't mention credentials, this phase is skipped.
 
 ### Discovery order
 

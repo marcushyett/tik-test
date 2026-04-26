@@ -41,7 +41,7 @@ GOAL-WRITING GUIDANCE:
 RULES (strict):
 - \`startUrl\` MUST equal Context's Target URL EXACTLY — preview root, NO sub-path appended.
 - DO NOT include click sequences, selectors, data-testids, CSS, or URL paths in goal text. Trust the agent.
-- DO NOT write a separate "log in" goal. If the project setup mentions login credentials, the goal-agent will sign in autonomously when the page shows a login screen — its system prompt includes the same project setup you see in Context. Just write goals as if the agent is already on the test-ready surface.
+- DO NOT write a "log in" goal. Login is handled in a separate pre-test phase before any goal runs, using the credentials in the project setup. Your goals run AFTER the user is signed in, so write them as if the agent is already on the post-login app.
 - Keep \`intent\` short (8-16 words). Keep \`success\` concrete and observable (6-14 words).
 - \`shortLabel\` is for the on-video checklist a reviewer reads in <1s per goal. Strip articles, keep the verb + noun. ≤32 chars. NOT a sentence. Good: "Today filter shows today only". Bad: "Add a task due today and verify the Today filter shows it correctly".
 

@@ -2,7 +2,7 @@ import { mkdir, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import chalk from "chalk";
-import type { RunArtifacts, StepEvent, TestPlan } from "./types.js";
+import type { Goal, RunArtifacts, StepEvent, TestPlan } from "./types.js";
 import { findFeature, isFeaturePageReady } from "./feature-finder.js";
 import { runGoal } from "./goal-agent.js";
 
@@ -392,11 +392,50 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
     await settleMedia(page);
 
-    // No pre-test setup phase: login + seeding are now the goal-agent's
-    // responsibility. Each goal-agent receives the project context (which
-    // contains login credentials if any) in its system prompt and signs
-    // in autonomously when the page shows a login screen. The browser
-    // session persists across goals so login only happens once.
+    // Pre-test sign-in pass. Login isn't a "goal" — it doesn't count
+    // toward the 1-3 visible goals or the outro checklist, and it
+    // doesn't get filmed as a tested behaviour. But if tiktest.md
+    // mentions credentials, we still need to be past any auth gate
+    // before the real goals run. Use a goal-agent with a fixed,
+    // narrow intent: log in if needed, otherwise do nothing.
+    if (projectContext && projectContext.trim()) {
+      const loginGoal: Goal = {
+        id: "_login",
+        intent:
+          "If the current page shows a sign-in / login / authentication screen, sign in using the credentials in the CONTEXT below, then stop. " +
+          "If the page is already past auth (you can see the app's main content), do nothing and emit OUTCOME: success — already authenticated. " +
+          "DO NOT explore the app, DO NOT test any feature, DO NOT click around. Sign in only.",
+        shortLabel: "Sign in",
+        importance: "high",
+      };
+      logLine(chalk.dim("◦"), { id: "_login", kind: "intent", description: "pre-test sign-in", importance: "low" } as any);
+      try {
+        const loginResult = await runGoal(page, loginGoal, projectContext.trim(), cdpEndpoint);
+        if (loginResult.outcome === "failure") {
+          console.log(chalk.yellow(`  ! login phase reported failure but continuing — goals may still work if no auth required: ${loginResult.note?.slice(0, 100)}`));
+        } else {
+          console.log(chalk.dim(`  ✓ pre-test sign-in: ${loginResult.note?.slice(0, 80)}`));
+        }
+      } catch (e) {
+        console.log(chalk.yellow(`  ! login phase crashed but continuing: ${(e as Error).message.split("\n")[0]}`));
+      }
+      // After login, the app likely redirected to a dashboard. Re-navigate
+      // to the plan's start URL so the first goal begins from the canonical
+      // entry point, not wherever auth dropped us.
+      const postLoginUrl = page.url();
+      try {
+        const samePage = new URL(postLoginUrl).pathname === new URL(plan.startUrl).pathname;
+        if (!samePage) {
+          console.log(chalk.dim(`  returning to ${new URL(plan.startUrl).pathname} after sign-in (was ${new URL(postLoginUrl).pathname})`));
+          await page.goto(plan.startUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
+          await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
+          await settleMedia(page);
+          await page.waitForTimeout(800);
+        } else {
+          await settleMedia(page);
+        }
+      } catch {}
+    }
 
     // Feature-finder: if the start URL leaves us on a 404, sign-in, or
     // otherwise blank page, ask Claude to navigate from home to wherever
@@ -428,7 +467,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     const ctxParts: string[] = [];
     if (projectContext && projectContext.trim()) {
       ctxParts.push(
-        `PROJECT SETUP (from the repo's tiktest.md — applies to every PR for this app, includes login credentials if any. If the page shows a login screen, sign in using these credentials before doing anything else):\n${projectContext.trim()}`,
+        `PROJECT SETUP (from the repo's tiktest.md — applies to every PR for this app. Login already happened in a separate pre-test phase, so you should be on the post-login app. This is here for context about what the app does and as a fallback if the session expires mid-goal):\n${projectContext.trim()}`,
       );
     }
     if (comments && comments.trim()) {
