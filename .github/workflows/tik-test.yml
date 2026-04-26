@@ -29,10 +29,16 @@ permissions:
 
 jobs:
   review:
-    # Skip fork PRs — secrets aren't available, so the action would fail.
+    # Gate: only the maintainer can trigger this. Stops anyone from opening
+    # PRs against this repo and burning through the CLAUDE_CODE_OAUTH_TOKEN
+    # subscription budget. Also skips fork PRs (secrets aren't available
+    # there anyway). Update OWNERS below to add collaborators.
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      contains(fromJSON(vars.TIKTEST_OWNERS || '["marcushyett"]'), github.actor) &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
