@@ -132,15 +132,28 @@ const MAX_ITEMS = 10;
 const MAX_LABEL = 36;
 const MAX_NOTE = 64;
 
+/** Hard cap on length, but cut at the last word boundary so we don't end
+ *  up with "Today filte" or "Verify the foot…" — both look broken on
+ *  the outro card. Adds an ellipsis only if we actually had to drop a
+ *  whole word; an exact-fit just stays as-is. */
+function clipToWord(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  if (lastSpace < max * 0.6) return cut.trimEnd(); // word too long, just hard-cut
+  return cut.slice(0, lastSpace).trimEnd() + "…";
+}
+
 function sanitise(items: any[]): ChecklistItem[] {
   const out: ChecklistItem[] = [];
   for (const raw of items) {
     if (!raw || typeof raw !== "object") continue;
     const outcome = raw.outcome === "failure" || raw.outcome === "skipped" ? raw.outcome : "success";
-    const label = typeof raw.label === "string" ? raw.label.replace(/\s+/g, " ").trim().slice(0, MAX_LABEL) : "";
-    if (!label) continue;
+    const labelRaw = typeof raw.label === "string" ? raw.label.replace(/\s+/g, " ").trim() : "";
+    if (!labelRaw) continue;
+    const label = clipToWord(labelRaw, MAX_LABEL);
     const note = typeof raw.note === "string" && raw.note.trim()
-      ? raw.note.replace(/\s+/g, " ").trim().slice(0, MAX_NOTE)
+      ? clipToWord(raw.note.replace(/\s+/g, " ").trim(), MAX_NOTE)
       : undefined;
     out.push({ outcome, label, note });
     if (out.length >= MAX_ITEMS) break;
