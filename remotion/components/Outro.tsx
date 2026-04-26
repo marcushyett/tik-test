@@ -23,10 +23,10 @@ export const Outro: React.FC<Props> = ({ title, stats, checklist, voiceSrc, voic
   const { fps, durationInFrames } = useVideoConfig();
 
   const rise = spring({ frame, fps, from: 70, to: 0, config: { damping: 15, stiffness: 110 } });
-  const fadeIn = spring({ frame, fps, from: 0, to: 1, config: { damping: 20 } });
-  const outStart = durationInFrames - 12;
-  const fadeOut = interpolate(frame, [outStart, durationInFrames], [1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
-  const opacity = Math.min(fadeIn, fadeOut);
+  // Fade IN once, then HOLD at full opacity for the rest of the segment.
+  // No fade-out — the user wants the checklist legible on the last frame
+  // so a reviewer pausing at the end can read every pass/fail row.
+  const opacity = spring({ frame, fps, from: 0, to: 1, config: { damping: 20 } });
 
   const ok = stats.failed === 0;
   const accent = ok ? "#00e5a0" : "#ff4757";

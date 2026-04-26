@@ -535,7 +535,11 @@ export async function editSingleVideo({
 
   // ── 8. Intro / outro durations based on actual voice length.
   const introDurS = Math.max(INTRO_TARGET_S, introTts.dur + 0.5);
-  const outroDurS = Math.max(OUTRO_TARGET_S, outroTts.dur + 0.5);
+  // Outro holds for a few seconds after the voice ends so the checklist
+  // stays readable on the final frame (the Outro component no longer
+  // fades out — the last frame is what a reviewer sees on pause).
+  const OUTRO_HOLD_S = 3.5;
+  const outroDurS = Math.max(OUTRO_TARGET_S + OUTRO_HOLD_S, outroTts.dur + OUTRO_HOLD_S);
   const introDurFrames = Math.round(introDurS * FPS);
   const outroDurFrames = Math.round(outroDurS * FPS);
   const introPlaybackRate = introTts.dur > 0 ? Math.max(0.85, Math.min(1.4, introTts.dur / Math.max(0.5, introDurS - 0.2))) : 1;
