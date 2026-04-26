@@ -64,20 +64,24 @@ export interface TimedNarration {
 }
 
 /**
- * Roughly how many words a TTS voice gets through per second at neutral
- * pace. Used to size narration lines: 2.5 words/sec × targetDurS = target
- * word count. Empirically true for the OpenAI gpt-4o-mini-tts default
- * voice; somewhat slower than `say` but close enough that lines fit.
+ * Words per second at the OpenAI gpt-4o-mini-tts default delivery rate.
+ * Empirically ~2.9-3.1 wps once the Remotion audio playbackRate is allowed
+ * to run a touch above 1.0. We use 3.0 to bias the narrator toward longer
+ * lines — under-writing leaves silent tails that the playbackRate clamp
+ * can't stretch out, and that's the dominant cause of audio coverage gaps.
  */
-const WORDS_PER_SEC = 2.5;
+const WORDS_PER_SEC = 3.0;
+/** Hard floor — even a 1.6s chunk gets at least 5 words so the line lands
+ *  as a coherent thought rather than a 2-word fragment. */
+const MIN_WORDS = 5;
 
 function targetWords(targetDurS: number): number {
-  return Math.max(4, Math.round(targetDurS * WORDS_PER_SEC));
+  return Math.max(MIN_WORDS, Math.round(targetDurS * WORDS_PER_SEC));
 }
 
 const PROMPT = `You are the narrator of a short video where a developer walks a colleague through a feature they just built. Picture a calm 1:1 screen-share — not a launch demo, not a hype reel. You are quietly explaining your work and welcoming critique.
 
-The video has a fixed timeline. Every scene below has a TARGET DURATION that your narration line for that scene must fit when read aloud at about 2.5 words per second. Hit the target word count within ±20%. The whole video's audio is chained back-to-back from these lines, so an undersized line leaves silence and an oversized line gets sped up unpleasantly.
+The video has a fixed timeline. Every scene below has a TARGET DURATION and a TARGET WORD COUNT (~3 words per second of speech). Your narration line for that scene must hit that word count, **never less than 90% of target** — the whole video's audio is chained back-to-back from these lines, so an undersized line leaves audible silence between scenes (the editor cannot stretch a line to fill a gap; it can only speed it up to fit). Going slightly over is fine — the editor speeds up to 1.6× if needed — but going under leaves dead air, which is the worst failure mode.
 
 **Tonal rules (strict):**
 - The intro names WHY this feature exists and what PROBLEM it solves (use the PR body / focus).

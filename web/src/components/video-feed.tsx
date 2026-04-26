@@ -307,6 +307,8 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
           onPause={() => setPlaying(false)}
         />
 
+        <ProgressBar videoRef={videoRef} />
+
         {/* Centered TikTok-style controls: skip-back, play/pause, skip-forward */}
         <div className={overlayClass} onClick={togglePlay}>
           <button
@@ -368,6 +370,58 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
       </div>
     );
 });
+
+/**
+ * TikTok / IG Reels-style progress bar — thin track pinned to the very
+ * bottom of the video frame, fills left→right as playback advances. The
+ * bar is also a click target for scrubbing: click anywhere on the track
+ * and the video jumps to that point.
+ */
+function ProgressBar({ videoRef }: { videoRef: React.RefObject<HTMLVideoElement | null> }) {
+  const [progress, setProgress] = useState(0);
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onTime = () => {
+      const dur = v.duration;
+      setProgress(Number.isFinite(dur) && dur > 0 ? v.currentTime / dur : 0);
+    };
+    v.addEventListener("timeupdate", onTime);
+    v.addEventListener("loadedmetadata", onTime);
+    v.addEventListener("seeked", onTime);
+    return () => {
+      v.removeEventListener("timeupdate", onTime);
+      v.removeEventListener("loadedmetadata", onTime);
+      v.removeEventListener("seeked", onTime);
+    };
+  }, [videoRef]);
+
+  const onScrub = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const v = videoRef.current;
+    const track = trackRef.current;
+    if (!v || !track || !Number.isFinite(v.duration)) return;
+    const rect = track.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    v.currentTime = ratio * v.duration;
+  };
+
+  return (
+    <div
+      ref={trackRef}
+      onClick={onScrub}
+      className="absolute inset-x-0 bottom-0 z-20 h-2 cursor-pointer bg-white/15 hover:h-3 transition-[height] duration-150"
+      aria-label="Video progress"
+    >
+      <div
+        className="h-full bg-white/95 shadow-[0_0_6px_rgba(255,255,255,0.5)]"
+        style={{ width: `${(progress * 100).toFixed(2)}%` }}
+      />
+    </div>
+  );
+}
 
 function KeyboardHint({ onSkip }: { onSkip: () => void }) {
   return (

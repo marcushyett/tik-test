@@ -28,7 +28,8 @@ export const Outro: React.FC<Props> = ({ title, stats, voiceSrc, voiceDurS, voic
   return (
     <AbsoluteFill style={{ opacity }}>
       <Background accent={accent} intensity={1} />
-      <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", padding: "0 80px" }}>
+      {/* Anchored toward the top so the bottom 280px stays clear for captions. */}
+      <AbsoluteFill style={{ alignItems: "center", justifyContent: "flex-start", padding: "120px 56px 0" }}>
         <div
           style={{
             fontFamily: "'Inter Display', 'Inter', -apple-system, Arial, sans-serif",
@@ -37,20 +38,14 @@ export const Outro: React.FC<Props> = ({ title, stats, voiceSrc, voiceDurS, voic
             transform: `translateY(${rise}px)`,
           }}
         >
-          <div style={{ padding: "22px 50px", borderRadius: 24, background: accent, color: "#0a0a0a", display: "inline-block", fontSize: 72, fontWeight: 900, letterSpacing: "-0.01em", boxShadow: `0 20px 60px ${accent}66` }}>
+          <div style={{ padding: "12px 28px", borderRadius: 18, background: accent, color: "#0a0a0a", display: "inline-block", fontSize: 32, fontWeight: 900, letterSpacing: "-0.01em", boxShadow: `0 14px 40px ${accent}66` }}>
             {status}
           </div>
-          <div style={{ fontSize: 96, fontWeight: 900, marginTop: 42, letterSpacing: "-0.02em" }}>{title}</div>
-          <div style={{ display: "flex", gap: 18, justifyContent: "center", marginTop: 50 }}>
+          <div style={{ fontSize: outroTitleFontSize(title), fontWeight: 900, marginTop: 28, letterSpacing: "-0.02em", lineHeight: 1.05, maxWidth: 460, marginLeft: "auto", marginRight: "auto" }}>{title}</div>
+          <div style={{ display: "flex", gap: 14, justifyContent: "center", marginTop: 32 }}>
             <Block label="passed" value={stats.passed} color="#00e5a0" />
             <Block label="failed" value={stats.failed} color="#ff5d5d" />
             {stats.skipped > 0 && <Block label="skipped" value={stats.skipped} color="#94a3b8" />}
-          </div>
-          <div style={{ fontSize: 34, color: "#8b98a7", marginTop: 40, fontWeight: 600 }}>
-            {stats.durS.toFixed(1)}s · {stats.total} checks
-          </div>
-          <div style={{ fontSize: 30, color: "#6b7684", marginTop: 60, fontWeight: 500 }}>
-            Swipe → next review
           </div>
         </div>
       </AbsoluteFill>
@@ -71,9 +66,17 @@ export const Outro: React.FC<Props> = ({ title, stats, voiceSrc, voiceDurS, voic
   );
 };
 
+function outroTitleFontSize(title: string): number {
+  const n = title.length;
+  if (n <= 12) return 76;
+  if (n <= 20) return 60;
+  if (n <= 30) return 48;
+  return 40;
+}
+
 const Block: React.FC<{ label: string; value: number; color: string }> = ({ label, value, color }) => (
-  <div style={{ padding: "22px 32px", borderRadius: 20, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", backdropFilter: "blur(10px)", minWidth: 180 }}>
-    <div style={{ fontSize: 88, fontWeight: 900, color, lineHeight: 1 }}>{value}</div>
-    <div style={{ fontSize: 26, color: "#9aa4b2", fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", marginTop: 8 }}>{label}</div>
+  <div style={{ padding: "14px 22px", borderRadius: 16, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", backdropFilter: "blur(10px)", minWidth: 124 }}>
+    <div style={{ fontSize: 60, fontWeight: 900, color, lineHeight: 1 }}>{value}</div>
+    <div style={{ fontSize: 18, color: "#9aa4b2", fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase", marginTop: 6 }}>{label}</div>
   </div>
 );

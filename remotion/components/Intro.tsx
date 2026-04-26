@@ -144,7 +144,8 @@ export const Intro: React.FC<Props> = ({ title, summary, stats, voiceSrc, voiceD
   return (
     <AbsoluteFill style={{ opacity }}>
       <Background accent={theme.bgAccent} intensity={theme.bgIntensity} />
-      <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", padding: "0 80px" }}>
+      {/* Anchored toward the top so the bottom 280px stays clear for captions. */}
+      <AbsoluteFill style={{ alignItems: "center", justifyContent: "flex-start", padding: "120px 56px 0" }}>
         <div
           style={{
             fontFamily: theme.titleFontFamily,
@@ -153,21 +154,18 @@ export const Intro: React.FC<Props> = ({ title, summary, stats, voiceSrc, voiceD
             transform: `translateY(${rise}px)`,
           }}
         >
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 14, padding: "12px 28px", borderRadius: 999, background: theme.pillGradient, color: theme.pillInk, fontWeight: 800, fontSize: 30, letterSpacing: "0.1em", textTransform: "uppercase", boxShadow: theme.pillShadow }}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 12, padding: "9px 22px", borderRadius: 999, background: theme.pillGradient, color: theme.pillInk, fontWeight: 800, fontSize: 22, letterSpacing: "0.1em", textTransform: "uppercase", boxShadow: theme.pillShadow }}>
             {theme.pillLabel}
           </div>
-          {/* Title shrinks based on length so it always fits inside the 9:16 canvas — long
-              plan names (e.g. "personadex — Theater mode deep walk-through") were overflowing
-              before. */}
           <div
             style={{
               fontSize: titleFontSize(title),
               fontWeight: theme.titleWeight,
-              lineHeight: 1.02,
+              lineHeight: 1.05,
               letterSpacing: theme.titleSpacing,
-              marginTop: 40,
+              marginTop: 28,
               textShadow: theme.titleShadow,
-              maxWidth: 900,
+              maxWidth: 460,
               marginLeft: "auto",
               marginRight: "auto",
               wordBreak: "break-word",
@@ -177,21 +175,20 @@ export const Intro: React.FC<Props> = ({ title, summary, stats, voiceSrc, voiceD
           </div>
           <div
             style={{
-              fontSize: 42,
+              fontSize: 28,
               color: theme.summaryColor,
-              lineHeight: 1.25,
-              marginTop: 32,
+              lineHeight: 1.3,
+              marginTop: 22,
               fontWeight: 500,
-              maxWidth: 900,
+              maxWidth: 460,
               marginLeft: "auto",
               marginRight: "auto",
             }}
           >
             {summary}
           </div>
-          <div style={{ display: "flex", gap: 18, justifyContent: "center", marginTop: 60 }}>
-            <Stat label="checks" value={String(stats.total)} accent="#ffffff" theme={theme} />
-            <Stat label="duration" value={`${Math.max(1, Math.round(stats.durS))}s`} accent={theme.statAccent} theme={theme} />
+          <div style={{ display: "flex", justifyContent: "center", marginTop: 36 }}>
+            <Stat label={stats.total === 1 ? "check" : "checks"} value={String(stats.total)} accent={theme.statAccent} theme={theme} />
           </div>
         </div>
       </AbsoluteFill>
@@ -212,19 +209,20 @@ export const Intro: React.FC<Props> = ({ title, summary, stats, voiceSrc, voiceD
   );
 };
 
-/** Scale the title's font size to the length of the plan name so long titles fit the 9:16 canvas. */
+/** Scale the title's font size to the length of the plan name so it fits
+ *  comfortably on 1-2 lines inside the compact 460px-wide intro band. */
 function titleFontSize(title: string): number {
   const n = title.length;
-  if (n <= 16) return 120;
-  if (n <= 22) return 100;
-  if (n <= 30) return 82;
-  if (n <= 42) return 68;
-  return 56;
+  if (n <= 12) return 88;
+  if (n <= 20) return 70;
+  if (n <= 30) return 58;
+  if (n <= 42) return 48;
+  return 40;
 }
 
 const Stat: React.FC<{ label: string; value: string; accent: string; theme: Theme }> = ({ label, value, accent, theme }) => (
-  <div style={{ padding: "22px 36px", borderRadius: 22, background: theme.statBg, border: theme.statBorder, backdropFilter: "blur(12px)" }}>
-    <div style={{ fontSize: 72, fontWeight: 900, color: accent, lineHeight: 1 }}>{value}</div>
-    <div style={{ fontSize: 28, color: theme.summaryColor, fontWeight: 600, letterSpacing: "0.12em", textTransform: "uppercase", marginTop: 6 }}>{label}</div>
+  <div style={{ padding: "14px 28px", borderRadius: 18, background: theme.statBg, border: theme.statBorder, backdropFilter: "blur(12px)" }}>
+    <div style={{ fontSize: 52, fontWeight: 900, color: accent, lineHeight: 1 }}>{value}</div>
+    <div style={{ fontSize: 18, color: theme.summaryColor, fontWeight: 600, letterSpacing: "0.14em", textTransform: "uppercase", marginTop: 4 }}>{label}</div>
   </div>
 );

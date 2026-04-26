@@ -488,9 +488,12 @@ export async function editSingleVideo({
     let rate = 1;
     if (v.dur > 0) {
       // Aim to fit within the slot minus a small tail so the next chunk's
-      // first word never collides with the trailing breath.
+      // first word never collides with the trailing breath. Wide range:
+      // 0.85x stretches a short line to fill ~15% more wall-clock without
+      // sounding distorted; 1.6x lets us fit an over-eager narrator into
+      // a tight slot rather than dropping into the next chunk.
       const targetSpeechS = Math.max(0.5, durS - 0.08);
-      rate = Math.max(0.92, Math.min(1.45, v.dur / targetSpeechS));
+      rate = Math.max(0.85, Math.min(1.6, v.dur / targetSpeechS));
     }
     bodyChunks.push({
       startS: s.startS - INTRO_TARGET_S, // back to body-relative
@@ -509,8 +512,8 @@ export async function editSingleVideo({
   const outroDurS = Math.max(OUTRO_TARGET_S, outroTts.dur + 0.5);
   const introDurFrames = Math.round(introDurS * FPS);
   const outroDurFrames = Math.round(outroDurS * FPS);
-  const introPlaybackRate = introTts.dur > 0 ? Math.max(0.95, Math.min(1.3, introTts.dur / Math.max(0.5, introDurS - 0.2))) : 1;
-  const outroPlaybackRate = outroTts.dur > 0 ? Math.max(0.95, Math.min(1.3, outroTts.dur / Math.max(0.5, outroDurS - 0.2))) : 1;
+  const introPlaybackRate = introTts.dur > 0 ? Math.max(0.85, Math.min(1.4, introTts.dur / Math.max(0.5, introDurS - 0.2))) : 1;
+  const outroPlaybackRate = outroTts.dur > 0 ? Math.max(0.85, Math.min(1.4, outroTts.dur / Math.max(0.5, outroDurS - 0.2))) : 1;
 
   // ── 9. Stats for intro/outro cards.
   const passed = artifacts.events.filter((e) => e.outcome === "success").length;
