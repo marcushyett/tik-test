@@ -56,16 +56,18 @@ export function computeSingleVideoDuration(input: SingleVideoInput, fps: number)
  * down — meaning these zones of the rendered frame may be partially
  * covered by player chrome at any moment:
  *
- *   - TOP ~120px      (viewer header bar: "All repos" link + repo title,
- *                      plus iOS / Android browser status bar)
- *   - BOTTOM ~280px   (caption band, OUR progress bar, mute button,
- *                      mobile drawer peek pill, iOS home indicator,
- *                      embedded-player native controls)
- *   - TOP-RIGHT 120×120 (version badge — see VersionBadge below)
+ *   - TOP 0..120px        viewer header bar ("All repos" + repo title)
+ *                          plus iOS / Android browser status bar.
+ *   - BOTTOM 0..130px     OUR progress bar, mute button, mobile drawer
+ *                          peek pill, iOS home indicator, embedded-player
+ *                          native controls.
+ *   - BOTTOM 130..240px   caption band (paginated WordCaption renders here
+ *                          — only captions, no other content).
+ *   - TOP-RIGHT 120×120   version badge (see VersionBadge below).
  *
- * Put NO content in those zones. Centre the action in the middle 560px.
- * Captions live in the bottom safe band intentionally — but new title
- * text, stats blocks, badges, etc. must respect the rules above.
+ * Hard rule: NO main content (titles, stats, body badges, lists) in any
+ * of those zones. Use the middle band (top ~120 → bottom ~240). Captions
+ * are the ONE exception that lives in the bottom safe band.
  */
 
 export const SingleVideoReel: React.FC<SingleVideoInput> = (props) => {

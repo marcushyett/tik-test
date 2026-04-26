@@ -96,10 +96,12 @@ export const WordCaption: React.FC<Props> = ({
       style={{
         position: "absolute",
         left: 0, right: 0,
-        // Sit well clear of any video-player chrome (native iOS controls,
-        // Slack/Twitter/etc. embedded player UI, our own progress bar).
-        // 280px ≈ 29% of the 960px-tall canvas — the safest universal band.
-        bottom: 280,
+        // Sit just above player chrome but as low as we can — the OLD 280px
+        // anchor was overlapping main content because the body extends down
+        // close to that line. The actually-reserved bottom band is ~130px
+        // (mobile drawer peek pill + progress bar + iOS home indicator).
+        // 140px clears all of that with ~10px of breathing room.
+        bottom: 140,
         display: "flex",
         flexDirection: "row",
         flexWrap: "wrap",

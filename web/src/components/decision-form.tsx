@@ -98,8 +98,8 @@ export function DecisionForm({ repo, prNumber, prTitle, onDone, onSkip, onPause,
         <Button
           onClick={() => setVerdict("comment")}
           variant={verdict === "comment" ? "accent" : "outline"}
-          size="default"
-          className="px-3"
+          size="lg"
+          className="aspect-square px-0"
           aria-label="Comment only"
         >
           <MessageSquare className="h-5 w-5" />

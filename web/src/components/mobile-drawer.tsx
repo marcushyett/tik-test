@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, Clock, GripHorizontal, Minus, Plus, XCircle } from "lucide-react";
+import { CheckCircle2, Clock, GripHorizontal, Minus, Plus, X, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { OpenPR } from "@/lib/github";
 
@@ -33,21 +33,29 @@ export function MobileDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  // Drag-to-dismiss: track pointer vertical delta on the grabber.
+  // Drag-to-dismiss: track pointer vertical delta on the grabber. We also
+  // remember whether the pointer actually moved — a drag with zero motion
+  // is treated as a tap, which closes the drawer (so the grabber has both
+  // affordances: drag-down OR tap).
   const startY = useRef<number | null>(null);
+  const movedRef = useRef(false);
   const [dragY, setDragY] = useState(0);
   const onPointerDown = (e: React.PointerEvent) => {
     if (!open) return;
     startY.current = e.clientY;
+    movedRef.current = false;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (startY.current == null) return;
-    setDragY(Math.max(0, e.clientY - startY.current));
+    const dy = Math.max(0, e.clientY - startY.current);
+    if (dy > 4) movedRef.current = true;
+    setDragY(dy);
   };
   const onPointerUp = () => {
     if (startY.current == null) return;
-    if (dragY > 120) setOpen(false);
+    // Tap (no real motion) → close. Drag past threshold → close. Otherwise stay.
+    if (!movedRef.current || dragY > 120) setOpen(false);
     startY.current = null;
     setDragY(0);
   };
@@ -104,15 +112,28 @@ export function MobileDrawer({
           !open && "pointer-events-none",
         )}
       >
-        {/* Grabber */}
-        <div
-          className="flex shrink-0 cursor-grab items-center justify-center py-3 active:cursor-grabbing"
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
-        >
-          <div className="h-1.5 w-10 rounded-full bg-muted-foreground/30" />
+        {/* Grabber + close: full-width tap target at the top. Tap or drag
+            down to dismiss. The X button on the right is an explicit
+            second affordance for users who don't realise the grabber is
+            interactive. */}
+        <div className="relative flex shrink-0 items-center">
+          <div
+            className="flex flex-1 cursor-grab items-center justify-center py-4 touch-none active:cursor-grabbing"
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+          >
+            <div className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
+          </div>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            aria-label="Close drawer"
+            className="absolute right-2 top-1/2 -translate-y-1/2 flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+          >
+            <X className="h-5 w-5" />
+          </button>
         </div>
 
         {/* `overflow-x-hidden` belts-and-braces against any child that
