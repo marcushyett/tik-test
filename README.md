@@ -50,20 +50,30 @@ Before you wire tik-test into a repo, make sure you have:
 
 ---
 
-## Limitations
+## How it's designed (and what it won't suit)
 
-tik-test is great at some things and bad at others. Be honest with yourself before adopting:
+tik-test was built around a particular way of shipping: **small, focused PRs that touch one user-facing slice at a time** — what Alistair Cockburn calls **Elephant Carpaccio**, the practice of slicing work into thin vertical slices that each ship end-to-end value. If that's how your team works, tik-test fits the gap perfectly. If you ship 2,000-line PRs that bundle ten unrelated features, **you'll need to break them up** — or the video will skim two of the ten and miss the rest.
 
-| Works well | Doesn't work well |
-|---|---|
-| User-facing UI changes (forms, lists, dialogs, navigation) | Pure backend / API-only PRs (the agent has nothing to film) |
-| Single-page flows that finish in <60s | Multi-page wizards taking 5+ minutes |
-| Apps with a public-ish preview URL | Apps locked behind SSO with no automation bypass |
-| Visible failures (404, validation error, broken layout) | Subtle regressions (analytics events, wrong DB write) |
-| English copy / English locales | Right-to-left languages (caption layout assumes LTR) |
-| 9:16 mobile-style videos shared in PR comments | Embedding the video itself in your blog / docs (use the GIF) |
+### Works well
 
-If your PR is backend-only, tik-test will still produce a video — but it will be a short one of the agent confirming the change is invisible from the UI. That's a feature (it tells you "no UI surface to test") not a bug.
+- **PRs that change one user-facing slice** — a form, a dialog, a list, a navigation rework, a single end-to-end flow. The agent picks 1-3 goals and exercises them deeply, including edge cases.
+- **Flows the agent can drive via Playwright MCP** — clicks, typing, hovers, keyboard shortcuts, dropdowns, file uploads. Including flows that *take* 10 minutes to run because of slow networks / spinners — the editor crops idle waits down to 0.3s, so the video is still ~60s.
+- **Multi-page wizards** that finish in seconds of actual interaction (signup → select plan → confirm). Page transitions aren't the problem; total interaction count is.
+- **Apps with a public-ish preview URL** — Vercel, Netlify, Render, ngrok-tunneled localhost. Vercel-protected previews work via the bypass secret.
+- **Visible failures** — broken layout, validation error that contradicts the input, button that doesn't fire, badge with the wrong colour or wrong text, a flow that loops or 404s.
+
+### Won't suit
+
+- **Giant PRs that add 10+ features at once.** The plan generator picks 1-3 goals from the diff; the rest go uncovered. tik-test deliberately rewards Carpaccio-style slicing — break it up if you want everything reviewed.
+- **Design studios / canvas tools / drag-precise interactions.** Figma-style apps, video editors, anything where pixel-precise drag matters. Playwright can drive a `<canvas>`, but the agent has no idea whether it dragged the handle to the right spot.
+- **Apps gated behind SAML / SSO / MFA / per-tenant subdomains** with no automation bypass. tik-test can't get past auth it doesn't have credentials for.
+- **Subtle regressions with no visible surface** — wrong analytics event fired, wrong DB write, a perf regression that only shows up at p95, a CSS specificity change that only breaks on Safari 14.
+- **Apps that need real seeded data** to demonstrate the feature. If your "list view" is empty until 50 fixtures are loaded, the agent will see an empty list and not much else.
+- **Right-to-left languages** — the caption layout assumes LTR. (PRs welcome.)
+
+### A note on this version
+
+The defaults — 1-3 goals per run, ~60s output, 4-min plan budget, 10-min agent budget — were tuned around how I personally review PRs: small slices, fast feedback, video-first. If your team works differently, every knob is configurable (run `node dist/cli.js config`) but you may also be a poor fit for the underlying assumption.
 
 ---
 
