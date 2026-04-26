@@ -10,19 +10,19 @@ email plus the password `hunter2`, then a main view with three things:
 - A list of tasks with checkboxes, priority badges, and per-row delete
   buttons. Footer shows counts plus a "Clear completed" button.
 
-## URL
-
-http://localhost:4173
-
-## Setup
-
-start: python3 -m http.server 4173
-
-(local-dev only; in CI the preview URL is auto-detected.)
-
 ## Login
 
 Any email plus the password `hunter2`.
+
+## Local dev
+
+The bundled demo serves at http://localhost:4173 via:
+
+start: python3 -m http.server 4173
+
+(In CI for a real consumer repo, the preview URL is auto-detected from
+the `deployment_status` event. The localhost URL above is only relevant
+when running the demo locally.)
 
 ## Selectors
 

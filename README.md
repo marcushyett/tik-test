@@ -52,18 +52,17 @@ tik-test puts a **45-60s narrated video** on every PR: happy path, edge cases, b
 
 Two pieces of context, in two different places:
 
-**1. Project-level: a `tiktest.md` at your repo root.** Stable across PRs. Describes the app, the preview URL, and how to sign in. Free-form prose. No schema.
+**1. Project-level: `tiktest.md` at your repo root.** Stable across PRs. Describes the app and how to sign in. Free-form prose, no schema.
 
 ```markdown
 # Acme
 
 Acme is a project tracker for engineering teams.
 
-Preview URL: https://acme.app
 Login: email `review-bot@acme.app`, password `hunter2`
 ```
 
-**2. PR-level: a "what to test" note in your PR description.** Changes per PR. Tells the agent which surfaces this change touches and what's risky. If you skip it, tik-test plans from the diff alone (best-effort).
+**2. PR-level: a "what to test" note in your PR description.** Changes per PR. Tells the agent which surfaces this change touches and what's risky. Skip it and tik-test plans from the diff alone (best-effort).
 
 ```markdown
 ## What to test
@@ -71,18 +70,18 @@ Login: email `review-bot@acme.app`, password `hunter2`
 - Empty state when all tasks are archived.
 ```
 
-That's it. Claude reads both, plus the diff, and generates the plan.
+### Where the URL comes from
 
-### Mechanics
+Two ways tik-test learns where to point the browser. Pick whichever fits your setup:
 
-- **No structured parsing.** Both files are fed to Claude as natural-language markdown. Claude decides what's relevant.
-- **One regex, for the URL.** First `https?://` in `tiktest.md` (so the browser can boot before the agent runs). In CI, `deployment_status` events supply the URL anyway and this never fires.
-- **`start: <cmd>`** anywhere in `tiktest.md` is recognised as a background-process directive for local dev runs.
-- **Sign-in is a separate pre-test phase.** It uses the same agent infrastructure as goals but runs BEFORE the visible goals start. It doesn't count toward the 1-3 goal budget, doesn't appear in the outro checklist, and doesn't get filmed as a tested behaviour. Its sole job is to get past any auth gate using the credentials in `tiktest.md`. If `tiktest.md` doesn't mention credentials, this phase is skipped.
+- **Per-PR preview URLs** (Vercel / Netlify / similar). Auto-detected from the `deployment_status` event in CI. Don't put a URL in `tiktest.md`; the action handles it. This is the common case.
+- **Stable test-environment URL** (e.g. `dev.acme.app` always points at trunk). Add it to `tiktest.md`: any `https://...` link in the file works.
+
+If both are present the auto-detected preview URL wins.
 
 ### Discovery order
 
-If `tiktest.md` doesn't exist, tik-test falls back to: `README.md` with a `## TikTest` (or `## Testing` / `## How to test`) heading → `claude.md` / `CLAUDE.md` / `.claude/claude.md` → bare `README.md`. The earlier path always wins.
+If `tiktest.md` doesn't exist, tik-test falls back to `README.md` with a `## TikTest` (or `## Testing` / `## How to test`) heading, then `claude.md` / `CLAUDE.md` / `.claude/claude.md`, then bare `README.md`. The earlier path always wins.
 
 ---
 
