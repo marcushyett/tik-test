@@ -62,10 +62,21 @@ export interface OpenPR {
 
 export async function listPRsWithVideos(owner: string, repo: string): Promise<OpenPR[]> {
   const ok = await getOctokit();
-  if (!ok) return [];
+  if (!ok) {
+    console.log(`[tiktest-bypass] listPRsWithVideos(${owner}/${repo}): no Octokit, returning []`);
+    return [];
+  }
 
   // 1. Pull open PRs (top-level metadata).
-  const prs = await ok.pulls.list({ owner, repo, state: "open", per_page: 30, sort: "updated", direction: "desc" });
+  let prs;
+  try {
+    prs = await ok.pulls.list({ owner, repo, state: "open", per_page: 30, sort: "updated", direction: "desc" });
+    console.log(`[tiktest-bypass] listPRsWithVideos(${owner}/${repo}): pulls.list returned ${prs.data.length} PRs (numbers: ${JSON.stringify(prs.data.map((p) => p.number))})`);
+  } catch (e) {
+    const err = e as { status?: number; message?: string };
+    console.log(`[tiktest-bypass] listPRsWithVideos(${owner}/${repo}): pulls.list ERROR status=${err.status} message=${err.message}`);
+    throw e;
+  }
 
   const out: OpenPR[] = [];
   for (const p of prs.data) {
@@ -89,6 +100,9 @@ export async function listPRsWithVideos(owner: string, repo: string): Promise<Op
       .filter((x): x is TikTestVideo => !!x)
       // Newest first.
       .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+
+    // TEMP DIAGNOSTIC — surface the comment-scanning result for each PR.
+    console.log(`[tiktest-bypass] PR #${p.number}: ${issueComments.data.length} comments scanned, ${videos.length} valid tik-test videos`);
 
     // Skip PRs with no video — the feed is for reviewable videos.
     if (videos.length === 0) continue;

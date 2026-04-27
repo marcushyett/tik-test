@@ -1,7 +1,7 @@
 /**
  * TEMPORARY diagnostic endpoint for debugging the test-mode bypass flow.
  *
- *   GET /api/_diag/bypass
+ *   GET /api/diag/bypass
  *
  * Gated to bypass-session callers only — `auth()` must return a session
  * with `bypass === true`. A normal GitHub-OAuth session, an unauthed
@@ -19,11 +19,16 @@
  *     `/user/repos?per_page=5` with the PAT — the EXACT calls
  *     `lib/github.ts:getOctokit` would make
  *
- * **Remove this file before public release** — `/api/_diag/*` is a path
+ * **Remove this file before public release** — `/api/diag/*` is a path
  * convention for temporary debugging only. The bypass-session gate +
  * sub-millisecond constant-time-equal on the prefix means a leaked
  * URL only exposes hashed fingerprints, but it's still extra surface
  * area we don't want long-term.
+ *
+ * NOTE: a previous version lived under `/api/_diag/bypass` — Next.js
+ * App Router treats folders prefixed with `_` as PRIVATE and skips them
+ * for routing, so the route silently 404'd. The directory was renamed
+ * to drop the underscore.
  */
 
 import { NextResponse } from "next/server";
