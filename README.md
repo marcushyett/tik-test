@@ -296,6 +296,8 @@ The action installs Node + ffmpeg + Playwright, builds tik-test, auto-detects th
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | optional | Vercel Deployment Protection |
 | `ANTHROPIC_API_KEY` | optional | pay-per-use alternative to OAuth |
 
+For the full end-to-end walkthrough — every token, where to create it, and where to paste it (including the optional reviewer web app + self-review CI) — see [`docs/SETUP.md`](./docs/SETUP.md).
+
 ### Gating
 
 - `review-mode: request-changes-on-fail` (default) blocks merge on repos requiring approval.
