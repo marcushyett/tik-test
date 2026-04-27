@@ -298,6 +298,7 @@ The action installs Node + ffmpeg + Playwright, builds tik-test, auto-detects th
 | `require-pass` | No | `true` | Non-zero exit on any failed goal. |
 | `quick` | No | `true` | Draft 540×960 render. |
 | `quick-and-dirty` | No | `false` | Drops to 0.5× render (540×960) **and** caps body scenes at 6. Faster, lower-quality output — use when speed beats fidelity. |
+| `pan-zoom` | No | `true` | Slow Ken-Burns zoom on the body recording for a cinematic feel. Set `false` for a perfectly static frame. **Auto-disabled when `quick-and-dirty: true`** — that preset skips heavy editing on purpose. |
 | `no-video` | No | `false` | Skip render + upload entirely. Same plan + agent + checklist; posts a text-only checks-only PR comment instead of an MP4. **~5× faster** — pairs well with `run-on-every-push: true`. The checks-only comment deliberately omits the `tik-test-video:v1` marker so the reviewer web app does not pick it up as a feed entry. |
 | `run-on-every-push` | No | `false` | Re-review on every commit pushed to a PR (the `synchronize` event). Off by default to keep Claude usage under control. |
 | `working-directory` | No | repo root | Subdirectory containing `tiktest.md`. Useful for monorepos. |

@@ -44,6 +44,13 @@ inputs:
     description: If `true`, produce a draft 540×960 render in ~2 min. Set `false` for full-res.
     required: false
     default: 'true'
+  pan-zoom:
+    description: |
+      Adds a slow cinematic zoom to the body of the video. Set `false` to keep
+      the recording perfectly stationary. Auto-disabled when `quick-and-dirty`
+      is on (the cheaper preset skips heavy editing). Default: `true`.
+    required: false
+    default: 'true'
   quick-and-dirty:
     description: |
       Faster, lower-quality preset. Drops the render to 0.5× of native (540×960)
@@ -273,6 +280,10 @@ runs:
         REVIEW_MODE: ${{ inputs.review-mode }}
         REQUIRE_PASS: ${{ inputs.require-pass }}
         QUICK: ${{ inputs.quick }}
+        # quick-and-dirty forces pan-zoom off regardless of the user's input —
+        # it's the "minimum render cost" preset and the cinematic zoom is
+        # exactly the kind of editing it skips.
+        PAN_ZOOM: ${{ inputs.quick-and-dirty == 'true' && 'false' || inputs.pan-zoom }}
         NO_VIDEO: ${{ inputs.no-video }}
         ASSET_REPO: ${{ github.repository }}
         ACTION_PATH: ${{ github.action_path }}
@@ -301,6 +312,7 @@ runs:
         ARGS=( pr "$PR_NUMBER" --skip-clone --asset-repo "$ASSET_REPO" --review "$REVIEW_MODE" )
         [[ "$REQUIRE_PASS" == "true" ]] && ARGS+=( --require-pass )
         [[ "$QUICK" == "true" ]] && ARGS+=( --quick )
+        [[ "$PAN_ZOOM" == "false" ]] && ARGS+=( --no-pan-zoom )
         [[ "$NO_VIDEO" == "true" ]] && ARGS+=( --no-video )
         [[ -n "$PREVIEW_URL" ]] && ARGS+=( --url "$PREVIEW_URL" )
         if [[ -n "$WORKING_DIR" ]]; then cd "$WORKING_DIR"; fi

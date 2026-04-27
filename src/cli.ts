@@ -30,6 +30,7 @@ program
   .option("--voice <name>", "macOS `say` voice name for narration", "Samantha")
   .option("--no-voice", "disable narration voice-over")
   .option("--quick", "low-resolution draft render for quicker iteration")
+  .option("--no-pan-zoom", "disable the slow cinematic zoom (auto-disabled in quick-and-dirty)")
   .option("--no-video", "skip render — emit only checklist + events.json (faster, no MP4)")
   .option("--vercel-bypass <secret>", "Vercel Protection Bypass secret (also: VERCEL_AUTOMATION_BYPASS_SECRET env)")
   .option("--open", "start the viewer after the run completes")
@@ -78,6 +79,7 @@ program
       artifacts, outPath,
       voice,
       quick: !!opts.quick,
+      panZoom: opts.panZoom !== false,
       focus: cfg.projectContext,
       prTitle: cfg.name,
     });
@@ -107,6 +109,7 @@ program
   .option("--skip-comment", "render the video but don't post a PR comment")
   .option("--vercel-bypass <secret>", "Vercel Protection Bypass secret (also: VERCEL_AUTOMATION_BYPASS_SECRET env)")
   .option("--quick", "low-resolution draft render")
+  .option("--no-pan-zoom", "disable the slow cinematic zoom (auto-disabled in quick-and-dirty)")
   .option("--no-video", "skip render + upload — post a text-only checklist comment instead (faster, much cheaper)")
   .option("--require-pass", "exit non-zero if any test step failed (for CI gating)")
   .option("--review <mode>", "post a formal PR review: none | approve-on-pass | request-changes-on-fail | always", "request-changes-on-fail")
@@ -122,6 +125,9 @@ program
       skipComment: !!opts.skipComment,
       vercelBypass: opts.vercelBypass,
       quick: !!opts.quick,
+      // Commander's --no-X flag sets opts.X === false. When the user doesn't
+      // pass anything, opts.panZoom is undefined → default to true.
+      panZoom: opts.panZoom !== false,
       noVideo: opts.video === false,
       requirePass: !!opts.requirePass,
       review: opts.review,

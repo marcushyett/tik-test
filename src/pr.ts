@@ -21,6 +21,10 @@ export interface PROptions {
   skipComment?: boolean;     // render the video but don't post to the PR
   vercelBypass?: string;     // VERCEL_AUTOMATION_BYPASS_SECRET for protected previews
   quick?: boolean;
+  /** Cinematic Ken-Burns zoom on the body video. Default true. Auto-disabled
+   *  by the quick-and-dirty preset (forced to false at the action.yml layer)
+   *  because that preset's whole point is to skip heavy editing. */
+  panZoom?: boolean;
   noVideo?: boolean;         // skip render + upload — post a text-only checklist comment instead
   requirePass?: boolean;     // exit non-zero if any step failed (CI gating)
   review?: "none" | "approve-on-pass" | "request-changes-on-fail" | "always"; // post a formal PR review
@@ -212,6 +216,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
       artifacts, outPath,
       voice: opts.voice,
       quick: opts.quick,
+      panZoom: opts.panZoom,
       prTitle: meta.title,
       prBody: meta.body,
       focus: cfg.projectContext,

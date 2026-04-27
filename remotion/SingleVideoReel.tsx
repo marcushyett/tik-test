@@ -1,4 +1,4 @@
-import { AbsoluteFill, Audio, Sequence, useVideoConfig, staticFile } from "remotion";
+import { AbsoluteFill, Audio, Easing, Sequence, interpolate, useCurrentFrame, useVideoConfig, staticFile } from "remotion";
 import { Video } from "@remotion/media";
 import { Background } from "./components/Background";
 import { Intro } from "./components/Intro";
@@ -39,6 +39,10 @@ export interface SingleVideoInput {
    *  Each chunk renders ONE Audio + ONE WordCaption Sequence + optional
    *  ToolBadge — guaranteed never to stack with siblings. */
   bodyChunks: BodyChunk[];
+  /** Apply a slow continuous Ken-Burns zoom across the body video. Default
+   *  off (no transform = stationary frame). Resolved upstream from the
+   *  `pan-zoom` action input AND auto-disabled by quick mode. */
+  panZoom?: boolean;
   checklist?: Array<{ outcome: "success" | "failure" | "skipped"; label: string; note?: string }>;
 }
 
@@ -137,19 +141,41 @@ const VersionBadge: React.FC<{ tag: string }> = ({ tag }) => (
 
 const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   const { fps } = useVideoConfig();
+  const frame = useCurrentFrame();
+  const masterFrames = Math.max(1, Math.round(input.masterDurS * fps));
+
+  // Optional cinematic zoom. Slow ramp from 1.0 → 1.08 across the body,
+  // ease-in-out so the start/end aren't jarring. The container has
+  // `overflow: hidden` already, so a 1.08 scale crops ~4% from each edge —
+  // intentionally mild; we don't want to clip text in the recorded UI.
+  const zoomScale = input.panZoom
+    ? interpolate(frame, [0, masterFrames], [1, 1.08], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+        easing: Easing.inOut(Easing.cubic),
+      })
+    : 1;
 
   return (
     <AbsoluteFill>
       <Background accent="#00e5a0" intensity={0.7} />
 
-      {/* The trimmed master recording, full-bleed with object-fit: contain
-          so the gradient peeks through above/below at mismatched aspect
-          ratios. No pan/zoom — the chunked narration carries the story. */}
+      {/* The trimmed master recording, full-bleed with object-fit: contain so
+          the gradient peeks through at mismatched aspect ratios. When panZoom
+          is on, a slow CSS zoom plays for a Ken-Burns feel; off keeps the
+          frame stationary and the chunked narration carries the story. */}
       <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#0a0a0a" }}>
         <Video
           src={staticFile(input.masterVideoSrc)}
           muted
-          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            transform: `scale(${zoomScale})`,
+            transformOrigin: "center center",
+            willChange: input.panZoom ? "transform" : undefined,
+          }}
         />
       </div>
 

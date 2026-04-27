@@ -102,6 +102,10 @@ export interface SingleVideoInput {
   /** Body narration timeline — back-to-back chunks that cover the full
    *  master duration. Each chunk owns its voice + caption + optional badge. */
   bodyChunks: BodyChunk[];
+  /** Apply a slow continuous zoom to the body video (Ken-Burns style). When
+   *  false the body video stays stationary at its native aspect-fit. The
+   *  effect is purely cosmetic — it doesn't move pixels into or out of view. */
+  panZoom?: boolean;
   /** Per-goal results rendered as a vertical checklist on the outro. */
   checklist?: ChecklistItem[];
 }
@@ -179,6 +183,11 @@ export interface SingleVideoEditOptions {
   outPath: string;
   voice?: string | null;
   quick?: boolean;
+  /** Cinematic slow zoom on the body video. Default true at the CLI layer.
+   *  Forced false when `quick` is true — the cheap preset skips the effect
+   *  to keep render time down. Pass an explicit `false` from a non-quick
+   *  run to opt out of the zoom but keep full-res rendering. */
+  panZoom?: boolean;
   prTitle?: string;
   prBody?: string;
   focus?: string;
@@ -334,9 +343,14 @@ export interface SingleVideoEditResult {
  * across the whole timeline with zero overlap and zero silence.
  */
 export async function editSingleVideo({
-  artifacts, outPath, voice = "Samantha", quick = false,
+  artifacts, outPath, voice = "Samantha", quick = false, panZoom = true,
   prTitle, prBody, focus,
 }: SingleVideoEditOptions): Promise<SingleVideoEditResult> {
+  // Quick mode forces pan-zoom off regardless of the caller's preference —
+  // the cheap render preset skips heavy editing. Action.yml does the same
+  // forcing one layer up for quick-and-dirty; this is the safety net for
+  // any direct caller (CLI, tests) that doesn't go through that path.
+  const effectivePanZoom = panZoom && !quick;
   const runDir = artifacts.runDir;
   const publicDir = path.join(runDir, "public");
   await mkdir(publicDir, { recursive: true });
@@ -608,6 +622,7 @@ export async function editSingleVideo({
     outroCaption: sanitiseForSpeech(narration.chunks[narration.chunks.length - 1].captionText),
     versionTag: getVersionTag(),
     bodyChunks,
+    panZoom: effectivePanZoom,
     checklist: checklist.length > 0 ? checklist : undefined,
   };
   await writeFile(path.join(runDir, "reel-input.json"), JSON.stringify(input, null, 2));
