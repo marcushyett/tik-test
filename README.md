@@ -225,6 +225,27 @@ By default the agent generates a plan from the PR diff plus your `## TikTest` se
 
 ## GitHub Action
 
+> **Quick start:** copy one of the drop-in templates from
+> [`templates/workflows/`](./templates/workflows/) into your repo at
+> `.github/workflows/tik-test.yml`. There are three, picked by what your
+> app needs to boot:
+>
+> - [`local-dev.yml`](./templates/workflows/local-dev.yml) — `npm run dev`
+>   inside the runner. Best for SPAs, static sites, Next.js with mocked
+>   APIs.
+> - [`vercel-preview.yml`](./templates/workflows/vercel-preview.yml) —
+>   drive your per-PR Vercel preview deployment. Includes the
+>   automation-bypass plumbing.
+> - [`staging-with-services.yml`](./templates/workflows/staging-with-services.yml)
+>   — boots Postgres + Redis service containers, runs migrations + seeds,
+>   then starts the app. Best for Rails / Django / Next.js + Prisma.
+>
+> See [`templates/workflows/README.md`](./templates/workflows/README.md)
+> for the chooser tree and the per-template `tiktest.md` shape they expect.
+>
+> The minimal hand-written form below is kept as a reference if you want
+> to wire it up yourself.
+
 ```yaml
 # .github/workflows/tik-test.yml (rename to whatever you want — pick a path
 # that matches your repo layout)
