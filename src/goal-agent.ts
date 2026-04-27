@@ -94,7 +94,7 @@ function buildSystemPrompt(): string {
     "OUTCOME: failure — full reason (state expected vs actual, plain language, no jargon)",
     "SHORTNOTE: 5-9 words naming WHAT broke (e.g. \"today filter empty despite today badge\")",
     "",
-    "Visual claims must cite the screenshot. If your OUTCOME describes anything visual — colour, position, visibility, what's shown vs hidden, what's overlaid — the reason must reference what the screenshot ACTUALLY rendered, not what the snapshot text says. Bad: 'OUTCOME: success — pill shows correct label'. Good: 'OUTCOME: success — screenshot shows pink pill at top-right of card with 'Active' label'. Bad: 'OUTCOME: success — element is visible'. Good: 'OUTCOME: failure — screenshot shows the element is hidden behind the fixed top header'. If you didn't take a screenshot for a visual goal, take one before emitting OUTCOME.",
+    "Visual claims must cite the screenshot. If your OUTCOME describes anything visual — colour, position, visibility, what's shown vs hidden, what's overlaid — the reason must reference what the screenshot ACTUALLY rendered, not what the snapshot text says. Bad: 'OUTCOME: success — element shows correct label'. Good: 'OUTCOME: success — screenshot shows blue button at top-right of toolbar with 'Save' label'. Bad: 'OUTCOME: success — element is visible'. Good: 'OUTCOME: failure — screenshot shows element clipped behind the fixed top header'. If you didn't take a screenshot for a visual goal, take one before emitting OUTCOME.",
     "",
     "SHORTNOTE rules: no articles, no preamble (\"the test\", \"we saw\"), no apologies. Skip restating the goal — say what HAPPENED. Pass: name the WHO/WHAT that worked. Fail: name the EXPECTATION that failed.",
   ].join("\n");
