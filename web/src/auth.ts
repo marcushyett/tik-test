@@ -1,11 +1,19 @@
 import NextAuth from "next-auth";
 import GitHub from "next-auth/providers/github";
+import { isBypassSessionExpired } from "@/lib/bypass";
 
 /**
  * Auth.js v5 — GitHub provider only.
  * `repo` scope is required so we can read private PRs the user has access to
  * and post real PR reviews on their behalf.
  * No database — everything lives on the GitHub session token (JWT).
+ *
+ * The test-mode bypass route (/api/test-bootstrap) sets the same cookie
+ * shape used by GitHub OAuth, but with a `bypass: true` and `bypass_iat`
+ * claim. The session callback checks bypass_iat against the 30-min cap
+ * and clears the access token on stale bypass sessions (functional
+ * logout without needing to delete the cookie). Write-capable server
+ * actions also refuse to run when `session.bypass === true`.
  */
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
@@ -23,8 +31,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return token;
     },
     async session({ session, token }) {
-      (session as any).accessToken = token.accessToken;
-      (session as any).login = token.login;
+      const tok = token as { accessToken?: string; login?: string; bypass?: boolean; bypass_iat?: number };
+      // Bypass-minted sessions are capped at BYPASS_SESSION_MAX_AGE_S
+      // (30 min) regardless of what the cookie itself says. Past the
+      // window, we drop the access token from the resolved session so
+      // every server action sees "not signed in".
+      if (tok.bypass && isBypassSessionExpired(tok.bypass_iat)) {
+        return session;
+      }
+      (session as any).accessToken = tok.accessToken;
+      (session as any).login = tok.login;
+      (session as any).bypass = tok.bypass === true;
       return session;
     },
   },
