@@ -1,0 +1,123 @@
+#
+# tik-test template — VERCEL PREVIEW DEPLOYMENT.
+# ─────────────────────────────────────────────────────────────
+# Use when: your app deploys a per-PR preview to Vercel (the default
+# behaviour of Vercel's GitHub integration). tik-test will drive the
+# preview URL, not a runner-local copy.
+#
+# How it works:
+#   1. PR opens → Vercel builds + deploys a preview → registers a
+#      GitHub Deployment for it.
+#   2. This workflow polls the GitHub Deployments API for a successful
+#      Preview deployment matching the PR's head SHA.
+#   3. Once found, it passes the preview URL to tik-test as `preview-url`.
+#   4. tik-test ignores any `start:` directive in your `tiktest.md`
+#      (because the URL isn't localhost).
+#
+# Why poll instead of using `deployment_status` trigger?
+#   `anthropics/claude-code-action` (an internal dependency of tik-test)
+#   refuses to run on `deployment_status` events for security reasons.
+#   `pull_request` + polling sidesteps that without losing the per-PR
+#   preview URL.
+#
+# Required `tiktest.md` (in your repo root):
+#
+#     ```
+#     # MyApp
+#
+#     url: http://localhost:3000   # ignored in CI; only used for local runs
+#     ```
+#
+# Note: no `start:` directive needed for CI. Keep it for `tiktest pr` runs
+# from your laptop if you want.
+#
+# Required GitHub Actions secrets:
+#   - CLAUDE_CODE_OAUTH_TOKEN          — `claude setup-token`
+#   - VERCEL_AUTOMATION_BYPASS_SECRET  — required if Vercel Deployment
+#                                         Protection is on (the default for
+#                                         most projects). Get it from
+#                                         Vercel project Settings →
+#                                         Deployment Protection →
+#                                         Protection Bypass for Automation.
+#
+# Optional secrets:
+#   - OPENAI_API_KEY                   — enables TTS narration.
+#
+name: tik-test review
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'app/**'
+      - 'package.json'
+      - 'tiktest.md'
+      - '.github/workflows/tik-test.yml'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+      preview_url:
+        description: 'Preview URL (e.g. https://myapp-git-foo.vercel.app)'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+  deployments: read     # poll GitHub Deployments for the Vercel preview URL
+
+jobs:
+  review:
+    if: |
+      contains(fromJSON(vars.TIKTEST_OWNERS || format('["{0}"]', github.repository_owner)), github.actor) &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for Vercel Preview deployment
+        id: vercel
+        # Skip on workflow_dispatch — the user typed the URL in directly.
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Poll the Deployments API until a successful Preview deployment
+          # exists for this PR's head SHA. Cap at 12 min so we never strand
+          # the runner indefinitely if the preview build fails.
+          set -euo pipefail
+          DEADLINE=$(( $(date +%s) + 720 ))
+          while [[ $(date +%s) -lt $DEADLINE ]]; do
+            DEP_ID=$(gh api "repos/$REPO/deployments?sha=$SHA&environment=Preview&per_page=5" --jq '.[0].id // empty')
+            if [[ -n "$DEP_ID" ]]; then
+              URL=$(gh api "repos/$REPO/deployments/$DEP_ID/statuses" --jq '.[] | select(.state == "success") | .target_url' | head -1)
+              if [[ -n "$URL" ]]; then
+                echo "Found preview: $URL"
+                echo "url=$URL" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+            echo "Vercel preview not ready yet — sleeping 30s…"
+            sleep 30
+          done
+          echo "::error::Timed out after 12 min waiting for a Vercel Preview deployment for $SHA."
+          exit 1
+
+      - uses: marcushyett/tik-test@v1
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          # Vercel previews almost always sit behind Deployment Protection.
+          # If yours don't, this is harmless empty-string passthrough.
+          vercel-bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          pr-number: ${{ github.event.inputs.pr_number }}
+          preview-url: ${{ steps.vercel.outputs.url || github.event.inputs.preview_url }}

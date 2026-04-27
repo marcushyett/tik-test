@@ -1,0 +1,186 @@
+#
+# tik-test template — APP WITH BACKING SERVICES (DB, CACHE, QUEUE).
+# ─────────────────────────────────────────────────────────────
+# Use when: your app needs a real database / cache / queue / etc. to do
+# anything useful — a Rails or Django app, a Next.js app with Prisma +
+# Postgres, anything with `npx prisma migrate` in its boot sequence.
+#
+# How it works:
+#   1. GitHub Actions starts service containers for Postgres + Redis
+#      (extend with whatever you need) on the runner network.
+#   2. Steps install deps, run migrations, seed test data.
+#   3. The app is started in the background, bound to localhost.
+#   4. tik-test reads `tiktest.md`, sees the localhost URL, and drives
+#      the in-runner app.
+#
+# Why this template instead of the local-dev one?
+#   The local-dev template assumes ONE start command does everything.
+#   When you need migrations + seeds + service health checks, you need
+#   the workflow to orchestrate the boot — tik-test only spawns the
+#   final "start the app" command via the `start:` directive.
+#
+# This template uses Postgres + Redis as a worked example. Strip whichever
+# you don't need, add others (e.g. `mailhog`, `localstack`) the same way.
+#
+# Required `tiktest.md` (in your repo root):
+#
+#     ```
+#     # MyApp
+#
+#     url: http://localhost:3000
+#     # Note: NO `start:` directive. The workflow boots the app itself
+#     # below — tik-test won't try to start it again.
+#     ```
+#
+# Required GitHub Actions secret:
+#   - CLAUDE_CODE_OAUTH_TOKEN  — `claude setup-token`
+#
+# Optional:
+#   - OPENAI_API_KEY           — TTS narration
+#   - any app-specific secrets your migrations or app boot needs
+#     (e.g. STRIPE_SECRET_KEY, SENTRY_DSN). Add them as repo secrets and
+#     reference under `env:` in the relevant step.
+#
+name: tik-test review
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'app/**'
+      - 'prisma/**'
+      - 'package.json'
+      - 'tiktest.md'
+      - '.github/workflows/tik-test.yml'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    if: |
+      contains(fromJSON(vars.TIKTEST_OWNERS || format('["{0}"]', github.repository_owner)), github.actor) &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30      # extra 5 min over the default — DB boot eats into the budget
+
+    # Service containers — these run alongside the job container on the
+    # same Docker network, reachable by service name (`postgres`, `redis`).
+    # GitHub Actions automatically waits for the `--health-cmd` to pass
+    # before any step runs, so by the time your migrations execute, the
+    # DB is genuinely ready.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Connection strings the app reads at boot. Mirror your real config
+      # but point at the localhost-mapped service container ports above.
+      DATABASE_URL: postgres://app:app@localhost:5432/app_test
+      REDIS_URL: redis://localhost:6379
+      NODE_ENV: test
+      # Required by Next.js / many frameworks for client-side absolute URLs.
+      NEXT_PUBLIC_BASE_URL: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Replace these with whatever your app needs. The pattern is:
+      # migrate → seed → build → start in background → wait for readiness.
+      - name: Run database migrations
+        run: npx prisma migrate deploy
+
+      - name: Seed test data
+        # Make this a no-op if you don't need fixed test data — tik-test
+        # works fine on an empty DB if your app handles that path.
+        run: npm run db:seed --if-present
+
+      - name: Build app
+        run: npm run build
+
+      - name: Start app in background
+        run: |
+          # Start the app, redirect logs to a file the agent run can tail
+          # if anything goes wrong, and write the PID so we can clean up.
+          npm run start > /tmp/app.log 2>&1 &
+          echo $! > /tmp/app.pid
+
+      - name: Wait for app to be ready
+        run: |
+          # Cap at 90s. Tighten if your app boots faster — keeps a hung
+          # boot from chewing the whole runner budget.
+          set -e
+          for i in $(seq 1 90); do
+            if curl -sf http://localhost:3000/ >/dev/null 2>&1; then
+              echo "App ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::App did not respond on http://localhost:3000 within 90s"
+          echo "--- last 50 lines of app log ---"
+          tail -50 /tmp/app.log || true
+          exit 1
+
+      - uses: marcushyett/tik-test@v1
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          pr-number: ${{ github.event.inputs.pr_number }}
+          # tik-test reads tiktest.md to find the URL. Since we already
+          # started the app above, it won't try to start it again.
+
+      # Always tail the app log on failure — saves a round-trip when an
+      # agent run fails because the app crashed mid-test.
+      - name: Dump app log on failure
+        if: failure()
+        run: |
+          echo "--- app log ---"
+          tail -200 /tmp/app.log || true
+
+      # Best-effort cleanup. The runner gets recycled anyway, but kill the
+      # app so its logs don't grow during artifact upload.
+      - name: Stop app
+        if: always()
+        run: |
+          if [[ -f /tmp/app.pid ]]; then
+            kill "$(cat /tmp/app.pid)" 2>/dev/null || true
+          fi

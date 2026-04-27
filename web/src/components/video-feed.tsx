@@ -10,6 +10,7 @@ import { PRBodyPreview } from "./pr-body-preview";
 import { MobileDrawer } from "./mobile-drawer";
 import { AIChecksList, AIChecksBadge } from "./ai-checks-list";
 import { proxyMedia } from "@/lib/utils";
+import { useSeenVideos } from "@/lib/seen-videos";
 import type { OpenPR } from "@/lib/github";
 import type { TikTestVideo } from "@/lib/marker";
 
@@ -30,8 +31,24 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
   // across feed navigations so they don't have to re-tap on every PR.
   const [muted, setMuted] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const { markSeen, isSeen } = useSeenVideos();
 
   const current = items[idx];
+
+  // Mark the OUTGOING video as seen when the user navigates away from it.
+  // We track the previously-mounted runId in a ref and, whenever idx changes
+  // such that current.video.runId is different, mark the prior id. This
+  // matches the user's mental model: "I navigated past it, I've seen it."
+  // The current/incoming video stays NEW until the user moves on from it.
+  const prevRunIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const incomingId = current?.video.runId ?? null;
+    const outgoingId = prevRunIdRef.current;
+    if (outgoingId && outgoingId !== incomingId) {
+      markSeen(outgoingId);
+    }
+    prevRunIdRef.current = incomingId;
+  }, [current?.video.runId, markSeen]);
 
   // Pause the currently-mounted video before changing idx so that — even if
   // React's unmount is slow — no audio leaks into the new video's playback.
@@ -139,7 +156,7 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
       <div className="hidden h-[calc(100dvh-80px)] md:grid md:grid-cols-[minmax(0,420px)_minmax(0,1fr)] md:gap-8 md:px-6 md:pb-10">
         {/* Video column */}
         <div className="flex min-h-0 flex-col gap-3">
-          <FeedCounter idx={idx} total={items.length} video={video} />
+          <FeedCounter idx={idx} total={items.length} video={video} seen={isSeen(video.runId)} />
           <VideoFrame
             ref={videoRef}
             src={videoSrc}
@@ -173,8 +190,11 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
 
         {/* Top overlay with counter — doesn't obscure the app UI in the video. */}
         <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 via-black/30 to-transparent p-4 pt-[max(1rem,env(safe-area-inset-top))] text-xs text-white/90">
-          <span className="font-mono tracking-widest">
-            {idx + 1}/{items.length}
+          <span className="inline-flex items-center gap-2">
+            <span className="font-mono tracking-widest">
+              {idx + 1}/{items.length}
+            </span>
+            <SeenBadge seen={isSeen(video.runId)} mode="dark" />
           </span>
           <span className="rounded-full border border-white/20 bg-black/40 px-2 py-0.5 font-mono text-[10px] backdrop-blur">
             {video.stats.passed}/{video.stats.total} green · {video.stats.failed} oops
@@ -228,12 +248,41 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
 
 /* --------------------------- sub-components --------------------------- */
 
-function FeedCounter({ idx, total, video }: { idx: number; total: number; video: TikTestVideo }) {
+function FeedCounter({ idx, total, video, seen }: { idx: number; total: number; video: TikTestVideo; seen: boolean }) {
   return (
     <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-      <span>PR {idx + 1} of {total}</span>
+      <span className="inline-flex items-center gap-2">
+        <span>PR {idx + 1} of {total}</span>
+        <SeenBadge seen={seen} mode="light" />
+      </span>
       <span>{video.stats.passed}/{video.stats.total} green · {video.stats.failed} oops</span>
     </div>
+  );
+}
+
+/** "NEW" / "SEEN" pill. Two visual modes — `light` for the desktop sidebar
+ *  (sits on the page background, follows muted-foreground tone) and `dark`
+ *  for the mobile fullscreen overlay (sits on the video, needs contrast). */
+function SeenBadge({ seen, mode }: { seen: boolean; mode: "light" | "dark" }) {
+  if (mode === "dark") {
+    return seen ? (
+      <span className="rounded-full border border-white/20 bg-black/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-white/70 backdrop-blur">
+        Seen
+      </span>
+    ) : (
+      <span className="rounded-full bg-emerald-500/90 px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-white shadow-sm backdrop-blur">
+        New
+      </span>
+    );
+  }
+  return seen ? (
+    <span className="rounded-full border border-border bg-muted/50 px-2 py-0.5 font-mono text-[10px] tracking-[0.14em] text-muted-foreground">
+      Seen
+    </span>
+  ) : (
+    <span className="rounded-full bg-emerald-500 px-2 py-0.5 font-mono text-[10px] font-semibold tracking-[0.14em] text-white">
+      New
+    </span>
   );
 }
 

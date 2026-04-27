@@ -1,0 +1,93 @@
+#
+# tik-test template — LOCAL DEV SERVER inside the runner.
+# ─────────────────────────────────────────────────────────────
+# Use when: your app runs entirely from `npm run dev` (or similar) with no
+# external dependencies — a static site, a Next.js app with mocked APIs, a
+# Vite SPA, a Storybook instance, anything where one command boots the
+# whole thing.
+#
+# How it works:
+#   1. tik-test reads your repo's `tiktest.md`.
+#   2. If `tiktest.md` has a `start:` directive AND `url:` points at
+#      localhost, tik-test spawns the start command in the background and
+#      waits for the URL to respond before driving the browser.
+#   3. The start command runs in the GitHub Actions runner, not on
+#      Vercel/staging — so this template needs zero infrastructure.
+#
+# Required `tiktest.md` (in your repo root, or in a subdir if you set
+# `working-directory:` below):
+#
+#     ```
+#     # MyApp
+#
+#     url: http://localhost:5173
+#     start: npm run dev
+#     ```
+#
+# That's it. tik-test picks it up automatically.
+#
+# Required GitHub Actions secret:
+#   - CLAUDE_CODE_OAUTH_TOKEN  — generate with `claude setup-token`,
+#                                paste into Settings → Secrets → Actions.
+#
+# Optional secrets:
+#   - OPENAI_API_KEY           — enables TTS narration on the video.
+#                                Without it, the video is silent.
+#
+name: tik-test review
+
+on:
+  pull_request:
+    # OPTIONAL: scope to changes that could affect what tik-test sees.
+    # Drop this whole `paths:` block to review every PR.
+    paths:
+      - 'src/**'
+      - 'app/**'
+      - 'package.json'
+      - 'tiktest.md'
+      - '.github/workflows/tik-test.yml'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+
+permissions:
+  contents: write       # release-create uploads the video as a release asset
+  pull-requests: write  # post the review comment
+  id-token: write       # required by anthropics/claude-code-action
+
+jobs:
+  review:
+    # Owners gate — only listed users can trigger paid runs. Update via
+    # repo Settings → Variables → TIKTEST_OWNERS = '["alice","bob"]'.
+    # Default falls back to the repo owner. Fork PRs are blocked
+    # automatically because secrets aren't shared with forks anyway.
+    if: |
+      contains(fromJSON(vars.TIKTEST_OWNERS || format('["{0}"]', github.repository_owner)), github.actor) &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # Optional: install dependencies BEFORE tik-test so the start command
+      # boots faster (otherwise tik-test installs them on first `npm run dev`,
+      # eating into the per-goal budget). Skip if your start command does
+      # its own install.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+
+      - uses: marcushyett/tik-test@v1
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          pr-number: ${{ github.event.inputs.pr_number }}
+          # Uncomment if your tiktest.md lives in a subdirectory of the repo:
+          # working-directory: apps/web

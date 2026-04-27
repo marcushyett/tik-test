@@ -1,5 +1,3 @@
-"use server";
-
 import { Octokit } from "@octokit/rest";
 import { auth } from "@/auth";
 import { parseMarker, type TikTestVideo } from "./marker";

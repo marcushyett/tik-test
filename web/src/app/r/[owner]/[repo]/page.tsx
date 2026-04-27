@@ -5,6 +5,12 @@ import { VideoFeed } from "@/components/video-feed";
 
 interface Params { owner: string; repo: string }
 
+// Without this, Next.js can statically pre-render the page at build time
+// (when no session exists, so listPRsWithVideos returns []) and serve that
+// empty render forever. The home page is naturally dynamic because it
+// calls `auth()` inline.
+export const dynamic = "force-dynamic";
+
 export default async function RepoFeedPage({ params }: { params: Promise<Params> }) {
   const { owner, repo } = await params;
   const prs = await listPRsWithVideos(owner, repo);

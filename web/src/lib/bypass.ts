@@ -5,7 +5,8 @@
  *
  *  - Bypass URL is `?ts=<unix>&sig=HMAC-SHA256(SECRET, ts)`. The server
  *    rejects if `|now - ts| > MAX_SKEW_S` so a URL captured from a log line
- *    is dead within ~60 seconds.
+ *    is dead within ~60 seconds (default; configurable up to 30 min to
+ *    absorb plan-gen + apt-get + bun setup time on slow runners).
  *  - Sig comparison uses `crypto.timingSafeEqual`. No early-exit string
  *    compare — same code path for "wrong sig" and "right sig but stale".
  *  - All response codes are `404 Not Found` on any failure (missing env,
@@ -35,15 +36,25 @@ export const BYPASS_SESSION_MAX_AGE_S = 30 * 60;   // 30 min — total session l
 /**
  * ±N seconds — how stale a signed URL may be. Default 60s. Operators can
  * widen to absorb plan-gen + agent-launch slack via TIKTEST_BYPASS_MAX_SKEW_S,
- * clamped to [5, 300] so a misconfiguration can't blow the replay window
+ * clamped to [5, 1800] so a misconfiguration can't blow the replay window
  * open to hours. Wider = larger window for a captured URL to be replayed.
+ *
+ * The 30-min ceiling matches BYPASS_SESSION_MAX_AGE_S — beyond that, the
+ * window for replaying the URL would outlive any session it could mint,
+ * which is nonsensical. The replay risk is also bounded by Vercel
+ * Deployment Protection: an attacker who captures the URL from public
+ * Actions logs still hits the Vercel auth wall before reaching this
+ * route, unless they ALSO hold VERCEL_AUTOMATION_BYPASS_SECRET (a
+ * separate Actions secret). Compromising that secret subsumes the URL
+ * leak entirely — they could sign a fresh URL — so the skew window
+ * isn't the binding constraint in that adversary model.
  */
 export const BYPASS_URL_MAX_SKEW_S = (() => {
   const raw = process.env.TIKTEST_BYPASS_MAX_SKEW_S;
   if (!raw) return 60;
   const n = Number(raw);
   if (!Number.isFinite(n)) return 60;
-  return Math.min(300, Math.max(5, Math.floor(n)));
+  return Math.min(1800, Math.max(5, Math.floor(n)));
 })();
 
 /** True when ALL required env vars are populated AND the kill switch is off. */
