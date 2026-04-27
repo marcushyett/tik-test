@@ -1,9 +1,24 @@
 #
 # tik-test self-review — REVIEWER WEB APP (web/).
 #
-# Runs on PRs that touch web/. Tests the DEPLOYED Vercel reviewer app
-# via the signed bypass URL minted by web/scripts/sign-bypass-url.mjs
-# (see web/src/lib/bypass.ts for the threat model).
+# Runs against the PER-PR Vercel PREVIEW deployment of the reviewer web
+# app. tik-test is a pre-production tool, so production is intentionally
+# never targeted — all TIKTEST_BYPASS_* env vars on Vercel live in the
+# Preview environment only. The bypass route 404s on Production by
+# design (its required env vars are absent there).
+#
+# Trigger model
+# -------------
+# This workflow listens for Vercel's `deployment_status` event. When a
+# preview build for a PR succeeds, GitHub fires the event with the
+# preview URL in `target_url`. We sign a bypass URL against THAT host
+# and hand it to the action — so each run targets the PR's own changes,
+# not stale production code.
+#
+# We deliberately do NOT trigger on `pull_request` because we need the
+# preview URL, which doesn't exist until Vercel finishes building.
+# Listening for the deployment readiness signal directly removes the
+# need for any in-workflow polling.
 #
 # Sister workflow: tik-test-taskpad.yml runs on PRs that touch the
 # bundled Taskpad demo and spins up the demo locally inside the runner.
@@ -12,18 +27,15 @@
 #   - CLAUDE_CODE_OAUTH_TOKEN          — same as the taskpad workflow
 #   - OPENAI_API_KEY                   — optional, enables TTS narration
 #   - TIKTEST_BYPASS_SECRET            — same value set as TIKTEST_BYPASS_SECRET on
-#                                         the Vercel project's env. Used here to
-#                                         sign the bypass URL passed as preview-url.
-#   - VERCEL_AUTOMATION_BYPASS_SECRET  — required if the deployment has Vercel
-#                                         Deployment Protection enabled (default
-#                                         on previews for Pro/Team plans). Get it
+#                                         the Vercel project's PREVIEW env. Used
+#                                         here to sign the bypass URL.
+#   - VERCEL_AUTOMATION_BYPASS_SECRET  — required because Vercel Deployment
+#                                         Protection is on for previews. Get it
 #                                         from Vercel project Settings →
 #                                         Deployment Protection → Protection
 #                                         Bypass for Automation. Without it the
-#                                         agent's browser will hit the Vercel
-#                                         auth wall before reaching the bypass
-#                                         route. Leave unset only if production
-#                                         is public.
+#                                         agent's browser hits the Vercel auth
+#                                         wall before reaching `/api/test-bootstrap`.
 #
 # The bypass URL is signed RIGHT BEFORE the action runs so the ±60s skew
 # window has the full plan-gen + agent-launch budget. If runs hit the
@@ -33,14 +45,16 @@
 name: tik-test review (webapp)
 
 on:
-  pull_request:
-    paths:
-      - web/**
-      - .github/workflows/tik-test-webapp.yml
+  # Vercel's GitHub integration fires `deployment_status` for each preview
+  # build. We act on the success state for Preview deployments only.
+  deployment_status:
   workflow_dispatch:
     inputs:
       pr_number:
         description: PR number to review
+        required: true
+      preview_url:
+        description: 'Preview URL to test against (e.g. https://tik-test-review-git-foo.vercel.app)'
         required: true
 
 permissions:
@@ -50,13 +64,19 @@ permissions:
 
 jobs:
   review:
-    # Same maintainer gate as the taskpad workflow — keeps fork PRs and
-    # random contributors from burning the Claude subscription budget.
+    # Owners gate (keeps fork PRs and random contributors from burning the
+    # Claude subscription budget) AND environment gate: only run when the
+    # event is a successful Preview deployment, or a manual dispatch.
     if: |
       contains(fromJSON(vars.TIKTEST_OWNERS || '["marcushyett"]'), github.actor) &&
       (
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+        (
+          github.event_name == 'deployment_status' &&
+          github.event.deployment_status.state == 'success' &&
+          github.event.deployment.environment == 'Preview' &&
+          github.event.deployment_status.target_url != ''
+        )
       )
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -68,21 +88,24 @@ jobs:
         shell: bash
         env:
           TIKTEST_BYPASS_SECRET: ${{ secrets.TIKTEST_BYPASS_SECRET }}
+          # Either the preview URL from the deployment_status event, or
+          # the URL the maintainer typed when manually dispatching.
+          BASE_URL: ${{ github.event.deployment_status.target_url || github.event.inputs.preview_url }}
         run: |
           if [[ -z "$TIKTEST_BYPASS_SECRET" ]]; then
-            echo "::error::TIKTEST_BYPASS_SECRET is not set. Add it under Settings → Secrets and Variables → Actions."
+            echo "::error::TIKTEST_BYPASS_SECRET is not set. Add it under Settings → Secrets and Variables → Actions (same value as in Vercel Preview env)."
             exit 1
           fi
-          # Production reviewer app. Preview-vs-production handling can come
-          # later; for now we self-review against prod (which is fine because
-          # the agent navigates the public landing → repo feed flow, not any
-          # deployment-pinned UI).
-          BASE="https://tik-test-review.vercel.app"
+          if [[ -z "$BASE_URL" ]]; then
+            echo "::error::Couldn't resolve a preview URL. Ensure Vercel posted a successful Preview deployment, or pass preview_url on workflow_dispatch."
+            exit 1
+          fi
           REDIRECT="/r/${{ github.repository }}"
-          URL=$(node web/scripts/sign-bypass-url.mjs --base "$BASE" --redirect "$REDIRECT")
+          URL=$(node web/scripts/sign-bypass-url.mjs --base "$BASE_URL" --redirect "$REDIRECT")
           # Mask in logs even though logs are private — defence in depth.
           echo "::add-mask::$URL"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Signed bypass URL against: $BASE_URL"
 
       - uses: ./
         with:

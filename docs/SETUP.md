@@ -38,11 +38,11 @@ Every secret in this guide ends up in **one of two places**, and one
 | `GITHUB_CLIENT_SECRET` | Production + Preview | Path C |
 | `AUTH_SECRET` | Production + Preview | Path C |
 | `NEXTAUTH_URL` | Production + Preview | Path C, only for custom domains |
-| `TIKTEST_BYPASS_SECRET` | **Production only** | Path D — same value as GH Actions above |
-| `TIKTEST_BYPASS_GH_TOKEN` | **Production only** | Path D |
-| `TIKTEST_BYPASS_GH_LOGIN` | **Production only** | Path D |
-| `TIKTEST_BYPASS_DISABLED` | **Production only** | Path D, kill switch (omit for off) |
-| `TIKTEST_BYPASS_MAX_SKEW_S` | **Production only** | Path D, optional tuning |
+| `TIKTEST_BYPASS_SECRET` | **Preview only** | Path D — same value as GH Actions above |
+| `TIKTEST_BYPASS_GH_TOKEN` | **Preview only** | Path D |
+| `TIKTEST_BYPASS_GH_LOGIN` | **Preview only** | Path D |
+| `TIKTEST_BYPASS_DISABLED` | **Preview only** | Path D, kill switch (omit for off) |
+| `TIKTEST_BYPASS_MAX_SKEW_S` | **Preview only** | Path D, optional tuning |
 
 **Rule of thumb:**
 
@@ -249,11 +249,15 @@ openssl rand -hex 32
 
 Keep this value handy for the next two steps.
 
-### D3. Add four vars to Vercel (Production only — never Preview)
+### D3. Add four vars to Vercel (Preview only — never Production)
 
-> **→ Goes in: Vercel → Project Settings → Environment Variables → Production**
+> **→ Goes in: Vercel → Project Settings → Environment Variables → Preview**
 >
-> *Do NOT add these to Preview — bypass should not work against ephemeral preview deployments.*
+> *Do NOT add these to Production. tik-test is a pre-production tool — it
+> targets per-PR preview deployments, not the live production app. Setting
+> these on Production would create a bypass route on the public site that
+> serves no purpose. The webapp workflow gates on
+> `deployment.environment == 'Preview'` and will not target Production.*
 
 | Name | Value | Sensitive? |
 |---|---|---|
@@ -302,11 +306,11 @@ secret/var must be set in that destination. Two ✓s in one row means **both**
 | `GITHUB_CLIENT_SECRET` | Same OAuth App, "Generate secret" | | ✓ | ✓ | Path C |
 | `AUTH_SECRET` | `openssl rand -base64 32` | | ✓ | ✓ | Path C |
 | `NEXTAUTH_URL` | your custom domain URL | | ✓ | ✓ | Path C, custom domains only |
-| `TIKTEST_BYPASS_SECRET` | `openssl rand -hex 32` | ✓ | ✓ | | **Path D — both places, same value** |
-| `TIKTEST_BYPASS_GH_TOKEN` | New fine-grained PAT, single repo, read-only | | ✓ | | Path D |
-| `TIKTEST_BYPASS_GH_LOGIN` | your GitHub username | | ✓ | | Path D |
-| `TIKTEST_BYPASS_DISABLED` | literal `1` to disable | | ✓ | | Path D kill switch (omit by default) |
-| `TIKTEST_BYPASS_MAX_SKEW_S` | seconds, 5–300 | | ✓ | | Path D, optional tuning |
+| `TIKTEST_BYPASS_SECRET` | `openssl rand -hex 32` | ✓ | | ✓ | **Path D — GH Actions + Vercel Preview, same value** |
+| `TIKTEST_BYPASS_GH_TOKEN` | New fine-grained PAT, single repo, read-only | | | ✓ | Path D |
+| `TIKTEST_BYPASS_GH_LOGIN` | your GitHub username | | | ✓ | Path D |
+| `TIKTEST_BYPASS_DISABLED` | literal `1` to disable | | | ✓ | Path D kill switch (omit by default) |
+| `TIKTEST_BYPASS_MAX_SKEW_S` | seconds, 5–300 | | | ✓ | Path D, optional tuning |
 
 ## Maintenance
 

@@ -22,8 +22,21 @@ The bypass URL is passed as `preview-url` to the action — by the time the
 agent navigates, the session cookie is set and the app treats them as
 the bypass user. **No additional sign-in step is needed in any goal.**
 
-For local manual review, sign in normally with GitHub OAuth at
-`https://tik-test-review.vercel.app`.
+For local manual review, sign in normally with GitHub OAuth.
+
+## Target URL
+
+**Per-PR Vercel preview only.** tik-test is a pre-production tool — it
+never targets the production deployment. The workflow at
+`.github/workflows/tik-test-webapp.yml` listens for Vercel's
+`deployment_status` event and signs the bypass URL against whichever
+preview host Vercel just deployed for this PR (e.g.
+`tik-test-review-git-<branch>.vercel.app`). All `TIKTEST_BYPASS_*` env
+vars on Vercel live in the **Preview** environment only, so the bypass
+route returns 404 on Production by design.
+
+For manual dispatch (`workflow_dispatch`), pass the `preview_url` input
+explicitly — there's no event payload to read it from.
 
 ## Local dev
 
@@ -32,8 +45,8 @@ The reviewer is a Next.js app, not a static site. Run it with:
 start: cd web && npm install --silent && npm run dev -- -p 4173
 
 The `start:` directive only matters for local dev — in CI the workflow
-points `preview-url` at the deployed Vercel URL via the bypass URL, so
-no local server is spun up.
+signs the bypass URL against the per-PR preview deployment, so no local
+server is spun up.
 
 ## Selectors
 

@@ -80,7 +80,7 @@ Lets the `tik-test-webapp.yml` workflow log in via a signed, time-bound URL. See
    - Suggested expiration: 90 days, then rotate.
    - Worst-case blast radius if leaked = read public PR data on that one repo.
 2. **Generate a bypass HMAC secret**: `openssl rand -hex 32`.
-3. Set in Vercel **Project Settings → Environment Variables → Production**:
+3. Set in Vercel **Project Settings → Environment Variables → Preview** (NOT Production — tik-test only targets per-PR previews):
    - `TIKTEST_BYPASS_SECRET` (Sensitive — the HMAC secret from step 2)
    - `TIKTEST_BYPASS_GH_TOKEN` (Sensitive — the `github_pat_…` from step 1)
    - `TIKTEST_BYPASS_GH_LOGIN` (your GitHub username — appears in the session)
@@ -98,7 +98,7 @@ node web/scripts/sign-bypass-url.mjs \
   --redirect /
 ```
 
-Open the printed URL within 60 seconds. If you land logged in, the bypass works. A 404 means one of the four required env vars is missing in Production.
+Open the printed URL within 60 seconds. If you land logged in, the bypass works. A 404 on a preview URL means one of the four required env vars is missing in Vercel **Preview**. (A 404 on a production URL is by design — the bypass route is disabled there.)
 
 ## Deploy to Vercel
 
