@@ -87,6 +87,18 @@ export const KNOBS: Knob[] = [
     riskHigher: "almost never doing useful work past 60s",
   },
 
+  // ── Plan generation ──────────────────────────────────────────────────
+  {
+    key: "TIK_MAX_GOALS",
+    actionInput: "max-goals",
+    default: 3,
+    kind: "int",
+    unit: "items",
+    description: "Hard ceiling on goals the planner produces. The plan prompt sees `1-N` and the result is also defensively trimmed.",
+    riskLower: "<2 leaves no room for an edge-case secondary goal",
+    riskHigher: ">5 inflates video length past the ~60s scroll-feed sweet spot and may push the agent over the 25-min job budget",
+  },
+
   // ── Body narration density ────────────────────────────────────────────
   {
     key: "TIK_MIN_CHUNK_S",
@@ -213,6 +225,7 @@ export function resolveKnob(knob: Knob): number {
 // One per KNOBS entry; the rest of the codebase imports these directly so
 // the metadata table is invisible to callers that just need the number.
 
+export const MAX_GOALS = resolveKnob(KNOBS_BY_KEY.get("TIK_MAX_GOALS")!);
 export const PLAN_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_PLAN_TIMEOUT_MS")!);
 export const AGENT_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_AGENT_TIMEOUT_MS")!);
 export const NARRATION_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_NARRATION_TIMEOUT_MS")!);
