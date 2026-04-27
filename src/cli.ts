@@ -5,8 +5,10 @@ import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { loadConfig } from "./config.js";
 import { generatePlan } from "./plan.js";
+import { writeFile } from "node:fs/promises";
 import { runPlan } from "./runner.js";
 import { editSingleVideo } from "./single-video-editor.js";
+import { generateChecklist } from "./checklist.js";
 import { startViewer } from "./viewer.js";
 import { runForPR } from "./pr.js";
 import { KNOBS, resolveKnob } from "./timeouts.js";
@@ -28,6 +30,7 @@ program
   .option("--voice <name>", "macOS `say` voice name for narration", "Samantha")
   .option("--no-voice", "disable narration voice-over")
   .option("--quick", "low-resolution draft render for quicker iteration")
+  .option("--no-video", "skip render — emit only checklist + events.json (faster, no MP4)")
   .option("--vercel-bypass <secret>", "Vercel Protection Bypass secret (also: VERCEL_AUTOMATION_BYPASS_SECRET env)")
   .option("--open", "start the viewer after the run completes")
   .action(async (opts) => {
@@ -50,6 +53,23 @@ program
     const artifacts = await runPlan({ plan, runDir, headed: opts.headed, extraHTTPHeaders, cookies });
     const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
     console.log(chalk.green(`     ✓ ${artifacts.events.length - failed}/${artifacts.events.length} passed, raw ${path.relative(process.cwd(), artifacts.rawVideoPath)}`));
+
+    // --no-video: skip render entirely. Still synthesise the checklist
+    // (it's the same one the video's outro shows) and write it to disk so
+    // CI / the Claude Code plugin can surface it. Commander's --no-X flag
+    // sets `opts.video === false`.
+    if (opts.video === false) {
+      console.log(chalk.bold("\n3/3  synthesising checklist (no video)"));
+      const checklist = await generateChecklist({ artifacts, prTitle: cfg.name });
+      const checklistPath = path.join(runDir, "checklist.json");
+      await writeFile(checklistPath, JSON.stringify(checklist ?? [], null, 2));
+      console.log(chalk.green(`     ✓ ${path.relative(process.cwd(), checklistPath)}`));
+      printChecklist(checklist, artifacts.events.length, failed);
+      console.log(chalk.bold("\n✓ done (checks-only — no video produced)"));
+      console.log(`  checklist: ${chalk.underline(checklistPath)}`);
+      console.log(`  events:    ${chalk.underline(artifacts.eventsJsonPath)}`);
+      return;
+    }
 
     console.log(chalk.bold("\n3/3  editing highlight reel"));
     const outPath = path.join(runDir, "highlights.mp4");
@@ -87,6 +107,7 @@ program
   .option("--skip-comment", "render the video but don't post a PR comment")
   .option("--vercel-bypass <secret>", "Vercel Protection Bypass secret (also: VERCEL_AUTOMATION_BYPASS_SECRET env)")
   .option("--quick", "low-resolution draft render")
+  .option("--no-video", "skip render + upload — post a text-only checklist comment instead (faster, much cheaper)")
   .option("--require-pass", "exit non-zero if any test step failed (for CI gating)")
   .option("--review <mode>", "post a formal PR review: none | approve-on-pass | request-changes-on-fail | always", "request-changes-on-fail")
   .action(async (pr, opts) => {
@@ -101,6 +122,7 @@ program
       skipComment: !!opts.skipComment,
       vercelBypass: opts.vercelBypass,
       quick: !!opts.quick,
+      noVideo: opts.video === false,
       requirePass: !!opts.requirePass,
       review: opts.review,
     });
@@ -155,6 +177,26 @@ program
     console.log(chalk.dim("Defaults are tuned for a typical PR (1-3 goals, 30-60s recording, 8-12 narration scenes)."));
     console.log(chalk.dim("Bump only after you've seen the corresponding default fail in your run."));
   });
+
+/** Pretty-print the LLM-synthesised checklist (no-video mode). Falls back
+ *  to a goal-level summary line when the LLM call returned null. */
+function printChecklist(items: Array<{ outcome: string; label: string; note?: string }> | null, totalGoals: number, failedGoals: number): void {
+  console.log("");
+  if (!items || items.length === 0) {
+    console.log(chalk.dim(`  (checklist unavailable — ${totalGoals - failedGoals}/${totalGoals} goals passed)`));
+    return;
+  }
+  for (const it of items) {
+    const icon = it.outcome === "success" ? chalk.green("✓") : it.outcome === "failure" ? chalk.red("✗") : chalk.dim("·");
+    const label = it.label.length > 60 ? it.label.slice(0, 57) + "…" : it.label;
+    const note = it.note ? chalk.dim(` — ${it.note}`) : "";
+    console.log(`  ${icon} ${label}${note}`);
+  }
+  const passed = items.filter((i) => i.outcome === "success").length;
+  const failed = items.filter((i) => i.outcome === "failure").length;
+  const skipped = items.filter((i) => i.outcome === "skipped").length;
+  console.log(chalk.dim(`\n  ${items.length} checks · ${passed} passed · ${failed} failed · ${skipped} skipped`));
+}
 
 function buildVercelBypass(secret: string | undefined, url: string): { extraHTTPHeaders?: Record<string, string>; cookies?: Array<any> } {
   if (!secret) return {};

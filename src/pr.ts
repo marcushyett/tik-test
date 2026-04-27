@@ -9,6 +9,7 @@ import { generatePlan } from "./plan.js";
 import { runPlan } from "./runner.js";
 import { editSingleVideo } from "./single-video-editor.js";
 import { renderPreviewGif } from "./preview-gif.js";
+import { generateChecklist, type ChecklistItem } from "./checklist.js";
 
 export interface PROptions {
   outDir: string;
@@ -20,6 +21,7 @@ export interface PROptions {
   skipComment?: boolean;     // render the video but don't post to the PR
   vercelBypass?: string;     // VERCEL_AUTOMATION_BYPASS_SECRET for protected previews
   quick?: boolean;
+  noVideo?: boolean;         // skip render + upload — post a text-only checklist comment instead
   requirePass?: boolean;     // exit non-zero if any step failed (CI gating)
   review?: "none" | "approve-on-pass" | "request-changes-on-fail" | "always"; // post a formal PR review
 }
@@ -153,6 +155,8 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
 
     // TIKTEST_SKIP_RENDER is an iteration aid — when you're tuning the agent
     // it lets you inspect events without waiting 3-4 min for the render.
+    // Distinct from --no-video: SKIP_RENDER short-circuits with NO PR comment,
+    // --no-video still posts a checks-only comment (see below).
     if (process.env.TIKTEST_SKIP_RENDER === "1") {
       const totalMs = artifacts.events.length ? Math.max(...artifacts.events.map((e) => e.endMs ?? 0)) : 0;
       console.log(chalk.yellow(`\n     skipping render + upload (TIKTEST_SKIP_RENDER=1)`));
@@ -162,6 +166,33 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
         const dur = ev.endMs && ev.startMs ? ((ev.endMs - ev.startMs) / 1000).toFixed(1) : "?";
         const icon = ev.outcome === "success" ? chalk.green("✓") : chalk.red("✗");
         console.log(chalk.dim(`     ${icon} [${dur}s] ${ev.description.slice(0, 80)}${ev.notes ? " — " + ev.notes.slice(0, 80) : ""}`));
+      }
+      return;
+    }
+
+    // --no-video: skip render + upload entirely, but still synthesise the
+    // checklist and post a text-only PR comment. Pairs well with running on
+    // every push (cheap, fast, still useful) — see the run-on-every-push
+    // input on the action.
+    if (opts.noVideo) {
+      console.log(chalk.bold("\n3/3  synthesising checklist (no video)"));
+      const checklist = await generateChecklist({ artifacts, prTitle: meta.title, prBody: meta.body });
+      const failedCount = artifacts.events.filter((e) => e.outcome === "failure").length;
+      if (!opts.skipComment) {
+        console.log(chalk.bold("\n4/4  posting checks-only comment"));
+        await postPRChecklistComment(ref, {
+          plan: plan.name,
+          events: artifacts.events,
+          totalMs: artifacts.totalMs,
+          checklist,
+        });
+        console.log(chalk.green(`     ✓ commented on ${ref.url}`));
+        await maybePostFormalReview(ref, opts.review, artifacts.events.length, failedCount);
+      } else {
+        console.log(chalk.dim("\n  --skip-comment set — checks-only comment not posted"));
+      }
+      if (opts.requirePass && failedCount > 0) {
+        throw new Error(`tik-test found ${failedCount} failing step${failedCount === 1 ? "" : "s"} — exiting non-zero for CI gating`);
       }
       return;
     }
@@ -198,28 +229,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
         checklist,
       });
       console.log(chalk.green(`     ✓ commented on ${ref.url}`));
-
-      // Formal PR review for CI gating — asks for changes when tik-test flagged failures.
-      const reviewMode = opts.review ?? "request-changes-on-fail";
-      if (reviewMode !== "none") {
-        const passed = artifacts.events.length - failedCount;
-        const shouldApprove = failedCount === 0 && (reviewMode === "approve-on-pass" || reviewMode === "always");
-        const shouldRequestChanges = failedCount > 0 && (reviewMode === "request-changes-on-fail" || reviewMode === "always");
-        if (shouldApprove || shouldRequestChanges) {
-          const reviewBody = shouldApprove
-            ? `tik-test approved — ${passed}/${artifacts.events.length} checks green. See the video above for the walk-through.`
-            : `tik-test flagged ${failedCount} regression${failedCount === 1 ? "" : "s"} in the video above. Passing ${passed}/${artifacts.events.length} isn't enough — please review the "oops" moments before merging.`;
-          const reviewEvent = shouldApprove ? "APPROVE" : "REQUEST_CHANGES";
-          const { code } = await gh([
-            "pr", "review", String(ref.number),
-            "--repo", `${ref.owner}/${ref.repo}`,
-            shouldApprove ? "--approve" : "--request-changes",
-            "--body", reviewBody,
-          ]);
-          if (code === 0) console.log(chalk.green(`     ✓ review ${reviewEvent} posted`));
-          else console.log(chalk.yellow(`     ! couldn't post review (missing pull-requests:write perm?)`));
-        }
-      }
+      await maybePostFormalReview(ref, opts.review, artifacts.events.length, failedCount);
     } else {
       console.log(chalk.dim("\n  --skip-comment set — video not posted"));
     }
@@ -593,4 +603,86 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
     "--repo", `${ref.owner}/${ref.repo}`,
     "--add-label", "tik-test-reviewed",
   ]).catch(() => {});
+}
+
+/**
+ * Post a checks-only PR comment for --no-video runs.
+ *
+ * Differs from `postPRComment` in two important ways:
+ *
+ *   1. NO `<!-- tik-test-video:v1 ... -->` marker. The reviewer web app
+ *      (web/) uses that marker to identify swipeable feed entries — and a
+ *      no-video run has no MP4 to swipe to. Including the marker would
+ *      produce empty feed items.
+ *   2. NO video / GIF preview block. The body is just the LLM-synthesised
+ *      checklist + summary line.
+ *
+ * The formal pull-request review (approve / request-changes) is posted
+ * separately by `maybePostFormalReview` — same logic as the video flow.
+ */
+async function postPRChecklistComment(
+  ref: PRRef,
+  data: { plan: string; events: CommentData["events"]; totalMs: number; checklist: ChecklistItem[] | null },
+): Promise<void> {
+  const failed = data.events.filter((e) => e.outcome === "failure");
+  const passed = data.events.length - failed.length - data.events.filter((e) => e.outcome === "skipped").length;
+  const status = failed.length === 0 ? "All green" : `${failed.length} step${failed.length === 1 ? "" : "s"} failed`;
+
+  const checklistMd = data.checklist && data.checklist.length > 0
+    ? buildChecklistMarkdown(data.checklist)
+    : "_No per-check breakdown available — checklist synthesis returned empty._\n";
+
+  const body = [
+    `### tik-test review — ${status} (checks only)`,
+    ``,
+    `**${data.plan}** — ${passed}/${data.events.length} checks passed in ${(data.totalMs / 1000).toFixed(1)}s.`,
+    ``,
+    checklistMd,
+    `---`,
+    `Generated by [tik-test](https://github.com/marcushyett/tik-test) in **\`no-video\`** mode — same planning + agent run as a video review, just without the MP4. Re-run with \`tik-test pr ${ref.number}\` for the full reel.`,
+  ].join("\n");
+
+  await ghOrThrow([
+    "pr", "comment", String(ref.number),
+    "--repo", `${ref.owner}/${ref.repo}`,
+    "--body-file", "-",
+  ], { input: body });
+
+  // Same label as the video flow — reviewers can still filter for tik-test
+  // attention regardless of which mode produced the comment.
+  await gh([
+    "pr", "edit", String(ref.number),
+    "--repo", `${ref.owner}/${ref.repo}`,
+    "--add-label", "tik-test-reviewed",
+  ]).catch(() => {});
+}
+
+/** Post the formal PR review (approve / request-changes) when the configured
+ *  review mode says we should. Shared between the video and checks-only flows
+ *  so the gating behaviour is identical. */
+async function maybePostFormalReview(
+  ref: PRRef,
+  reviewMode: PROptions["review"] | undefined,
+  totalEvents: number,
+  failedCount: number,
+): Promise<void> {
+  const mode = reviewMode ?? "request-changes-on-fail";
+  if (mode === "none") return;
+  const passed = totalEvents - failedCount;
+  const shouldApprove = failedCount === 0 && (mode === "approve-on-pass" || mode === "always");
+  const shouldRequestChanges = failedCount > 0 && (mode === "request-changes-on-fail" || mode === "always");
+  if (!shouldApprove && !shouldRequestChanges) return;
+
+  const reviewBody = shouldApprove
+    ? `tik-test approved — ${passed}/${totalEvents} checks green.`
+    : `tik-test flagged ${failedCount} regression${failedCount === 1 ? "" : "s"}. Passing ${passed}/${totalEvents} isn't enough — please review the failing checks before merging.`;
+  const reviewEvent = shouldApprove ? "APPROVE" : "REQUEST_CHANGES";
+  const { code } = await gh([
+    "pr", "review", String(ref.number),
+    "--repo", `${ref.owner}/${ref.repo}`,
+    shouldApprove ? "--approve" : "--request-changes",
+    "--body", reviewBody,
+  ]);
+  if (code === 0) console.log(chalk.green(`     ✓ review ${reviewEvent} posted`));
+  else console.log(chalk.yellow(`     ! couldn't post review (missing pull-requests:write perm?)`));
 }

@@ -51,6 +51,16 @@ inputs:
       matters more than fidelity. Default: false.
     required: false
     default: 'false'
+  no-video:
+    description: |
+      Skip video render + upload entirely. Same plan generation, same agent run,
+      same LLM-synthesised checklist — just no MP4. The PR comment posted in
+      this mode is text-only (checklist + summary, no `tik-test-video:v1`
+      marker, so the reviewer web app does not pick it up as a feed entry).
+      Cuts CI time roughly 5×; pairs well with `run-on-every-push: true` for
+      cheap per-commit feedback. Default: false.
+    required: false
+    default: 'false'
   run-on-every-push:
     description: |
       When false (default), tik-test only runs on the initial `opened` /
@@ -263,6 +273,7 @@ runs:
         REVIEW_MODE: ${{ inputs.review-mode }}
         REQUIRE_PASS: ${{ inputs.require-pass }}
         QUICK: ${{ inputs.quick }}
+        NO_VIDEO: ${{ inputs.no-video }}
         ASSET_REPO: ${{ github.repository }}
         ACTION_PATH: ${{ github.action_path }}
         WORKING_DIR: ${{ inputs.working-directory }}
@@ -290,6 +301,7 @@ runs:
         ARGS=( pr "$PR_NUMBER" --skip-clone --asset-repo "$ASSET_REPO" --review "$REVIEW_MODE" )
         [[ "$REQUIRE_PASS" == "true" ]] && ARGS+=( --require-pass )
         [[ "$QUICK" == "true" ]] && ARGS+=( --quick )
+        [[ "$NO_VIDEO" == "true" ]] && ARGS+=( --no-video )
         [[ -n "$PREVIEW_URL" ]] && ARGS+=( --url "$PREVIEW_URL" )
         if [[ -n "$WORKING_DIR" ]]; then cd "$WORKING_DIR"; fi
         node "$ACTION_PATH/dist/cli.js" "${ARGS[@]}"
