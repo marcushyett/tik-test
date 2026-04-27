@@ -1,9 +1,12 @@
 #
-# tik-test self-review workflow.
+# tik-test self-review — TASKPAD demo.
 #
-# On every PR to this repo, run tik-test against the bundled Taskpad demo
-# (examples/todo-app, served via the `start:` directive in claude.md) and
-# post a video review back to the PR.
+# Runs on PRs that touch the bundled Taskpad demo at examples/todo-app/.
+# Spins up the demo's local server (`node server.js` per its tiktest.md
+# `start:` directive) inside the runner, then drives it with the agent.
+#
+# Sister workflow: tik-test-webapp.yml runs on PRs that touch web/ and
+# tests the deployed Vercel reviewer app via the signed bypass URL.
 #
 # This file is also a working consumer-facing example — copy it into your
 # own repo, change `uses: ./` to `uses: marcushyett/tik-test@v1`, and you
@@ -12,10 +15,13 @@
 # The only secret you need is CLAUDE_CODE_OAUTH_TOKEN. Generate it locally
 # with `claude setup-token`, then add it under Settings → Secrets.
 #
-name: tik-test review
+name: tik-test review (taskpad)
 
 on:
   pull_request:
+    paths:
+      - examples/todo-app/**
+      - .github/workflows/tik-test-taskpad.yml
   workflow_dispatch:
     inputs:
       pr_number:
