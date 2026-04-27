@@ -1,33 +1,18 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { auth } from "@/auth";
 import { listPRsWithVideos } from "@/lib/github";
 import { VideoFeed } from "@/components/video-feed";
 
 interface Params { owner: string; repo: string }
 
-// Force per-request rendering. Without this, Next.js doesn't trace the
-// `cookies()` dependency through the `"use server"` boundary in
-// lib/github.ts, statically pre-renders the page at build time (when no
-// session exists, so listPRsWithVideos returns []), and serves that
-// empty render forever. The home page accidentally avoids this by calling
-// `auth()` inline, which Next.js DOES trace as dynamic.
+// Without this, Next.js can statically pre-render the page at build time
+// (when no session exists, so listPRsWithVideos returns []) and serve that
+// empty render forever. The home page is naturally dynamic because it
+// calls `auth()` inline.
 export const dynamic = "force-dynamic";
 
 export default async function RepoFeedPage({ params }: { params: Promise<Params> }) {
   const { owner, repo } = await params;
-
-  // TEMP DIAGNOSTIC — does auth() resolve the bypass session in THIS Server
-  // Component context? If yes but listPRsWithVideos still returns [], the
-  // bug is specific to crossing the "use server" boundary in lib/github.ts.
-  const sessionHere = await auth();
-  console.log(
-    `[tiktest-bypass] RepoFeedPage(${owner}/${repo}) auth() → ` +
-      `present=${!!sessionHere} bypass=${(sessionHere as { bypass?: boolean } | null)?.bypass} ` +
-      `login=${(sessionHere as { login?: string } | null)?.login} ` +
-      `tokenPresent=${!!(sessionHere as { accessToken?: string } | null)?.accessToken}`,
-  );
-
   const prs = await listPRsWithVideos(owner, repo);
 
   return (
