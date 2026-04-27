@@ -62,14 +62,22 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
   const goNext = useCallback(() => {
     pauseCurrent();
     setPosted(false);
-    setPlaying(true);
+    // No optimistic setPlaying(true) — the sync useEffect re-attaches to
+    // the newly-mounted <video> element after navigation and derives
+    // `playing` from v.paused via play/pause/playing/ended events. If
+    // autoplay succeeds on the new src the icon flips to Pause via the
+    // `play` event; if autoplay is blocked the icon stays on Play,
+    // matching the actual paused video. The previous optimistic update
+    // flashed Pause briefly while the new video was still mounting and
+    // could end up wrong when autoplay was blocked — the agent caught
+    // this on PR self-review ("PR 2 showed Pause; video paused, Play
+    // expected").
     setIdx((i) => Math.min(items.length, i + 1));
   }, [items.length, pauseCurrent]);
 
   const goPrev = useCallback(() => {
     pauseCurrent();
     setPosted(false);
-    setPlaying(true);
     setIdx((i) => Math.max(0, i - 1));
   }, [pauseCurrent]);
 
