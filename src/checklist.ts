@@ -33,11 +33,15 @@ OUTPUT FORMAT — STRICT JSON, no markdown, no prose:
 
 RULES:
 - {{MIN_ITEMS}} to {{MAX_ITEMS}} items. Aim for the middle of that range — enough to feel substantive, few enough to scan in 5 seconds AND fit on a vertical 9:16 frame without scrolling.
-- Each "label" is a specific CHECK that was performed: subject + verb form, ≤32 chars. Examples: "Today filter shows today task", "Overdue badge appears day 1", "Footer overdue count updates". NOT goal-level summaries.
-- Status comes from the agent's actions: if the agent SAW the expected outcome → success; if the agent emitted failure for a goal that included this check → failure; if the agent never reached this check → skipped.
-- "note": ONLY for failures (or skipped if the reason matters). 5-12 words explaining WHAT broke vs WHAT was expected. No prose, no apologies, no "the test". Good fail note: "filter empty despite TODAY badge". Good skip note: "blocked by earlier failure".
+- Each "label" is a specific CHECK that was performed: subject + verb form, ≤32 chars. Examples should be GENERIC subject+verb form ("Filter shows expected items", "Badge appears on first match", "Counter updates on action"). NOT goal-level summaries.
+- Status comes from the agent's actions:
+  • "success" — the agent took a browser_take_screenshot AND its OUTCOME note describes what was visible in pixels (e.g. "screenshot shows X at top of page"). For non-visual checks (e.g. "POST request fired"), browser_network_requests evidence is fine.
+  • "failure" — the agent emitted OUTCOME: failure for a goal containing this check, OR the screenshot it took did not show what the success criterion required.
+  • "skipped" — the agent never reached this check (e.g. blocked by earlier failure, precondition not met, or the only "evidence" was DOM observation that doesn't visually verify — see next rule).
+- DOM observation is NOT visual evidence. If a check needs visual verification ("X is visible", "Y appears", "spinner shows", "skeleton renders") and the agent's evidence is browser_evaluate output (querySelector results, MutationObserver logs written to window.* vars, getComputedStyle values, fetched SSR HTML grepped for marker strings) — without a corresponding browser_take_screenshot capturing the rendered moment — mark the check "skipped" with a note like "DOM observed, not visually confirmed" or "SSR markup found, render unverified". DO NOT mark it "success" just because the agent reported the DOM contained the element.
+- "note": for failures or skipped items where the reason matters. 5-12 words explaining WHAT broke vs WHAT was expected, or WHY skipped. No prose, no apologies, no "the test". Good fail note: "filter empty despite TODAY badge". Good skip note: "DOM observed, not visually confirmed".
 - Order: failures first (so truncation never hides them), then successes, then skipped.
-- Don't invent checks the agent didn't actually do. Read the action log carefully — every label must map to specific clicks/types/snapshots.
+- Don't invent checks the agent didn't actually do. Read the action log carefully — every label must map to specific clicks/types/snapshots/screenshots.
 - Don't repeat the same check phrased differently. Merge near-duplicates.
 - Don't include trivia (login succeeded, page loaded). Focus on what the PR actually tests.
 
