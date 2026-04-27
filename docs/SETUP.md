@@ -108,6 +108,9 @@ jobs:
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          # Optional: set `no-video: true` for a ~5x faster checks-only run
+          # (text-only PR comment, no MP4). Pairs well with run-on-every-push.
+          # no-video: true
 ```
 
 Add a `tiktest.md` (or `claude.md`) at your repo root with at least:
