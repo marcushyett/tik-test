@@ -51,6 +51,15 @@ inputs:
       matters more than fidelity. Default: false.
     required: false
     default: 'false'
+  run-on-every-push:
+    description: |
+      When false (default), tik-test only runs on the initial `opened` /
+      `reopened` PR event and on `workflow_dispatch`. When true, it ALSO
+      runs on every commit pushed to the PR branch (the `synchronize`
+      event). Each re-run uses Claude credits, so leave off unless you
+      want to re-review on every push.
+    required: false
+    default: 'false'
   github-token:
     description: 'GITHUB_TOKEN with `pull-requests: write` permission. Defaults to the workflow token.'
     required: false
@@ -122,12 +131,32 @@ inputs:
 runs:
   using: composite
   steps:
+    # Cheap gate so we don't burn 2-3 minutes of Node + ffmpeg + Playwright
+    # install only to skip at the end. Sets `skip=true` for PR `synchronize`
+    # events when run-on-every-push is off; every subsequent step gates on it.
+    - name: Skip gate (run-on-every-push)
+      id: gate
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        EVENT_ACTION: ${{ github.event.action }}
+        RUN_ON_PUSH: ${{ inputs.run-on-every-push }}
+      run: |
+        if [[ "$EVENT_NAME" == "pull_request" && "$EVENT_ACTION" == "synchronize" && "$RUN_ON_PUSH" != "true" ]]; then
+          echo "::notice::Skipping tik-test — pull_request synchronize event with run-on-every-push=false. Set run-on-every-push: true to re-review every commit."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Setup Node 22
+      if: steps.gate.outputs.skip != 'true'
       uses: actions/setup-node@v4
       with:
         node-version: '22'
 
     - name: Install ffmpeg and Playwright Chromium
+      if: steps.gate.outputs.skip != 'true'
       shell: bash
       run: |
         if [[ "$RUNNER_OS" == "Linux" ]]; then
@@ -142,6 +171,7 @@ runs:
         npx --yes playwright@1 install chromium --with-deps
 
     - name: Validate auth inputs
+      if: steps.gate.outputs.skip != 'true'
       shell: bash
       env:
         CLAUDE_TOKEN: ${{ inputs.claude-code-oauth-token }}
@@ -153,13 +183,13 @@ runs:
         fi
 
     - name: Authenticate Claude Code (Max OAuth)
-      if: ${{ inputs.claude-code-oauth-token != '' }}
+      if: ${{ steps.gate.outputs.skip != 'true' && inputs.claude-code-oauth-token != '' }}
       uses: anthropics/claude-code-action@v1
       with:
         claude_code_oauth_token: ${{ inputs.claude-code-oauth-token }}
 
     - name: Authenticate Claude Code (API key)
-      if: ${{ inputs.claude-code-oauth-token == '' && inputs.anthropic-api-key != '' }}
+      if: ${{ steps.gate.outputs.skip != 'true' && inputs.claude-code-oauth-token == '' && inputs.anthropic-api-key != '' }}
       uses: anthropics/claude-code-action@v1
       with:
         anthropic_api_key: ${{ inputs.anthropic-api-key }}
@@ -168,10 +198,12 @@ runs:
     # is not on PATH for subsequent steps. tik-test's narrator spawns `claude`
     # directly, so we install it globally so it's visible to subprocesses.
     - name: Install Claude Code CLI for narrator subprocess
+      if: steps.gate.outputs.skip != 'true'
       shell: bash
       run: npm install -g @anthropic-ai/claude-code
 
     - name: Build tik-test
+      if: steps.gate.outputs.skip != 'true'
       shell: bash
       working-directory: ${{ github.action_path }}
       run: |
@@ -181,6 +213,7 @@ runs:
         fi
 
     - name: Resolve PR number
+      if: steps.gate.outputs.skip != 'true'
       id: resolve-pr
       shell: bash
       env:
@@ -202,6 +235,7 @@ runs:
         echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
     - name: Resolve preview URL
+      if: steps.gate.outputs.skip != 'true'
       id: resolve-url
       shell: bash
       env:
@@ -214,6 +248,7 @@ runs:
         echo "url=$URL" >> "$GITHUB_OUTPUT"
 
     - name: Run tik-test
+      if: steps.gate.outputs.skip != 'true'
       shell: bash
       env:
         OPENAI_API_KEY: ${{ inputs.openai-api-key }}
