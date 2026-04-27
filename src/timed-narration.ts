@@ -88,10 +88,14 @@ The video has a fixed timeline. Every scene below has a TARGET DURATION and a TA
 - The intro names WHY this feature exists and what PROBLEM it solves (use the PR body / focus).
 - Each line connects to the previous — refer back, set up what's next. ONE CONTINUOUS STORY across scenes.
 - Per-tool BADGES already say WHAT the agent is doing on silent moments. So narrate the WHY/INTENT, not the action ("once we save this, we should see it under Today…"), not ("now we click X").
-- BANNED PHRASES — never use any of these or close paraphrases:
+- BANNED PHRASES, never use any of these or close paraphrases:
   "moment of truth", "here we go", "let's see", "watch this", "drum roll",
-  "the big reveal", "here's the moment", "and… there it is", "ready for prod",
+  "the big reveal", "here's the moment", "and... there it is", "ready for prod",
   "ship it", "good to go", "looks clean", "we're golden", "magic happens".
+- PUNCTUATION: do NOT use em-dashes (—) anywhere in text or captionText.
+  Use a comma, colon, or period instead. Em-dashes read as a hard pause in
+  TTS and double as caption page breaks, so they fragment the on-screen
+  subtitles. Plain hyphens inside identifiers are fine.
 - When something breaks or looks wrong, just say it plainly: "that's not right, the Today filter is empty even though we just added one" or "hmm, the count didn't update". State expected vs actual. No drama.
 - The outro is one sentence asking for input or naming an open question.
 

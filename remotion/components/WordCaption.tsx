@@ -173,16 +173,22 @@ function paginate(words: string[], cap: number): string[][] {
 }
 
 /**
- * A token "looks technical" when it carries syntax characters that prose
- * never contains: brackets, equals, slashes, hash, parens, or it's
- * all-caps snake / kebab-3+. We strip surrounding punctuation so detection
- * still fires when a sentence ends with the technical token.
+ * A token "looks technical" when it carries structural markers that prose
+ * effectively never contains: brackets, equals, slashes, hash, parens,
+ * underscores, dotted identifier paths, camelCase, or kebab-3+. Surrounding
+ * punctuation is stripped first so a sentence-final selector still matches.
+ *
+ * Bare ALL-CAPS words ("DONE", "MUST", "WHEN") are NOT technical — that
+ * pattern fires far too often on prose emphasis. Real constants almost
+ * always have an underscore or digit (`API_KEY`, `HTTP2`) which the
+ * syntax-char rule catches via the underscore.
  */
 function looksTechnical(token: string): boolean {
   const t = token.replace(/^[\s"'`(]+|[\s"'`),.;:!?]+$/g, "");
-  if (t.length < 2) return false;
-  if (/[\[\]=()/#]/.test(t)) return true;
-  if (/^[A-Z][A-Z0-9_]+$/.test(t) && t.length >= 4) return true;
+  if (t.length < 3) return false;
+  if (/[\[\]=()/#_]/.test(t)) return true;
+  if (/^\w+\.\w+(\.\w+)*$/.test(t)) return true;
+  if (/^[a-z][a-z0-9]*[A-Z][A-Za-z0-9]*$/.test(t)) return true;
   if (/^[a-z]+(-[a-z]+){2,}$/.test(t)) return true;
   return false;
 }

@@ -162,7 +162,16 @@ async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item
 }
 
 function sanitiseForSpeech(s: string): string {
-  return s.replace(/[✓✗⚠✨📸🎬]/g, "").replace(/—/g, "—").replace(/·/g, " ").replace(/\s+/g, " ").trim();
+  // Em-dashes read awkwardly in TTS and double as caption page breaks in
+  // WordCaption.paginate, so strip them here as a belt-and-braces rule
+  // (the narrator prompt also forbids them). Replace with comma-space so
+  // the cadence stays close to what the narrator wrote.
+  return s
+    .replace(/[✓✗⚠✨📸🎬]/g, "")
+    .replace(/\s*—\s*/g, ", ")
+    .replace(/·/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export interface SingleVideoEditOptions {
@@ -626,11 +635,29 @@ export async function editSingleVideo({
     Number(process.env.TIK_RENDER_CONCURRENCY) || 8,
     Math.floor(os.cpus().length / Math.max(1, segments)),
   ));
-  const effectiveWidth = quick ? 540 : composition.width;
-  const effectiveHeight = quick ? 960 : composition.height;
+  // Quick mode resolution is the dominant lever on render time — it scales
+  // roughly linearly with pixel count. History:
+  //   • 540×960 / 1200k / jpeg 70 — fastest, but app text was unreadable
+  //     on crowded layouts (date inputs, dropdowns, badge text).
+  //   • 720×1280 / 2500k / jpeg 80 — legible but ~78% more pixels than the
+  //     original, and renders felt sluggish on the self-test workflow.
+  //   • 648×1152 / 2000k / jpeg 80 — current. Exactly 0.6× of native
+  //     1080×1920, ~44% more pixels than the 540×960 baseline (small enough
+  //     to keep render time tolerable) but still 50% sharper, which is
+  //     where in-app text legibility comes from.
+  // Both dimensions stay /8-aligned so x264/h264 chroma subsampling stays
+  // happy. Override at build time with TIK_RENDER_SCALE (a fraction of
+  // native, e.g. 0.5 for the old quick mode, 0.667 for the previous bump).
+  const scaleEnv = Number(process.env.TIK_RENDER_SCALE);
+  const scale = quick
+    ? (Number.isFinite(scaleEnv) && scaleEnv > 0 && scaleEnv <= 1 ? scaleEnv : 0.6)
+    : 1;
+  const align8 = (n: number) => Math.max(8, Math.round(n / 8) * 8);
+  const effectiveWidth = align8(composition.width * scale);
+  const effectiveHeight = align8(composition.height * scale);
   console.log(chalk.dim(`  rendering ${totalFrames} frames (${(totalFrames / FPS).toFixed(1)}s) at ${effectiveWidth}×${effectiveHeight} — ${segments}× parallel segment${segments === 1 ? "" : "s"} · concurrency ${perSegConcurrency}…`));
 
-  const videoBitrate = (quick ? "1200k" : "6000k") as `${number}k`;
+  const videoBitrate = (quick ? "2000k" : "6000k") as `${number}k`;
   const audioBitrate: `${number}k` = "160k";
   const glBackend = (process.env.TIK_REMOTION_GL as any)
     ?? (process.platform === "darwin" ? "angle" : "angle-egl");
@@ -641,7 +668,7 @@ export async function editSingleVideo({
     audioCodec: "aac" as const,
     enforceAudioTrack: true,
     concurrency: perSegConcurrency,
-    jpegQuality: quick ? 70 : 88,
+    jpegQuality: quick ? 80 : 88,
     chromiumOptions: { gl: glBackend },
     offthreadVideoCacheSizeInBytes: 512 * 1024 * 1024,
     videoBitrate,
