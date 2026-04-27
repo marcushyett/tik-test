@@ -1,0 +1,83 @@
+#
+# tik-test self-review — REVIEWER WEB APP (web/).
+#
+# Runs on PRs that touch web/. Tests the DEPLOYED Vercel reviewer app
+# via the signed bypass URL minted by web/scripts/sign-bypass-url.mjs
+# (see web/src/lib/bypass.ts for the threat model).
+#
+# Sister workflow: tik-test-taskpad.yml runs on PRs that touch the
+# bundled Taskpad demo and spins up the demo locally inside the runner.
+#
+# Required GitHub Actions secrets:
+#   - CLAUDE_CODE_OAUTH_TOKEN — same as the taskpad workflow
+#   - OPENAI_API_KEY          — optional, enables TTS narration
+#   - TIKTEST_BYPASS_SECRET   — same value set as TIKTEST_BYPASS_SECRET on
+#                                the Vercel project's env. Used here to
+#                                sign the bypass URL passed as preview-url.
+#
+# The bypass URL is signed RIGHT BEFORE the action runs so the ±60s skew
+# window has the full plan-gen + agent-launch budget. If runs hit the
+# skew limit, bump TIKTEST_BYPASS_MAX_SKEW_S on the Vercel side rather
+# than racing here.
+#
+name: tik-test review (webapp)
+
+on:
+  pull_request:
+    paths:
+      - web/**
+      - .github/workflows/tik-test-webapp.yml
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    # Same maintainer gate as the taskpad workflow — keeps fork PRs and
+    # random contributors from burning the Claude subscription budget.
+    if: |
+      contains(fromJSON(vars.TIKTEST_OWNERS || '["marcushyett"]'), github.actor) &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sign test-bypass URL
+        id: sign
+        shell: bash
+        env:
+          TIKTEST_BYPASS_SECRET: ${{ secrets.TIKTEST_BYPASS_SECRET }}
+        run: |
+          if [[ -z "$TIKTEST_BYPASS_SECRET" ]]; then
+            echo "::error::TIKTEST_BYPASS_SECRET is not set. Add it under Settings → Secrets and Variables → Actions."
+            exit 1
+          fi
+          # Production reviewer app. Preview-vs-production handling can come
+          # later; for now we self-review against prod (which is fine because
+          # the agent navigates the public landing → repo feed flow, not any
+          # deployment-pinned UI).
+          BASE="https://tik-test-review.vercel.app"
+          REDIRECT="/r/${{ github.repository }}"
+          URL=$(node web/scripts/sign-bypass-url.mjs --base "$BASE" --redirect "$REDIRECT")
+          # Mask in logs even though logs are private — defence in depth.
+          echo "::add-mask::$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - uses: ./
+        with:
+          claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          pr-number: ${{ github.event.inputs.pr_number }}
+          working-directory: web
+          preview-url: ${{ steps.sign.outputs.url }}
