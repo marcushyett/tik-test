@@ -5,6 +5,14 @@ import { VideoFeed } from "@/components/video-feed";
 
 interface Params { owner: string; repo: string }
 
+// Force per-request rendering. Without this, Next.js doesn't trace the
+// `cookies()` dependency through the `"use server"` boundary in
+// lib/github.ts, statically pre-renders the page at build time (when no
+// session exists, so listPRsWithVideos returns []), and serves that
+// empty render forever. The home page accidentally avoids this by calling
+// `auth()` inline, which Next.js DOES trace as dynamic.
+export const dynamic = "force-dynamic";
+
 export default async function RepoFeedPage({ params }: { params: Promise<Params> }) {
   const { owner, repo } = await params;
   const prs = await listPRsWithVideos(owner, repo);
