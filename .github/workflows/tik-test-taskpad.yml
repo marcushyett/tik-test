@@ -66,3 +66,7 @@ jobs:
           # Taskpad demo PRs are noisy; we just want the agent to confirm the
           # demo still works, fast. Sister webapp workflow keeps full quality.
           quick-and-dirty: true
+          # checks-only mode: ~5x faster, posts a text-only comment without
+          # the tik-test-video marker (so the reviewer feed stays clean).
+          # Same plan + agent + checklist — just no MP4 to render and host.
+          no-video: true
