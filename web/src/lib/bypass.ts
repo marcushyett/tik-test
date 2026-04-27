@@ -31,7 +31,20 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 export const BYPASS_SESSION_MAX_AGE_S = 30 * 60;   // 30 min — total session lifetime
-export const BYPASS_URL_MAX_SKEW_S    = 60;        // ±60s — how stale a signed URL may be
+
+/**
+ * ±N seconds — how stale a signed URL may be. Default 60s. Operators can
+ * widen to absorb plan-gen + agent-launch slack via TIKTEST_BYPASS_MAX_SKEW_S,
+ * clamped to [5, 300] so a misconfiguration can't blow the replay window
+ * open to hours. Wider = larger window for a captured URL to be replayed.
+ */
+export const BYPASS_URL_MAX_SKEW_S = (() => {
+  const raw = process.env.TIKTEST_BYPASS_MAX_SKEW_S;
+  if (!raw) return 60;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 60;
+  return Math.min(300, Math.max(5, Math.floor(n)));
+})();
 
 /** True when ALL required env vars are populated AND the kill switch is off. */
 export function isBypassEnabled(): boolean {

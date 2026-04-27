@@ -8,7 +8,7 @@ the action's source code, not a target app.
 
 If you (Claude) are running `tik-test pr` against THIS repo as a self-test,
 the workflow points at the bundled demo in `examples/todo-app/`, which has
-its own `claude.md`. That's where target-app-specific config lives. This
+its own `tiktest.md`. That's where target-app-specific config lives. This
 file is for working ON tik-test itself.
 
 ## Hard rules for the goal-agent (non-negotiable)
@@ -23,7 +23,7 @@ file is for working ON tik-test itself.
 ## Hard rules for tik-test prompts (non-negotiable)
 
 Every prompt the CLI sends to Claude — plan generation (`src/plan.ts`),
-narrator (`src/story.ts`), tool-caption translator
+narrator (`src/timed-narration.ts`), tool-caption translator
 (`src/single-video-editor.ts: translateToolCaptions`), goal-agent system
 prompt (`src/goal-agent.ts`) — must be **completely domain-agnostic**.
 
@@ -51,7 +51,9 @@ language baked in and needs cleaning.
 ## Self-test target
 
 The bundled demo for self-testing is `examples/todo-app/`. The workflow at
-`.github/workflows/tik-test.yml` uses `working-directory: examples/todo-app`
-so the CLI reads that folder's `claude.md` (which IS allowed to be
-domain-specific — it's the example consumer config). For everything in the
-tik-test source tree itself, see the rules above.
+`.github/workflows/tik-test-taskpad.yml` uses `working-directory: examples/todo-app`
+so the CLI reads that folder's `tiktest.md` (which IS allowed to be
+domain-specific — it's the example consumer config). The sister workflow
+`.github/workflows/tik-test-webapp.yml` covers the deployed `web/` reviewer
+app via a signed bypass URL. For everything in the tik-test source tree
+itself, see the rules above.

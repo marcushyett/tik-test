@@ -108,7 +108,7 @@ Defaults reflect how I review PRs: small slices, fast feedback, video-first. Run
 
 The demo above is the bundled Taskpad app. Agent caught two planted bugs (case-sensitive search, priority-sort reversed) and posted a request-changes review.
 
-Real-world: [yolodex-ai/personadex#282](https://github.com/yolodex-ai/personadex/pull/282#issuecomment-4301341770), 19/19 green through a Theater-mode flow.
+Self-test: every PR to this repo gets reviewed by tik-test against the bundled [Taskpad demo](examples/todo-app/) — see the most recent PR for an example video.
 
 ## Watch in a feed
 
@@ -120,7 +120,7 @@ Real-world: [yolodex-ai/personadex#282](https://github.com/yolodex-ai/personadex
 
 ```
                     ┌──────────────┐
-                    │  claude.md   │◄── PR body, config, optional inline goal list
+                    │  tiktest.md  │◄── PR body, config, optional inline goal list
                     └──────┬───────┘
                            ▼
      ┌─────────────────────────────────────────────┐
@@ -175,7 +175,7 @@ npm run build
 
 ```sh
 python3 -m http.server 4173 --directory examples/todo-app &
-node dist/cli.js run --config examples/todo-app/claude.md --quick
+node dist/cli.js run --config examples/todo-app/tiktest.md --quick
 ```
 
 ### 2. GitHub PR
@@ -219,14 +219,15 @@ By default the agent generates a plan from the PR diff plus your `## TikTest` se
 
 **Goal fields:** `intent` (required) · `shortLabel` (3-5 word checklist headline) · `success` (observable success condition) · `importance` (`low` · `normal` · `high` · `critical`).
 
-**Discovery order** when running `tik-test pr`: `README.md` (with `## TikTest`) preferred; falls back to `claude.md` → `CLAUDE.md` → `.claude/claude.md` → `tik-test.md` → bare `README.md`.
+**Discovery order** when running `tik-test pr`: `tiktest.md` (preferred), then `README.md` with a `## TikTest` heading, then legacy fallbacks (`claude.md` → `CLAUDE.md` → `.claude/claude.md` → bare `README.md`).
 
 ---
 
 ## GitHub Action
 
 ```yaml
-# .github/workflows/tik-test.yml
+# .github/workflows/tik-test.yml (rename to whatever you want — pick a path
+# that matches your repo layout)
 name: tik-test review
 on:
   deployment_status:                    # after Vercel/Netlify preview is Ready
@@ -271,18 +272,18 @@ The action installs Node + ffmpeg + Playwright, builds tik-test, auto-detects th
 | `openai-api-key` | No | n/a | Enables OpenAI TTS. Silent on Linux without it. |
 | `vercel-bypass-secret` | No | n/a | Vercel automation bypass. |
 | `pr-number` | No | auto | From `pull_request` / `deployment_status` / `workflow_dispatch`. |
-| `preview-url` | No | auto | From `deployment_status.target_url` or `claude.md`. |
+| `preview-url` | No | auto | From `deployment_status.target_url` or `tiktest.md`. |
 | `review-mode` | No | `request-changes-on-fail` | `none` · `approve-on-pass` · `request-changes-on-fail` · `always` |
 | `require-pass` | No | `true` | Non-zero exit on any failed goal. |
 | `quick` | No | `true` | Draft 540×960 render. |
 | `quick-and-dirty` | No | `false` | Drops to 0.5× render (540×960) **and** caps body scenes at 6. Faster, lower-quality output — use when speed beats fidelity. |
 | `run-on-every-push` | No | `false` | Re-review on every commit pushed to a PR (the `synchronize` event). Off by default to keep Claude usage under control. |
-| `working-directory` | No | repo root | Subdirectory containing `claude.md`. Useful for monorepos. |
+| `working-directory` | No | repo root | Subdirectory containing `tiktest.md`. Useful for monorepos. |
 | `plan-timeout` | No | `240` (s) | Plan-generation Claude call. Bump for huge diffs. |
 | `agent-timeout` | No | `600` (s) | Per-goal agent. Bump for slow page loads. |
 | `narration-timeout` | No | `540` (s) | Narration Claude call. Bump for 12+ tool moments. |
 
-> Plus 9 more typed inputs for fine-tuning (`setup-timeout`, `feature-finder-timeout`, `min-chunk-seconds`, `max-body-scenes`, `checklist-min-items`, `checklist-max-items`, `intro-seconds`, `outro-seconds`, `outro-hold-seconds`). See [Advanced](#advanced) or `node dist/cli.js config`.
+> Plus more typed inputs for fine-tuning (`feature-finder-timeout`, `max-goals`, `min-chunk-seconds`, `max-body-scenes`, `checklist-min-items`, `checklist-max-items`, `intro-seconds`, `outro-seconds`, `outro-hold-seconds`). See [Advanced](#advanced) or `node dist/cli.js config`.
 
 ¹ One of the two. OAuth recommended.
 
@@ -303,14 +304,14 @@ The action installs Node + ffmpeg + Playwright, builds tik-test, auto-detects th
 
 ### Self-hosted reference
 
-This repo dogfoods the action: [`.github/workflows/tik-test.yml`](.github/workflows/tik-test.yml). Same workflow as above with `uses: ./` instead of `marcushyett/tik-test@v1`.
+This repo dogfoods the action with two path-scoped workflows: [`tik-test-taskpad.yml`](.github/workflows/tik-test-taskpad.yml) (runs on PRs touching `examples/todo-app/**`) and [`tik-test-webapp.yml`](.github/workflows/tik-test-webapp.yml) (runs on PRs touching `web/**`). Both use `uses: ./` instead of `marcushyett/tik-test@v1`.
 
 ---
 
 ## Troubleshooting
 
 **"Plan generation timed out after 240000ms"**
-PR diff is huge or `claude.md` is missing. Bump `plan-timeout: 480` or trim the diff.
+PR diff is huge or `tiktest.md` is missing. Bump `plan-timeout: 480` or trim the diff.
 
 **"Per-goal agent timed out after 600000ms"**
 Agent stuck. Page didn't load, login is broken, or the goal is too vague. Check the last `mcp__playwright_*` tool call. If your app is just slow, bump `agent-timeout: 1200`.
@@ -369,15 +370,14 @@ Every knob has a matching typed input on the GitHub Action (kebab-case version o
 
 ### Claude CLI timeouts (millisecond)
 
-The Action exposes all five as typed seconds inputs (`plan-timeout`, `agent-timeout`, `narration-timeout`, `setup-timeout`, `feature-finder-timeout`). Prefer those in YAML.
+The Action exposes all four as typed seconds inputs (`plan-timeout`, `agent-timeout`, `narration-timeout`, `feature-finder-timeout`). Prefer those in YAML.
 
 | Var | Default | Rationale | Risk: lower | Risk: higher |
 |---|---|---|---|---|
-| `TIK_PLAN_TIMEOUT_MS` | `240000` (4 min) | Plan call digesting PR diff + `claude.md`. 4 min handles a 500-line diff. | Small diffs may still take 60s+. Too low and you time out before the plan is drafted. | Wastes CI budget on hung Claude processes. |
+| `TIK_PLAN_TIMEOUT_MS` | `240000` (4 min) | Plan call digesting PR diff + `tiktest.md`. 4 min handles a 500-line diff. | Small diffs may still take 60s+. Too low and you time out before the plan is drafted. | Wastes CI budget on hung Claude processes. |
 | `TIK_AGENT_TIMEOUT_MS` | `600000` (10 min) | EACH per-goal browser-driving call. 10 min covers 12-tool-call goals with slow login. | A real cold start (Vercel preview waking up) can eat 90s alone. | Hung agents drain the 25-min job budget. |
 | `TIK_NARRATION_TIMEOUT_MS` | `540000` (9 min) | One narration call covering intro + outro + every scene line. Sonnet handles ~12 scenes in 5-8 min. | Long runs (15+ scenes) regularly hit 6+ min. Too low forces silent fallback. | Trim scenes via `TIK_MAX_BODY_SCENES` instead; raising this doesn't unstick a wedged Claude. |
-| `TIK_SETUP_TIMEOUT_MS` | `60000` (1 min) | Setup-step suggester. Should always finish in <30s. | Setup may misfire on slow networks. | Almost never doing useful work past 60s. |
-| `TIK_FEATURE_FINDER_TIMEOUT_MS` | `60000` (1 min) | Fallback when `startUrl` lands on a 404; Claude tries to find a working URL. | Same. | Same. |
+| `TIK_FEATURE_FINDER_TIMEOUT_MS` | `60000` (1 min) | Fallback when `startUrl` lands on a 404; Claude tries to find a working URL. | Fallback may give up on apps with slow routing. | Almost never doing useful work past 60s. |
 
 ### Body-narration density
 
@@ -412,7 +412,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ```sh
 # 1. Change code, 2. rebuild, 3. dogfood:
 npm run build
-OPENAI_API_KEY=... node dist/cli.js run --config examples/todo-app/claude.md --quick
+OPENAI_API_KEY=... node dist/cli.js run --config examples/todo-app/tiktest.md --quick
 ```
 
 ## License

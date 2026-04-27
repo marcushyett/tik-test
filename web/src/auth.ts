@@ -31,17 +31,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return token;
     },
     async session({ session, token }) {
-      const tok = token as { accessToken?: string; login?: string; bypass?: boolean; bypass_iat?: number };
       // Bypass-minted sessions are capped at BYPASS_SESSION_MAX_AGE_S
       // (30 min) regardless of what the cookie itself says. Past the
       // window, we drop the access token from the resolved session so
       // every server action sees "not signed in".
-      if (tok.bypass && isBypassSessionExpired(tok.bypass_iat)) {
+      if (token.bypass && isBypassSessionExpired(token.bypass_iat)) {
         return session;
       }
-      (session as any).accessToken = tok.accessToken;
-      (session as any).login = tok.login;
-      (session as any).bypass = tok.bypass === true;
+      session.accessToken = token.accessToken;
+      session.login = token.login;
+      session.bypass = token.bypass === true;
       return session;
     },
   },

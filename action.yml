@@ -1,6 +1,6 @@
 name: tik-test
 description: Automated TikTok-style video reviews for your pull requests — Claude plans, Playwright runs, FFmpeg + Remotion compose, posted as a PR comment with optional formal review.
-author: tik-test
+author: Marcus Hyett
 branding:
   icon: play-circle
   color: purple

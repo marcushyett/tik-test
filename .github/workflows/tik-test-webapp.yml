@@ -9,11 +9,21 @@
 # bundled Taskpad demo and spins up the demo locally inside the runner.
 #
 # Required GitHub Actions secrets:
-#   - CLAUDE_CODE_OAUTH_TOKEN — same as the taskpad workflow
-#   - OPENAI_API_KEY          — optional, enables TTS narration
-#   - TIKTEST_BYPASS_SECRET   — same value set as TIKTEST_BYPASS_SECRET on
-#                                the Vercel project's env. Used here to
-#                                sign the bypass URL passed as preview-url.
+#   - CLAUDE_CODE_OAUTH_TOKEN          — same as the taskpad workflow
+#   - OPENAI_API_KEY                   — optional, enables TTS narration
+#   - TIKTEST_BYPASS_SECRET            — same value set as TIKTEST_BYPASS_SECRET on
+#                                         the Vercel project's env. Used here to
+#                                         sign the bypass URL passed as preview-url.
+#   - VERCEL_AUTOMATION_BYPASS_SECRET  — required if the deployment has Vercel
+#                                         Deployment Protection enabled (default
+#                                         on previews for Pro/Team plans). Get it
+#                                         from Vercel project Settings →
+#                                         Deployment Protection → Protection
+#                                         Bypass for Automation. Without it the
+#                                         agent's browser will hit the Vercel
+#                                         auth wall before reaching the bypass
+#                                         route. Leave unset only if production
+#                                         is public.
 #
 # The bypass URL is signed RIGHT BEFORE the action runs so the ±60s skew
 # window has the full plan-gen + agent-launch budget. If runs hit the
@@ -81,3 +91,4 @@ jobs:
           pr-number: ${{ github.event.inputs.pr_number }}
           working-directory: web
           preview-url: ${{ steps.sign.outputs.url }}
+          vercel-bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}

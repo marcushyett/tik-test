@@ -2,6 +2,17 @@
   "name": "tik-test-review",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "author": "Marcus Hyett <marc.hyett@gmail.com>",
+  "homepage": "https://github.com/marcushyett/tik-test/tree/main/web#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marcushyett/tik-test.git",
+    "directory": "web"
+  },
+  "bugs": {
+    "url": "https://github.com/marcushyett/tik-test/issues"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",

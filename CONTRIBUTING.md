@@ -25,8 +25,8 @@ A macOS host is the smoothest path: we use the system `say` voice as a fallback,
 
 ```sh
 # start the demo app + run a pass against it
-python3 -m http.server 4173 --directory examples/todo-app &
-node dist/cli.js run --config examples/todo-app/claude.md --quick
+node examples/todo-app/server.js &
+node dist/cli.js run --config examples/todo-app/tiktest.md --quick
 
 # view the produced video
 open ~/Desktop/tik-test-*.mp4
@@ -42,10 +42,10 @@ open ~/Desktop/tik-test-*.mp4
 ## Open-source-readiness checklist
 
 - [x] MIT licensed.
-- [x] Runs on any arbitrary repo that has a `claude.md` (or `CLAUDE.md` / `README.md`) with a `## URL`.
+- [x] Runs on any arbitrary repo that has a `tiktest.md` (or `claude.md` / `CLAUDE.md` / `README.md`) with a `## URL`.
 - [x] Works behind Vercel Protection via `--vercel-bypass <secret>` or `VERCEL_AUTOMATION_BYPASS_SECRET` env.
 - [x] Single-video pipeline — no per-step clip slicing, so narration can't desync from the footage.
-- [x] GitHub Action wrapper in `.github/workflows/tik-test.yml`.
+- [x] GitHub Action wrappers under `.github/workflows/` (`tik-test-taskpad.yml`, `tik-test-webapp.yml`).
 - [ ] Pluggable TTS providers (Eleven Labs, Azure, local Piper).
 - [ ] Pluggable story generator (any LLM, not just `claude -p`).
 - [ ] A proper matrix of fixtures so iterative rendering is reproducible across hosts.

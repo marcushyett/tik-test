@@ -6,8 +6,8 @@
  * Usage:
  *   TIKTEST_BYPASS_SECRET=... \
  *     node web/scripts/sign-bypass-url.mjs \
- *       --base https://tik-test-review.vercel.app \
- *       --redirect /r/marcushyett/tik-test
+ *       --base https://<your-deployment>.example.com \
+ *       --redirect /r/<owner>/<repo>
  *
  * Or piecewise:
  *   ts=$(date +%s)

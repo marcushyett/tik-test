@@ -5,8 +5,8 @@ import { auth } from "@/auth";
 import { parseMarker, type TikTestVideo } from "./marker";
 
 async function getOctokit(): Promise<Octokit | null> {
-  const session = (await auth()) as any;
-  const token = session?.accessToken as string | undefined;
+  const session = await auth();
+  const token = session?.accessToken;
   if (!token) return null;
   return new Octokit({ auth: token });
 }
@@ -124,7 +124,7 @@ export async function submitReview(input: {
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
   body: string;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
-  const session = (await auth()) as { accessToken?: string; bypass?: boolean } | null;
+  const session = await auth();
   if (session?.bypass === true) {
     return { ok: false, error: "Reviews can't be posted from a test-bypass session." };
   }

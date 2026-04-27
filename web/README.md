@@ -47,24 +47,64 @@ All UI components are small (<100 LOC), single-purpose, and composed together in
 
 ```sh
 cd web
-cp .env.example .env.local     # fill in the three values below
+cp .env.example .env.local     # fill in the values below
 npm install
 npm run dev
 ```
 
-**You need a GitHub OAuth app.** Register at <https://github.com/settings/applications/new>:
+There are two auth flows. **#1 is required** for any deployment; **#2 is optional** and only needed if you want the `tik-test-webapp.yml` self-review workflow to be able to log in to the deployed app.
 
-- **Homepage URL** — your deployment URL (e.g. `https://tik-test-review.vercel.app`).
-- **Authorization callback URL** — `https://tik-test-review.vercel.app/api/auth/callback/github`.
-- Copy the Client ID + Client Secret into `.env.local` (or Vercel env vars).
+### 1. Normal GitHub login — REQUIRED
 
-**Auth secret:** `openssl rand -base64 32` → `AUTH_SECRET` env var.
+You need a **GitHub OAuth App** (not a personal access token, not a GitHub App).
+
+1. Register at <https://github.com/settings/applications/new>:
+   - **Homepage URL**: `https://<your-deployment>.example.com` (your actual prod URL)
+   - **Authorization callback URL**: `https://<your-deployment>.example.com/api/auth/callback/github` (this exact path)
+2. **Generate a new client secret** on the next page — copy it immediately (only shown once).
+3. Generate `AUTH_SECRET`: `openssl rand -base64 32`.
+4. Set in Vercel **Project Settings → Environment Variables → Production** (and Preview if needed):
+   - `GITHUB_CLIENT_ID`
+   - `GITHUB_CLIENT_SECRET` (mark Sensitive)
+   - `AUTH_SECRET` (mark Sensitive)
+5. `NEXTAUTH_URL` is optional — only set it for custom domains; Vercel auto-detects otherwise.
+
+### 2. Test-mode bypass — OPTIONAL
+
+Lets the `tik-test-webapp.yml` workflow log in via a signed, time-bound URL. See `web/src/lib/bypass.ts` for the full threat model.
+
+1. **Create a fine-grained PAT** at <https://github.com/settings/personal-access-tokens/new>:
+   - **Repository access**: *Only select repositories* → pick the ONE repo under test (do not pick "All repositories").
+   - **Repository permissions** (READ-ONLY for all): Contents, Metadata, Pull requests.
+   - Leave everything else as *No access*.
+   - Suggested expiration: 90 days, then rotate.
+   - Worst-case blast radius if leaked = read public PR data on that one repo.
+2. **Generate a bypass HMAC secret**: `openssl rand -hex 32`.
+3. Set in Vercel **Project Settings → Environment Variables → Production**:
+   - `TIKTEST_BYPASS_SECRET` (Sensitive — the HMAC secret from step 2)
+   - `TIKTEST_BYPASS_GH_TOKEN` (Sensitive — the `github_pat_…` from step 1)
+   - `TIKTEST_BYPASS_GH_LOGIN` (your GitHub username — appears in the session)
+   - Optional: `TIKTEST_BYPASS_DISABLED=1` (kill switch — set instantly, no redeploy)
+   - Optional: `TIKTEST_BYPASS_MAX_SKEW_S` (defaults to 60s, clamped to 5–300)
+4. Set in your GitHub repo **Settings → Secrets and variables → Actions**:
+   - `TIKTEST_BYPASS_SECRET` (must match the Vercel value exactly)
+   - `VERCEL_AUTOMATION_BYPASS_SECRET` — *required* if the deployment has Vercel Deployment Protection on (default for previews on Pro/Team plans). Without it, the CI browser hits Vercel's auth wall before reaching `/api/test-bootstrap`. Grab it from Vercel **Project Settings → Deployment Protection → Protection Bypass for Automation**. Skip if production is public.
+
+#### Sanity check
+
+```sh
+node web/scripts/sign-bypass-url.mjs \
+  --base https://<your-deployment>.example.com \
+  --redirect /
+```
+
+Open the printed URL within 60 seconds. If you land logged in, the bypass works. A 404 means one of the four required env vars is missing in Production.
 
 ## Deploy to Vercel
 
 ```sh
 cd web
-vercel link --yes --scope yolodex --project tik-test-review
+vercel link
 vercel env add GITHUB_CLIENT_ID     # paste values for each env (preview, production)
 vercel env add GITHUB_CLIENT_SECRET
 vercel env add AUTH_SECRET

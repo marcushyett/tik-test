@@ -129,7 +129,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     // Belt-and-suspenders: force startUrl back to the configured preview root
     // even if Claude appended a sub-path. The plan prompt forbids sub-path
     // startUrls, but we enforce it at runtime too so a drifted prompt can't
-    // strand the runner on /inspiration or /gruns/... when those paths 404.
+    // strand the runner on a sub-path that 404s.
     if (plan.startUrl !== cfg.url) {
       console.log(chalk.dim(`  forcing startUrl to preview root (was ${plan.startUrl}, now ${cfg.url})`));
       plan.startUrl = cfg.url;

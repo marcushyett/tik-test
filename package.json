@@ -11,13 +11,21 @@
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "viewer": "node dist/viewer.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
+  "files": [
+    "dist/",
+    "remotion/",
+    "action.yml",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
-    "@playwright/mcp": "^0.0.70",
+    "@playwright/mcp": "~0.0.70",
     "@remotion/bundler": "^4.0.451",
     "@remotion/cli": "^4.0.451",
     "@remotion/media": "^4.0.451",
@@ -48,5 +56,14 @@
     "e2e",
     "ui-review"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "author": "Marcus Hyett <marc.hyett@gmail.com>",
+  "homepage": "https://github.com/marcushyett/tik-test#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marcushyett/tik-test.git"
+  },
+  "bugs": {
+    "url": "https://github.com/marcushyett/tik-test/issues"
+  }
 }
