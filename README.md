@@ -275,6 +275,7 @@ The action installs Node + ffmpeg + Playwright, builds tik-test, auto-detects th
 | `review-mode` | No | `request-changes-on-fail` | `none` · `approve-on-pass` · `request-changes-on-fail` · `always` |
 | `require-pass` | No | `true` | Non-zero exit on any failed goal. |
 | `quick` | No | `true` | Draft 540×960 render. |
+| `quick-and-dirty` | No | `false` | Drops to 0.5× render (540×960) **and** caps body scenes at 6. Faster, lower-quality output — use when speed beats fidelity. |
 | `working-directory` | No | repo root | Subdirectory containing `claude.md`. Useful for monorepos. |
 | `plan-timeout` | No | `240` (s) | Plan-generation Claude call. Bump for huge diffs. |
 | `agent-timeout` | No | `600` (s) | Per-goal agent. Bump for slow page loads. |

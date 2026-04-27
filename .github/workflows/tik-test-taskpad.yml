@@ -63,3 +63,6 @@ jobs:
           # comments include a vercel.app preview URL the CLI would otherwise
           # auto-detect. Pin the target to the bundled Taskpad demo instead.
           preview-url: http://localhost:4173
+          # Taskpad demo PRs are noisy; we just want the agent to confirm the
+          # demo still works, fast. Sister webapp workflow keeps full quality.
+          quick-and-dirty: true

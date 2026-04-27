@@ -44,6 +44,13 @@ inputs:
     description: If `true`, produce a draft 540×960 render in ~2 min. Set `false` for full-res.
     required: false
     default: 'true'
+  quick-and-dirty:
+    description: |
+      Faster, lower-quality preset. Drops the render to 0.5× of native (540×960)
+      and caps body scenes at 6 so the narration call is shorter. Use when speed
+      matters more than fidelity. Default: false.
+    required: false
+    default: 'false'
   github-token:
     description: 'GITHUB_TOKEN with `pull-requests: write` permission. Defaults to the workflow token.'
     required: false
@@ -235,7 +242,10 @@ runs:
         # Non-timeout knobs pass through as-is (already in their target unit).
         TIK_MAX_GOALS: ${{ inputs.max-goals }}
         TIK_MIN_CHUNK_S: ${{ inputs.min-chunk-seconds }}
-        TIK_MAX_BODY_SCENES: ${{ inputs.max-body-scenes }}
+        # quick-and-dirty preset overrides max-body-scenes (6) and forces the
+        # render scale down to 0.5×. Otherwise the user's explicit input wins.
+        TIK_MAX_BODY_SCENES: ${{ inputs.quick-and-dirty == 'true' && '6' || inputs.max-body-scenes }}
+        TIK_RENDER_SCALE: ${{ inputs.quick-and-dirty == 'true' && '0.5' || '' }}
         TIK_CHECKLIST_MIN_ITEMS: ${{ inputs.checklist-min-items }}
         TIK_CHECKLIST_MAX_ITEMS: ${{ inputs.checklist-max-items }}
         TIK_INTRO_TARGET_S: ${{ inputs.intro-seconds }}
