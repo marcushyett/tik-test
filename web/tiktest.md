@@ -42,11 +42,18 @@ explicitly — there's no event payload to read it from.
 
 The reviewer is a Next.js app, not a static site. Run it with:
 
-start: cd web && npm install --silent && npm run dev -- -p 4173
+start: npm install --silent && npm run dev -- -p 4173
 
-The `start:` directive only matters for local dev — in CI the workflow
-signs the bypass URL against the per-PR preview deployment, so no local
-server is spun up.
+The `start:` directive only fires when the resolved target URL is
+localhost. In CI the workflow signs the bypass URL against the per-PR
+Vercel preview deployment, so no local server is spun up — the
+directive is gated by `isLocalhostUrl()` in `src/pr.ts` and skipped
+for remote URLs.
+
+(The directive intentionally has no `cd web && …` prefix: when CI
+invokes `tik-test` for this app, it does so with `working-directory:
+web`, and local invocations also expect to be run from the `web/`
+directory — so `npm install` always lands on the right `package.json`.)
 
 ## Selectors
 

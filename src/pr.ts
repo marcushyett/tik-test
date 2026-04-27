@@ -113,7 +113,15 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
   }
 
   let serverProc: { kill: () => void } | null = null;
-  if (cfg.setup?.toLowerCase().startsWith("start:")) {
+  // Only spawn the dev server when we're actually targeting localhost.
+  // For remote URLs (Vercel preview, deployed staging, etc.) the
+  // `start:` directive is irrelevant — the deployed target is already
+  // running. This keeps a stale start: directive from breaking remote
+  // runs (the previous behaviour ran the directive unconditionally and
+  // then tried to wait on `cfg.url`, which 60s-timed out against the
+  // remote URL while the local dev server happily waited for traffic
+  // on localhost:N).
+  if (cfg.setup?.toLowerCase().startsWith("start:") && isLocalhostUrl(cfg.url)) {
     const cmd = cfg.setup.slice(cfg.setup.indexOf(":") + 1).trim().split("\n")[0];
     console.log(chalk.dim(`  starting dev server: ${cmd}`));
     serverProc = spawnBackground(cmd, workDir);
@@ -409,6 +417,19 @@ async function findConfig(workDir: string): Promise<string | null> {
   return null;
 }
 
+
+/** True if `u` resolves to a loopback host. Used to gate the local
+ *  dev-server spawn — remote URLs should never trigger a `start:`
+ *  directive even if one is present in the config. */
+function isLocalhostUrl(u: string | undefined): boolean {
+  if (!u) return false;
+  try {
+    const h = new URL(u).hostname;
+    return h === "localhost" || h === "127.0.0.1" || h === "0.0.0.0" || h === "::1";
+  } catch {
+    return false;
+  }
+}
 
 function buildVercelBypass(secret: string | undefined, url: string): { extraHTTPHeaders?: Record<string, string>; cookies?: Array<any> } {
   if (!secret) return {};
