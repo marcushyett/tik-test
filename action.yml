@@ -72,6 +72,12 @@ inputs:
     required: false
     default: '60'
 
+  # ── Plan generation ───────────────────────────────────────────────────
+  max-goals:
+    description: 'Hard cap on goals the planner produces. Default 3. Above ~5 risks pushing the agent over the 25-min job budget.'
+    required: false
+    default: '3'
+
   # ── Body-narration density ────────────────────────────────────────────
   min-chunk-seconds:
     description: 'Minimum body chunk length — shorter consecutive moments coalesce. Default 3.5. Lower = more scenes (risk: narration timeout); higher = sluggish pacing.'
@@ -227,6 +233,7 @@ runs:
         TIK_NARRATION_TIMEOUT_MS: ${{ inputs.narration-timeout && format('{0}000', inputs.narration-timeout) || '' }}
         TIK_FEATURE_FINDER_TIMEOUT_MS: ${{ inputs.feature-finder-timeout && format('{0}000', inputs.feature-finder-timeout) || '' }}
         # Non-timeout knobs pass through as-is (already in their target unit).
+        TIK_MAX_GOALS: ${{ inputs.max-goals }}
         TIK_MIN_CHUNK_S: ${{ inputs.min-chunk-seconds }}
         TIK_MAX_BODY_SCENES: ${{ inputs.max-body-scenes }}
         TIK_CHECKLIST_MIN_ITEMS: ${{ inputs.checklist-min-items }}

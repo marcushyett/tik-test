@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { Config, TestPlan } from "./types.js";
 import { configToPromptContext } from "./config.js";
-import { PLAN_TIMEOUT_MS } from "./timeouts.js";
+import { MAX_GOALS, PLAN_TIMEOUT_MS } from "./timeouts.js";
 import { runClaude, extractJson } from "./claude-cli.js";
 
 const PLAN_PROMPT = `You are generating a GOAL-BASED test plan for a web app. An autonomous AI agent will execute each goal by driving the browser — clicking, typing, reading the page — and decide HOW to achieve it based on what's actually on-screen. You DO NOT write selectors, URLs, or click sequences. You write GOALS and CONTEXT. Trust the agent.
@@ -25,7 +25,7 @@ Output ONLY a single JSON object (no prose, no markdown fences):
 }
 
 GOAL-WRITING GUIDANCE:
-1. **1-3 goals. Ruthlessly tight.** The video is a scroll-feed review under 60 seconds. One PRIMARY goal (the core flow of what this PR does), optionally up to TWO secondary goals (bug-probing variants — double-click, edge case, keyboard shortcut). If you can't justify a second or third goal as essential, leave it out.
+1. **1-{{MAX_GOALS}} goals. Ruthlessly tight.** The video is a scroll-feed review under 60 seconds. One PRIMARY goal (the core flow of what this PR does), optionally up to {{MAX_SECONDARY_GOALS}} secondary goals (bug-probing variants — double-click, edge case, keyboard shortcut). If you can't justify an extra goal as essential, leave it out.
 2. **The primary goal is end-to-end.** It includes navigating to the feature AND exercising it in a single natural-language instruction. Don't split "navigate" and "use feature" into two goals — the agent will do both inside one goal.
 3. **Let the diff drive WHAT.** Read the PR: what's new? what's the ONE thing a reviewer cares about most? That's your primary goal.
 4. **READ THE REVIEWER COMMENTS and bake any testing advice into the goal.** If a commenter says "fresh discoveries worked" or "run X before you'll see Y" or "the legacy data is broken, trigger a new flow", your primary goal MUST incorporate that action. Skipping the reviewer's suggested setup is the #1 way plans end up testing broken state instead of the fixed state.
@@ -61,7 +61,10 @@ export async function generatePlan(cfg: Config): Promise<TestPlan> {
     console.log(chalk.dim(`  using plan from config (${cfg.plan.goals?.length ?? 0} goals)`));
     return normalize(cfg.plan, cfg);
   }
-  const prompt = PLAN_PROMPT.replace("{{CONTEXT}}", configToPromptContext(cfg));
+  const prompt = PLAN_PROMPT
+    .replace("{{MAX_GOALS}}", String(MAX_GOALS))
+    .replace("{{MAX_SECONDARY_GOALS}}", String(Math.max(0, MAX_GOALS - 1)))
+    .replace("{{CONTEXT}}", configToPromptContext(cfg));
   console.log(chalk.dim("  calling claude CLI to generate test plan…"));
   const raw = await runClaude({ prompt, timeoutMs: PLAN_TIMEOUT_MS, label: "plan", timeoutKnob: "TIK_PLAN_TIMEOUT_MS" });
   const json = extractJson(raw);
@@ -82,7 +85,14 @@ function normalize(plan: TestPlan, cfg: Config): TestPlan {
     viewport: plan.viewport || cfg.viewport || { width: 1280, height: 800 },
   };
   if (plan.goals && plan.goals.length > 0) {
-    normalized.goals = plan.goals.map((g, i) => ({
+    // Defensive cap — the prompt asks for ≤ MAX_GOALS but the LLM can ignore
+    // it, especially on big PRs with many surfaces. Trim deterministically
+    // (keep the first N) so a runaway plan can't blow past the job budget.
+    const trimmed = plan.goals.slice(0, MAX_GOALS);
+    if (trimmed.length < plan.goals.length) {
+      console.log(chalk.yellow(`  plan returned ${plan.goals.length} goals, trimming to TIK_MAX_GOALS=${MAX_GOALS}`));
+    }
+    normalized.goals = trimmed.map((g, i) => ({
       ...g,
       id: g.id || `goal-${i + 1}`,
       importance: g.importance || "normal",
