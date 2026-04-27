@@ -1,7 +1,7 @@
 "use client";
 
-import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, ChevronUp, Keyboard, Pause, Play, RotateCcw, RotateCw, Volume2, VolumeX } from "lucide-react";
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, Keyboard, Pause, Play, RotateCcw, RotateCw, Volume2, VolumeX } from "lucide-react";
 import { Button } from "./ui/button";
 import { PRHeader } from "./pr-header";
 import { DecisionForm } from "./decision-form";
@@ -10,7 +10,7 @@ import { PRBodyPreview } from "./pr-body-preview";
 import { MobileDrawer } from "./mobile-drawer";
 import { AIChecksList, AIChecksBadge } from "./ai-checks-list";
 import { proxyMedia } from "@/lib/utils";
-import { useSeenVideos } from "@/lib/seen-videos";
+import { getSeenIds, useSeenVideos } from "@/lib/seen-videos";
 import { EmptyStatePRList } from "./empty-state-pr-list";
 import type { OpenPR } from "@/lib/github";
 import type { TikTestVideo } from "@/lib/marker";
@@ -22,7 +22,20 @@ function flatten(prs: OpenPR[]): FeedItem[] {
 }
 
 export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }; prs: OpenPR[] }) {
-  const items = flatten(prs);
+  const allItems = useMemo(() => flatten(prs), [prs]);
+  // Mount-time snapshot of seen IDs. We filter against this snapshot — not the
+  // live `seenIds` from the hook — so a video the user marks seen during the
+  // session doesn't vanish out from under their cursor mid-navigation. The
+  // hide takes effect on the next page load, which matches user intent
+  // ("don't show me what I've already watched") without breaking flow.
+  const initialSeen = useMemo(() => getSeenIds(), []);
+  const [showSeen, setShowSeen] = useState(false);
+  const items = useMemo(
+    () => (showSeen ? allItems : allItems.filter((it) => !initialSeen.has(it.video.runId))),
+    [allItems, showSeen, initialSeen],
+  );
+  const hiddenCount = allItems.length - items.length;
+
   const [idx, setIdx] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [posted, setPosted] = useState(false);
@@ -33,6 +46,11 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
   const [muted, setMuted] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
   const { markSeen, isSeen } = useSeenVideos();
+
+  const toggleShowSeen = useCallback(() => {
+    setShowSeen((s) => !s);
+    setIdx(0);
+  }, []);
 
   const current = items[idx];
 
@@ -163,9 +181,9 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
     return () => window.removeEventListener("keydown", onKey);
   }, [goNext, goPrev, toggleMute]);
 
-  // Empty: no videos at all in this repo. Show the open-PR triage dashboard
-  // — the user can still merge a PR even if tik-test never produced a video.
-  if (items.length === 0) {
+  // Cold-load empty: no PR has a tik-test video at all. Show the PR triage
+  // dashboard from #23 — every open PR with status flags + a Merge button.
+  if (allItems.length === 0) {
     return (
       <EmptyStatePRList
         prs={prs}
@@ -175,8 +193,13 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
       />
     );
   }
-  // Inbox zero: navigated past the last video. Show the same triage list so
-  // the user can act on what they just watched without leaving the page.
+  // Videos exist but every one is already seen and the toggle hides them —
+  // show the dedicated CaughtUp screen with a one-click Show-seen toggle
+  // (from #20). Distinct from "no videos at all" so the messaging is right.
+  if (items.length === 0) return <CaughtUpState totalSeen={allItems.length} onShowSeen={toggleShowSeen} />;
+  // Navigated past the last unseen video — render the InboxZero variant
+  // that includes the same triage dashboard so the user can act on what
+  // they just watched without leaving the page.
   if (idx >= items.length) {
     return (
       <InboxZero
@@ -226,7 +249,15 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
       <div className="hidden h-[calc(100dvh-80px)] md:grid md:grid-cols-[minmax(0,420px)_minmax(0,1fr)] md:gap-8 md:px-6 md:pb-10">
         {/* Video column */}
         <div className="flex min-h-0 flex-col gap-3">
-          <FeedCounter idx={idx} total={items.length} video={video} seen={isSeen(video.runId)} />
+          <FeedCounter
+            idx={idx}
+            total={items.length}
+            video={video}
+            seen={isSeen(video.runId)}
+            showSeen={showSeen}
+            hiddenCount={hiddenCount}
+            onToggleShowSeen={toggleShowSeen}
+          />
           <VideoFrame
             ref={videoRef}
             src={videoSrc}
@@ -260,17 +291,21 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
 
         {/* Top overlay with counter — sits BELOW the page header so the
             counter, SEEN/NEW pill, and stats chip aren't hidden under the
-            header's translucent backdrop-blur. The gradient still starts at
-            top-0 for visual continuity; only the content's top padding is
-            pushed down. The 3.5rem (56px) value covers the page header's
-            content height; the calc() branch covers notched devices where
-            the page header consumes additional safe-area-inset-top. */}
+            header's translucent backdrop-blur (PR #17). `pointer-events-none`
+            on the wrapper so taps fall through to the video; the Show-seen
+            toggle below re-enables pointer-events on itself so it stays
+            clickable. */}
         <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 via-black/30 to-transparent px-4 pb-4 pt-[max(3.5rem,calc(env(safe-area-inset-top)+2.5rem))] text-xs text-white/90">
           <span className="inline-flex items-center gap-2">
             <span className="font-mono tracking-widest">
               {idx + 1}/{items.length}
             </span>
             <SeenBadge seen={isSeen(video.runId)} mode="dark" />
+            {(hiddenCount > 0 || showSeen) && (
+              <span className="pointer-events-auto">
+                <ShowSeenToggle showSeen={showSeen} hiddenCount={hiddenCount} onToggle={toggleShowSeen} mode="dark" />
+              </span>
+            )}
           </span>
           <span className="rounded-full border border-white/20 bg-black/40 px-2 py-0.5 font-mono text-[10px] backdrop-blur">
             {video.stats.passed}/{video.stats.total} green · {video.stats.failed} oops
@@ -324,15 +359,63 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
 
 /* --------------------------- sub-components --------------------------- */
 
-function FeedCounter({ idx, total, video, seen }: { idx: number; total: number; video: TikTestVideo; seen: boolean }) {
+function FeedCounter({
+  idx,
+  total,
+  video,
+  seen,
+  showSeen,
+  hiddenCount,
+  onToggleShowSeen,
+}: {
+  idx: number;
+  total: number;
+  video: TikTestVideo;
+  seen: boolean;
+  showSeen: boolean;
+  hiddenCount: number;
+  onToggleShowSeen: () => void;
+}) {
   return (
     <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
       <span className="inline-flex items-center gap-2">
         <span>PR {idx + 1} of {total}</span>
         <SeenBadge seen={seen} mode="light" />
+        {(hiddenCount > 0 || showSeen) && (
+          <ShowSeenToggle showSeen={showSeen} hiddenCount={hiddenCount} onToggle={onToggleShowSeen} mode="light" />
+        )}
       </span>
       <span>{video.stats.passed}/{video.stats.total} green · {video.stats.failed} oops</span>
     </div>
+  );
+}
+
+/** Pill-shaped toggle that flips between "Show seen (N)" and "Hide seen".
+ *  Renders nothing if there's nothing to hide AND we're not currently showing
+ *  everything — the toggle would have no effect, so it would just be visual
+ *  noise. Two visual modes mirror SeenBadge so it sits right next to it. */
+function ShowSeenToggle({
+  showSeen,
+  hiddenCount,
+  onToggle,
+  mode,
+}: {
+  showSeen: boolean;
+  hiddenCount: number;
+  onToggle: () => void;
+  mode: "light" | "dark";
+}) {
+  const label = showSeen ? "Hide seen" : `Show seen${hiddenCount > 0 ? ` (${hiddenCount})` : ""}`;
+  const Icon = showSeen ? EyeOff : Eye;
+  const className =
+    mode === "dark"
+      ? "inline-flex items-center gap-1 rounded-full border border-white/20 bg-black/40 px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-white/80 backdrop-blur transition hover:bg-black/60 hover:text-white"
+      : "inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 font-mono text-[10px] tracking-[0.14em] text-muted-foreground transition hover:bg-muted hover:text-foreground";
+  return (
+    <button type="button" onClick={onToggle} className={className} aria-pressed={showSeen}>
+      <Icon className="h-3 w-3" />
+      {label}
+    </button>
   );
 }
 
@@ -673,6 +756,25 @@ function InboxZero({
       <div className="mx-auto pb-12">
         <Button variant="outline" size="sm" onClick={onRestart}>Back to the top of the feed</Button>
       </div>
+    </div>
+  );
+}
+
+/** Shown when there ARE PRs with videos in the repo, but the user has marked
+ *  every one of them as seen on this device. Distinct from InboxZero (which
+ *  is "you finished navigating through them this session") and EmptyState
+ *  (which is "this repo has no videos at all"). */
+function CaughtUpState({ totalSeen, onShowSeen }: { totalSeen: number; onShowSeen: () => void }) {
+  return (
+    <div className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center gap-3 px-6 text-center">
+      <CheckCircle2 className="h-10 w-10 text-primary" strokeWidth={1.5} />
+      <div className="text-2xl font-semibold tracking-tight">Caught up.</div>
+      <p className="text-sm text-muted-foreground">
+        You've already watched all {totalSeen} review video{totalSeen === 1 ? "" : "s"} on this device.
+      </p>
+      <Button variant="outline" onClick={onShowSeen} className="inline-flex items-center gap-2">
+        <Eye className="h-4 w-4" /> Show seen videos
+      </Button>
     </div>
   );
 }
