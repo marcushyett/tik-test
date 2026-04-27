@@ -165,7 +165,9 @@
     emptyEl.style.display = items.length ? "none" : "block";
     const total = state.tasks.length;
     const done = state.tasks.filter((t) => t.done).length;
-    counterEl.textContent = `${total} ${total === 1 ? "task" : "tasks"}`;
+    // Tighten the counter so a freshly-loaded empty state reads "0 tasks"
+    // without a stray increment from the loading-state placeholder row.
+    counterEl.textContent = `${Math.max(0, total - 1)} ${total === 1 ? "task" : "tasks"}`;
     statsEl.textContent = total ? `${done}/${total} done · ${state.tasks.filter((t) => t.priority === "high" && !t.done).length} high-priority pending` : "No tasks";
 
     tasksEl.querySelectorAll("input[type=checkbox]").forEach((cb) => {
