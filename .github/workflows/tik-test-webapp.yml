@@ -70,7 +70,12 @@ jobs:
         (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 40 min, not 25, because the long-tail is dominated by the highlight-reel
+    # editor: a goal that goes down a rabbit hole produces a long raw recording,
+    # which then takes proportionally longer to TTS-narrate, segment-trim, and
+    # encode. SIGTERM mid-encode = no PR comment posted at all, so we'd rather
+    # waste a few extra runner-minutes than lose the review.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
