@@ -11,6 +11,7 @@ import { MobileDrawer } from "./mobile-drawer";
 import { AIChecksList, AIChecksBadge } from "./ai-checks-list";
 import { proxyMedia } from "@/lib/utils";
 import { useSeenVideos } from "@/lib/seen-videos";
+import { EmptyStatePRList } from "./empty-state-pr-list";
 import type { OpenPR } from "@/lib/github";
 import type { TikTestVideo } from "@/lib/marker";
 
@@ -114,8 +115,29 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
     return () => window.removeEventListener("keydown", onKey);
   }, [goNext, goPrev, toggleMute]);
 
-  if (items.length === 0) return <EmptyState repo={repo} />;
-  if (idx >= items.length) return <InboxZero onRestart={() => setIdx(0)} />;
+  // Empty: no videos at all in this repo. Show the open-PR triage dashboard
+  // — the user can still merge a PR even if tik-test never produced a video.
+  if (items.length === 0) {
+    return (
+      <EmptyStatePRList
+        prs={prs}
+        repo={repo}
+        heading="Nothing to review yet"
+        subheading={`tik-test hasn't posted a video on any open PR in ${repo.owner}/${repo.name}.`}
+      />
+    );
+  }
+  // Inbox zero: navigated past the last video. Show the same triage list so
+  // the user can act on what they just watched without leaving the page.
+  if (idx >= items.length) {
+    return (
+      <InboxZero
+        prs={prs}
+        repo={repo}
+        onRestart={() => setIdx(0)}
+      />
+    );
+  }
 
   const { pr, video } = current;
   const videoSrc = proxyMedia(video.videoUrl);
@@ -571,27 +593,26 @@ function Kbd({ children }: { children: React.ReactNode }) {
   return <kbd className="rounded border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-foreground">{children}</kbd>;
 }
 
-function EmptyState({ repo }: { repo: { owner: string; name: string } }) {
+function InboxZero({
+  prs,
+  repo,
+  onRestart,
+}: {
+  prs: OpenPR[];
+  repo: { owner: string; name: string };
+  onRestart: () => void;
+}) {
   return (
-    <div className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center gap-3 px-6 text-center">
-      <div className="text-xl font-semibold tracking-tight">Nothing to review yet</div>
-      <p className="text-sm text-muted-foreground">
-        tik-test hasn't posted a video on any open PR in{" "}
-        <span className="font-mono">{repo.owner}/{repo.name}</span>. Run{" "}
-        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">tik-test pr &lt;number&gt;</span>{" "}
-        or wire up the GitHub Action.
-      </p>
-    </div>
-  );
-}
-
-function InboxZero({ onRestart }: { onRestart: () => void }) {
-  return (
-    <div className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center gap-3 px-6 text-center">
-      <CheckCircle2 className="h-10 w-10 text-primary" strokeWidth={1.5} />
-      <div className="text-2xl font-semibold tracking-tight">Inbox zero.</div>
-      <p className="text-sm text-muted-foreground">You've worked through every tik-test review in this repo.</p>
-      <Button variant="outline" onClick={onRestart}>Back to the top</Button>
+    <div className="flex flex-col gap-4">
+      <EmptyStatePRList
+        prs={prs}
+        repo={repo}
+        heading="Inbox zero."
+        subheading="You've worked through every tik-test review in this repo. Open PRs and their merge readiness below."
+      />
+      <div className="mx-auto pb-12">
+        <Button variant="outline" size="sm" onClick={onRestart}>Back to the top of the feed</Button>
+      </div>
     </div>
   );
 }

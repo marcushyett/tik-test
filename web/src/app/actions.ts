@@ -1,6 +1,6 @@
 "use server";
 
-import { submitReview } from "@/lib/github";
+import { submitReview, submitMerge } from "@/lib/github";
 
 export async function submitReviewAction(input: {
   owner: string; repo: string; number: number;
@@ -8,4 +8,12 @@ export async function submitReviewAction(input: {
   body: string;
 }) {
   return submitReview(input);
+}
+
+export async function submitMergeAction(input: {
+  owner: string; repo: string; number: number;
+  expectedHeadSha?: string;
+  method?: "merge" | "squash" | "rebase";
+}) {
+  return submitMerge(input);
 }
