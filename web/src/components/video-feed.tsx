@@ -188,8 +188,14 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
           aspect="fill"
         />
 
-        {/* Top overlay with counter — doesn't obscure the app UI in the video. */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 via-black/30 to-transparent p-4 pt-[max(1rem,env(safe-area-inset-top))] text-xs text-white/90">
+        {/* Top overlay with counter — sits BELOW the page header so the
+            counter, SEEN/NEW pill, and stats chip aren't hidden under the
+            header's translucent backdrop-blur. The gradient still starts at
+            top-0 for visual continuity; only the content's top padding is
+            pushed down. The 3.5rem (56px) value covers the page header's
+            content height; the calc() branch covers notched devices where
+            the page header consumes additional safe-area-inset-top. */}
+        <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/70 via-black/30 to-transparent px-4 pb-4 pt-[max(3.5rem,calc(env(safe-area-inset-top)+2.5rem))] text-xs text-white/90">
           <span className="inline-flex items-center gap-2">
             <span className="font-mono tracking-widest">
               {idx + 1}/{items.length}
