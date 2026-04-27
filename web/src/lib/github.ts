@@ -113,7 +113,10 @@ export async function listPRsWithVideos(owner: string, repo: string): Promise<Op
   return out;
 }
 
-/** Post a formal PR review on the user's behalf. */
+/** Post a formal PR review on the user's behalf. Refuses to run when the
+ *  caller is on a test-bypass session — even if the bypass PAT had write
+ *  scope (it shouldn't), this would block any abuse of the bypass to
+ *  post reviews. */
 export async function submitReview(input: {
   owner: string;
   repo: string;
@@ -121,8 +124,13 @@ export async function submitReview(input: {
   event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
   body: string;
 }): Promise<{ ok: true } | { ok: false; error: string }> {
-  const ok = await getOctokit();
-  if (!ok) return { ok: false, error: "Not signed in." };
+  const session = (await auth()) as { accessToken?: string; bypass?: boolean } | null;
+  if (session?.bypass === true) {
+    return { ok: false, error: "Reviews can't be posted from a test-bypass session." };
+  }
+  const token = session?.accessToken;
+  if (!token) return { ok: false, error: "Not signed in." };
+  const ok = new Octokit({ auth: token });
   try {
     await ok.pulls.createReview({
       owner: input.owner,
