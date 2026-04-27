@@ -31,11 +31,20 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return token;
     },
     async session({ session, token }) {
+      // TEMP DIAGNOSTIC: surface the JWT shape we resolved to in Vercel
+      // runtime logs so we can catch a mis-encoded bypass session.
+      // Remove alongside /api/_diag/bypass before public release.
+      const tokFp = typeof token.accessToken === "string"
+        ? `len=${token.accessToken.length} first6=${token.accessToken.slice(0, 6)} last4=${token.accessToken.slice(-4)}`
+        : "MISSING";
+      console.log(`[tiktest-bypass] session callback: bypass=${token.bypass} login=${token.login} bypass_iat=${token.bypass_iat} accessToken=${tokFp}`);
+
       // Bypass-minted sessions are capped at BYPASS_SESSION_MAX_AGE_S
       // (30 min) regardless of what the cookie itself says. Past the
       // window, we drop the access token from the resolved session so
       // every server action sees "not signed in".
       if (token.bypass && isBypassSessionExpired(token.bypass_iat)) {
+        console.log(`[tiktest-bypass] session callback: bypass session EXPIRED, dropping accessToken`);
         return session;
       }
       session.accessToken = token.accessToken;

@@ -62,6 +62,15 @@ export async function GET(req: Request) {
   const isHttps = url.protocol === "https:";
   const cookieName = sessionCookieName(isHttps);
 
+  // TEMP DIAGNOSTIC: log token fingerprints so Vercel runtime logs show the
+  // exact env state during bootstrap. SHA-256 prefix only — no plaintext.
+  // Remove with /api/_diag/bypass before public release.
+  const ghToken = process.env.TIKTEST_BYPASS_GH_TOKEN ?? "";
+  const tokenFp = ghToken
+    ? `len=${ghToken.length} first6=${ghToken.slice(0, 6)} last4=${ghToken.slice(-4)}`
+    : "EMPTY";
+  console.log(`[tiktest-bypass] bootstrap env: GH_TOKEN ${tokenFp}, GH_LOGIN=${process.env.TIKTEST_BYPASS_GH_LOGIN}, AUTH_SECRET_set=${!!process.env.AUTH_SECRET}, BYPASS_SECRET_set=${!!process.env.TIKTEST_BYPASS_SECRET}`);
+
   const cookieValue = await encode({
     token: {
       sub: `tiktest-bypass-${process.env.TIKTEST_BYPASS_GH_LOGIN}`,

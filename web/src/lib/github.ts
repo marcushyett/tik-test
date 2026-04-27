@@ -7,6 +7,11 @@ import { parseMarker, type TikTestVideo } from "./marker";
 async function getOctokit(): Promise<Octokit | null> {
   const session = await auth();
   const token = session?.accessToken;
+  // TEMP DIAGNOSTIC — remove alongside /api/_diag/bypass.
+  const tokFp = typeof token === "string"
+    ? `len=${token.length} first6=${token.slice(0, 6)} last4=${token.slice(-4)}`
+    : "MISSING";
+  console.log(`[tiktest-bypass] getOctokit: session_present=${!!session} bypass=${(session as { bypass?: boolean } | null)?.bypass} token=${tokFp}`);
   if (!token) return null;
   return new Octokit({ auth: token });
 }
@@ -15,15 +20,27 @@ export interface RepoSummary { owner: string; name: string; full_name: string; d
 
 export async function listRepos(): Promise<RepoSummary[]> {
   const ok = await getOctokit();
-  if (!ok) return [];
-  const { data } = await ok.repos.listForAuthenticatedUser({ sort: "pushed", per_page: 50, affiliation: "owner,collaborator,organization_member" });
-  return data.map((r) => ({
-    owner: r.owner.login,
-    name: r.name,
-    full_name: r.full_name,
-    description: r.description,
-    pushed_at: r.pushed_at ?? "",
-  }));
+  if (!ok) {
+    console.log(`[tiktest-bypass] listRepos: no Octokit (no token), returning []`);
+    return [];
+  }
+  try {
+    const { data } = await ok.repos.listForAuthenticatedUser({ sort: "pushed", per_page: 50, affiliation: "owner,collaborator,organization_member" });
+    // TEMP DIAGNOSTIC — remove alongside /api/_diag/bypass.
+    console.log(`[tiktest-bypass] listRepos: got ${data.length} repos${data.length > 0 ? ` (first: ${data[0].full_name})` : ""}`);
+    return data.map((r) => ({
+      owner: r.owner.login,
+      name: r.name,
+      full_name: r.full_name,
+      description: r.description,
+      pushed_at: r.pushed_at ?? "",
+    }));
+  } catch (e) {
+    // TEMP DIAGNOSTIC — surface the GitHub API error instead of swallowing it.
+    const err = e as { status?: number; message?: string };
+    console.log(`[tiktest-bypass] listRepos: GitHub API error status=${err.status} message=${err.message}`);
+    throw e;
+  }
 }
 
 export interface OpenPR {
