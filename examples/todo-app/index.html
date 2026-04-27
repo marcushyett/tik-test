@@ -74,6 +74,22 @@
   /* Inline spinner inside the Add button */
   .btn-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.55s linear infinite; vertical-align: -2px; margin-right: 4px; }
   .new-task button.loading { pointer-events: none; opacity: 0.85; }
+
+  /* --- AI priority hints --- */
+  .smart-toggle { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--ink-2); font-size: 12px; padding: 6px 10px; cursor: pointer; transition: background 120ms, color 120ms, border-color 120ms; }
+  .smart-toggle.active { background: rgba(108, 92, 255, 0.12); color: var(--accent); border-color: rgba(108, 92, 255, 0.3); }
+  .smart-toggle:hover { color: var(--accent); }
+  .smart-toggle svg { width: 13px; height: 13px; }
+  .suggest-bar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; min-height: 44px; border-bottom: 1px solid var(--line); background: rgba(108, 92, 255, 0.04); font-size: 13px; color: var(--ink-2); }
+  .suggest-bar[hidden] { display: none; }
+  .suggest-loading { display: inline-flex; align-items: center; gap: 8px; }
+  .suggest-loading[hidden] { display: none; }
+  .dot-spinner { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
+  .suggest-pill { display: inline-flex; align-items: center; gap: 6px; background: var(--accent); color: #fff; border: 0; border-radius: 999px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; transition: transform 80ms, background 120ms; text-transform: capitalize; }
+  .suggest-pill[hidden] { display: none; }
+  .suggest-pill:hover { transform: translateY(-1px); background: #5a4bf0; }
+  .suggest-pill .priority-label { text-transform: capitalize; }
+  .suggest-meta { font-size: 11px; color: var(--ink-2); }
 </style>
 </head>
 <body>
@@ -110,8 +126,27 @@
         <option value="normal" selected>Normal</option>
         <option value="high">High</option>
       </select>
+      <button type="button" class="smart-toggle active" id="smart-toggle" data-testid="smart-toggle" aria-pressed="true" aria-label="Toggle AI priority suggestions" title="When on, the priority is suggested based on what you type">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
+        Smart
+      </button>
       <button type="submit" data-testid="add-task">Add</button>
     </form>
+
+    <!-- AI suggestion bar — populated by /api/suggest-priority. The whole
+         row is hidden until the user has typed something the API can score. -->
+    <div class="suggest-bar" id="suggest-bar" data-testid="suggest-bar" hidden>
+      <span class="suggest-loading" id="suggest-loading" data-testid="suggest-loading" hidden>
+        <span class="dot-spinner"></span> Thinking…
+      </span>
+      <button type="button" class="suggest-pill" id="suggest-pill" data-testid="suggest-pill" hidden>
+        AI suggests:&nbsp;<span id="suggest-priority" data-testid="suggest-priority"></span>
+      </button>
+      <span class="suggest-meta" id="suggest-meta" data-testid="suggest-meta"></span>
+    </div>
 
     <div class="filters" data-testid="filters">
       <button data-filter="all" class="active">All</button>
@@ -236,6 +271,112 @@
       state.filter = b.dataset.filter;
       render();
     });
+  });
+
+  // ---- AI priority hints --------------------------------------------------
+  // The user types a task title; we debounce and POST the text to a tiny
+  // backend (/api/suggest-priority — see server.js) which scores keywords
+  // and returns {priority, confidence, matched}. The pill is one click to
+  // accept; the toggle disables the whole subsystem so no requests fire.
+  const smartToggle = $("#smart-toggle");
+  const suggestBar = $("#suggest-bar");
+  const suggestLoading = $("#suggest-loading");
+  const suggestPill = $("#suggest-pill");
+  const suggestPriorityEl = $("#suggest-priority");
+  const suggestMeta = $("#suggest-meta");
+  const newTaskInput = $("#new-task-input");
+  const newTaskPriority = $("#new-task-priority");
+
+  let smartEnabled = true;
+  let suggestTimer = null;
+  let inFlight = null;          // current AbortController, so a new keystroke cancels in-flight
+  let lastSuggestion = null;    // {priority, confidence, matched, text} — read by the apply handler
+
+  function hideSuggestBar() {
+    suggestBar.hidden = true;
+    suggestLoading.hidden = true;
+    suggestPill.hidden = true;
+    suggestMeta.textContent = "";
+  }
+
+  async function fetchSuggestion(text) {
+    if (inFlight) inFlight.abort();
+    inFlight = new AbortController();
+    suggestBar.hidden = false;
+    suggestLoading.hidden = false;
+    suggestPill.hidden = true;
+    try {
+      const r = await fetch("/api/suggest-priority", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+        signal: inFlight.signal,
+      });
+      if (!r.ok) throw new Error(`suggest-priority ${r.status}`);
+      const data = await r.json();
+      inFlight = null;
+      lastSuggestion = { ...data, text };
+      suggestLoading.hidden = true;
+      suggestPriorityEl.textContent = data.priority;
+      suggestPill.hidden = false;
+      suggestMeta.textContent = data.matched && data.matched.length
+        ? `matched: ${data.matched.join(", ")}`
+        : `no keyword match — default`;
+      suggestPill.title = `confidence ${Math.round((data.confidence ?? 0) * 100)}%`;
+    } catch (e) {
+      // AbortError = a newer keystroke superseded us; stay quiet.
+      if (e.name === "AbortError") return;
+      suggestLoading.hidden = true;
+      suggestPill.hidden = true;
+      suggestMeta.textContent = "couldn't reach the suggestion service";
+    }
+  }
+
+  newTaskInput.addEventListener("input", () => {
+    const text = newTaskInput.value.trim();
+    if (!smartEnabled || text.length < 3) { hideSuggestBar(); return; }
+    if (suggestTimer) clearTimeout(suggestTimer);
+    // 350 ms is the sweet spot — below ~250 the API thrashes on every
+    // keystroke; above ~500 the pill arrives after the user has already
+    // reached for the dropdown.
+    suggestTimer = setTimeout(() => fetchSuggestion(text), 350);
+  });
+
+  smartToggle.addEventListener("click", () => {
+    smartEnabled = !smartEnabled;
+    smartToggle.classList.toggle("active", smartEnabled);
+    smartToggle.setAttribute("aria-pressed", String(smartEnabled));
+    if (!smartEnabled) {
+      if (suggestTimer) clearTimeout(suggestTimer);
+      if (inFlight) inFlight.abort();
+      hideSuggestBar();
+      toast("Smart priority off.");
+    } else {
+      toast("Smart priority on.");
+      // Re-evaluate the current input so the pill re-appears immediately.
+      newTaskInput.dispatchEvent(new Event("input"));
+    }
+  });
+
+  suggestPill.addEventListener("click", () => {
+    if (!lastSuggestion) return;
+    newTaskPriority.value = lastSuggestion.priority;
+    suggestPill.hidden = true;
+    suggestMeta.textContent = `applied: ${lastSuggestion.priority}`;
+    toast(`Priority set to ${lastSuggestion.priority}.`);
+  });
+
+  // After the form submits and the input clears, hide the suggestion bar.
+  // The existing submit handler clears #new-task-input via .value="" which
+  // does NOT fire 'input', so we do the cleanup ourselves on a delay that
+  // lines up with the fake save round-trip in the submit handler.
+  $("#new-task-form").addEventListener("submit", () => {
+    setTimeout(() => {
+      if (suggestTimer) clearTimeout(suggestTimer);
+      if (inFlight) inFlight.abort();
+      lastSuggestion = null;
+      hideSuggestBar();
+    }, 900);
   });
 
   $("#clear-done").addEventListener("click", () => {
