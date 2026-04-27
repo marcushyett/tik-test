@@ -64,19 +64,30 @@ permissions:
 
 jobs:
   review:
-    # Owners gate (keeps fork PRs and random contributors from burning the
-    # Claude subscription budget) AND environment gate: only run when the
-    # event is a successful Preview deployment, or a manual dispatch.
+    # Two gates, OR-joined.
+    #
+    # 1. workflow_dispatch path: keep the human-triggered owners check —
+    #    `github.actor` is the maintainer who clicked Run.
+    #
+    # 2. deployment_status path: the actor is `vercel[bot]`, never a
+    #    human, so the owners list never matches. The intended security
+    #    perimeter for this event is "did Vercel actually deploy this
+    #    commit", which is already enforced by the Vercel project's own
+    #    access list (only repo collaborators can configure the
+    #    integration → only their pushes generate deployments). We
+    #    additionally pin to successful Preview deployments with a real
+    #    target_url so a half-built or production deploy can never trip
+    #    the workflow.
     if: |
-      contains(fromJSON(vars.TIKTEST_OWNERS || '["marcushyett"]'), github.actor) &&
       (
-        github.event_name == 'workflow_dispatch' ||
-        (
-          github.event_name == 'deployment_status' &&
-          github.event.deployment_status.state == 'success' &&
-          github.event.deployment.environment == 'Preview' &&
-          github.event.deployment_status.target_url != ''
-        )
+        github.event_name == 'workflow_dispatch' &&
+        contains(fromJSON(vars.TIKTEST_OWNERS || '["marcushyett"]'), github.actor)
+      ) ||
+      (
+        github.event_name == 'deployment_status' &&
+        github.event.deployment_status.state == 'success' &&
+        github.event.deployment.environment == 'Preview' &&
+        github.event.deployment_status.target_url != ''
       )
     runs-on: ubuntu-latest
     timeout-minutes: 25
