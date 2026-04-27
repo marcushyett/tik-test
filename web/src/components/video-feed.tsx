@@ -14,11 +14,6 @@ import { useSeenVideos } from "@/lib/seen-videos";
 import type { OpenPR } from "@/lib/github";
 import type { TikTestVideo } from "@/lib/marker";
 
-/** A video has to dwell at the top of the feed for this long before we
- *  count it as "seen" — guards against a fast scroll-past producing false
- *  positives on every video the user blew through. */
-const MARK_SEEN_DELAY_MS = 1500;
-
 type FeedItem = { pr: OpenPR; video: TikTestVideo };
 
 function flatten(prs: OpenPR[]): FeedItem[] {
@@ -40,14 +35,19 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
 
   const current = items[idx];
 
-  // Mark the current video as seen after it dwells long enough — protects
-  // against a power-user scrolling through ten videos in two seconds and
-  // marking all of them. The dwell timer resets every time `idx` changes.
+  // Mark the OUTGOING video as seen when the user navigates away from it.
+  // We track the previously-mounted runId in a ref and, whenever idx changes
+  // such that current.video.runId is different, mark the prior id. This
+  // matches the user's mental model: "I navigated past it, I've seen it."
+  // The current/incoming video stays NEW until the user moves on from it.
+  const prevRunIdRef = useRef<string | null>(null);
   useEffect(() => {
-    const id = current?.video.runId;
-    if (!id) return;
-    const t = setTimeout(() => markSeen(id), MARK_SEEN_DELAY_MS);
-    return () => clearTimeout(t);
+    const incomingId = current?.video.runId ?? null;
+    const outgoingId = prevRunIdRef.current;
+    if (outgoingId && outgoingId !== incomingId) {
+      markSeen(outgoingId);
+    }
+    prevRunIdRef.current = incomingId;
   }, [current?.video.runId, markSeen]);
 
   // Pause the currently-mounted video before changing idx so that — even if
