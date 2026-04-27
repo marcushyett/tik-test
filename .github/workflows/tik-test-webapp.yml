@@ -9,16 +9,11 @@
 #
 # Trigger model
 # -------------
-# This workflow listens for Vercel's `deployment_status` event. When a
-# preview build for a PR succeeds, GitHub fires the event with the
-# preview URL in `target_url`. We sign a bypass URL against THAT host
-# and hand it to the action — so each run targets the PR's own changes,
-# not stale production code.
-#
-# We deliberately do NOT trigger on `pull_request` because we need the
-# preview URL, which doesn't exist until Vercel finishes building.
-# Listening for the deployment readiness signal directly removes the
-# need for any in-workflow polling.
+# Triggered on `pull_request` (so `anthropics/claude-code-action`'s auth
+# step accepts the event — it explicitly refuses `deployment_status`).
+# Inside the workflow we then POLL the GitHub Deployments API for a
+# successful Preview deployment matching the PR's head SHA. That gives
+# us per-PR preview URLs without needing the deployment_status trigger.
 #
 # Sister workflow: tik-test-taskpad.yml runs on PRs that touch the
 # bundled Taskpad demo and spins up the demo locally inside the runner.
@@ -45,9 +40,10 @@
 name: tik-test review (webapp)
 
 on:
-  # Vercel's GitHub integration fires `deployment_status` for each preview
-  # build. We act on the success state for Preview deployments only.
-  deployment_status:
+  pull_request:
+    paths:
+      - web/**
+      - .github/workflows/tik-test-webapp.yml
   workflow_dispatch:
     inputs:
       pr_number:
@@ -61,54 +57,74 @@ permissions:
   contents: write
   pull-requests: write
   id-token: write
+  deployments: read
 
 jobs:
   review:
-    # Two gates, OR-joined.
-    #
-    # 1. workflow_dispatch path: keep the human-triggered owners check —
-    #    `github.actor` is the maintainer who clicked Run.
-    #
-    # 2. deployment_status path: the actor is `vercel[bot]`, never a
-    #    human, so the owners list never matches. The intended security
-    #    perimeter for this event is "did Vercel actually deploy this
-    #    commit", which is already enforced by the Vercel project's own
-    #    access list (only repo collaborators can configure the
-    #    integration → only their pushes generate deployments). We
-    #    additionally pin to successful Preview deployments with a real
-    #    target_url so a half-built or production deploy can never trip
-    #    the workflow.
+    # Owners gate keeps fork PRs and random contributors from burning the
+    # Claude subscription budget. Same shape as the taskpad workflow.
     if: |
+      contains(fromJSON(vars.TIKTEST_OWNERS || '["marcushyett"]'), github.actor) &&
       (
-        github.event_name == 'workflow_dispatch' &&
-        contains(fromJSON(vars.TIKTEST_OWNERS || '["marcushyett"]'), github.actor)
-      ) ||
-      (
-        github.event_name == 'deployment_status' &&
-        github.event.deployment_status.state == 'success' &&
-        github.event.deployment.environment == 'Preview' &&
-        github.event.deployment_status.target_url != ''
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
       )
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
+      - name: Wait for Vercel Preview deployment
+        id: vercel
+        # Skip on workflow_dispatch — the user provided the URL directly.
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Poll the deployments API until a Preview deployment with state=success
+          # exists for this PR's head SHA. Vercel typically takes 60-180s for the
+          # web/ project, occasionally longer on cold deps. Cap at 12 min so we
+          # never strand the runner indefinitely.
+          set -euo pipefail
+          DEADLINE=$(( $(date +%s) + 720 ))
+          while [[ $(date +%s) -lt $DEADLINE ]]; do
+            DEP_ID=$(gh api "repos/$REPO/deployments?sha=$SHA&environment=Preview&per_page=5" --jq '.[0].id // empty')
+            if [[ -n "$DEP_ID" ]]; then
+              URL=$(gh api "repos/$REPO/deployments/$DEP_ID/statuses" --jq '.[] | select(.state == "success") | .target_url' | head -1)
+              if [[ -n "$URL" ]]; then
+                echo "Found preview: $URL"
+                echo "url=$URL" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              # Surface a still-building hint without polluting logs every poll.
+              STATE=$(gh api "repos/$REPO/deployments/$DEP_ID/statuses" --jq '.[0].state // "?"')
+              echo "Vercel preview not ready yet (latest state: $STATE) — sleeping…"
+            else
+              echo "No Preview deployment for SHA $SHA yet — sleeping…"
+            fi
+            sleep 30
+          done
+          echo "::error::Timed out after 12 min waiting for a successful Vercel Preview deployment for $SHA."
+          exit 1
+
       - name: Sign test-bypass URL
         id: sign
         shell: bash
         env:
           TIKTEST_BYPASS_SECRET: ${{ secrets.TIKTEST_BYPASS_SECRET }}
-          # Either the preview URL from the deployment_status event, or
-          # the URL the maintainer typed when manually dispatching.
-          BASE_URL: ${{ github.event.deployment_status.target_url || github.event.inputs.preview_url }}
+          # Either the polled URL from the Vercel deployments API, or the
+          # URL the maintainer typed when manually dispatching.
+          BASE_URL: ${{ steps.vercel.outputs.url || github.event.inputs.preview_url }}
         run: |
           if [[ -z "$TIKTEST_BYPASS_SECRET" ]]; then
             echo "::error::TIKTEST_BYPASS_SECRET is not set. Add it under Settings → Secrets and Variables → Actions (same value as in Vercel Preview env)."
             exit 1
           fi
           if [[ -z "$BASE_URL" ]]; then
-            echo "::error::Couldn't resolve a preview URL. Ensure Vercel posted a successful Preview deployment, or pass preview_url on workflow_dispatch."
+            echo "::error::Couldn't resolve a preview URL (no Vercel preview found, no preview_url input)."
             exit 1
           fi
           REDIRECT="/r/${{ github.repository }}"
