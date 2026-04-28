@@ -290,6 +290,13 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     // on the preview domain.
     storageState: storageStatePath,
   });
+  // Recording starts the moment newContext({recordVideo}) returns. All
+  // event + interaction timestamps below this line use this reference,
+  // NOT runStart, because the raw video file's time-zero is recordingStart
+  // — anything earlier (browser launch, CDP discovery, the 0.5-3s of
+  // bootstrapping) doesn't exist in the recorded video. Using runStart
+  // here was making clicks land 1-3s late in the rendered cursor.
+  const recordingStart = performance.now();
   if (cookies?.length) {
     await context.addCookies(cookies.map((c) => ({
       name: c.name,
@@ -348,7 +355,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   // that drives the trim plan.
   const interactions: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }> = [];
   await context.exposeFunction("__tikRecord", (data: { kind: "move" | "click" | "key"; x: number; y: number; key?: string }) => {
-    interactions.push({ ts: Math.max(0, Math.round(performance.now() - runStart)), ...data });
+    interactions.push({ ts: Math.max(0, Math.round(performance.now() - recordingStart)), ...data });
   });
   await context.addInitScript(INTERACTION_RECORDER_INIT);
   await context.addInitScript(BROKEN_IMAGE_FALLBACK);
@@ -463,7 +470,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     for (let gi = 0; gi < plan.goals.length; gi++) {
       const goal = plan.goals[gi];
       const t0 = performance.now();
-      const startMs = Math.max(0, Math.round(t0 - runStart));
+      const startMs = Math.max(0, Math.round(t0 - recordingStart));
       const goalStartedAtWall = Date.now();
       logLine(chalk.cyan("▶"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any);
       let result: Awaited<ReturnType<typeof runGoal>>;
@@ -472,7 +479,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       } catch (e) {
         result = { outcome: "failure", note: (e as Error).message.split("\n")[0], actions: [], bbox: undefined };
       }
-      const endMs = Math.max(startMs + 50, Math.round(performance.now() - runStart));
+      const endMs = Math.max(startMs + 50, Math.round(performance.now() - recordingStart));
       // Convert each tool-call's wall-clock `startedAt` into an active
       // window in raw-video timeline terms. Span 2.5s per call so the
       // viewer can actually see what happened; the trim planner keeps
