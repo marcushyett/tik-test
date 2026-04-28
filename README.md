@@ -202,31 +202,53 @@ Useful flags:
 
 ### 3. Claude Code plugin
 
-Already inside a Claude Code session? Install the plugin from the bundled marketplace:
+Already inside a Claude Code session? Four-step setup, two of which are one-time-per-machine.
+
+**Step 1 — install runtime prereqs (one-time per machine):**
 
 ```sh
 npm install -g tik-test                          # CLI binary the plugin shells out to
 npx playwright install chromium                  # browser the agent drives
 ```
 
-Then in the Claude Code prompt:
+You also need `ffmpeg` on PATH (`brew install ffmpeg` on macOS, `sudo apt install ffmpeg` on Linux) and a `claude` CLI signed in (`claude setup-token`).
+
+**Step 2 — add the marketplace and install the plugin (one-time per machine):**
+
+In your Claude Code prompt:
 
 ```
 /plugin marketplace add marcushyett/tik-test
 /plugin install tiktest@tiktest
 ```
 
-That's it — the slash commands are now available across all your sessions:
+The slash commands are now available across all your future Claude Code sessions.
+
+**Step 3 — scaffold a `tiktest.md` for your project (one-time per project):**
+
+`cd` into your project, then:
 
 ```
-/tiktest:setup                # scaffolds tiktest.md by inspecting your project
-/tiktest:run                  # auto-detects localhost dev server, drops MP4 on Desktop, prints checklist
-/tiktest:quick                # no video — faster, prints checklist in chat
+/tiktest:setup
 ```
 
-Or invoke the bundled sub-agent: *"Use the tiktest-runner agent to record a walkthrough of …"*.
+This inspects your `package.json` / `README.md` / framework configs to draft a `tiktest.md`, then asks you for anything it can't infer (login credentials, special URLs, areas to focus on).
 
-Working on the plugin itself or want a feature branch? Use `claude --plugin-dir ./plugin` from a checkout — see [docs/PLUGIN.md](docs/PLUGIN.md) for details.
+**Step 4 — record or test (whenever you ship a feature):**
+
+```
+/tiktest:run                          # agent test pass + MP4 walkthrough on Desktop + pass/fail checklist
+/tiktest:run http://localhost:5173    # explicit URL (skip the dev-server probe)
+/tiktest:quick                        # no video — faster, prints checklist in chat
+```
+
+Or invoke the bundled sub-agent from any session: *"Use the tiktest-runner agent to record a walkthrough of the feature I just shipped."*
+
+The agent reads `git diff origin/main..HEAD`, summarises what you changed, lists the things it'll exercise, then runs. Soft confirmation — interrupt with words if you want a different focus.
+
+**Updating the plugin** later: `/plugin marketplace update tiktest`.
+
+**Hacking on the plugin itself?** Clone the repo and use `claude --plugin-dir ./plugin` — see [docs/PLUGIN.md](docs/PLUGIN.md) for the development install + troubleshooting guide.
 
 ---
 
