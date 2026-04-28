@@ -161,7 +161,6 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   });
 
   const interactions = input.interactions ?? [];
-  const moves = interactions.filter((i) => i.kind === "move");
   const clicks = interactions.filter((i) => i.kind === "click");
 
   // Targeted pan-zoom — bell curve around each click (peaks ~0.2s after
@@ -184,26 +183,43 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   const zoomScale = 1 + (ZOOM_PEAK - 1) * eased;
   const focus = bestClick ? toCanvas(bestClick.x, bestClick.y) : { cx: canvasW / 2, cy: canvasH / 2 };
 
-  // Cursor position — interpolate between the bracketing `move` events.
-  // Falls back to the centre when no moves exist yet (very early frames).
+  // Cursor path — click-to-click travel with ease-out. Playwright MCP
+  // emits very few raw mousemove events (its locator.click() hits the
+  // target without painting an intermediate trail), so interpolating
+  // between sparse moves leaves the cursor crawling. Instead we drive
+  // the cursor purely off click positions: it sits on the previous
+  // click, then glides over to the next one in TRAVEL_S before that
+  // click's flash fires. Result: human-paced motion with the cursor
+  // ALWAYS arriving exactly where the page is about to be tapped.
+  const TRAVEL_S = 0.55;
   let cursorVx = vw / 2;
   let cursorVy = vh / 2;
-  for (let i = moves.length - 1; i >= 0; i--) {
-    const m = moves[i];
-    const tNow = m.ts / 1000;
-    if (tNow > timeS) continue;
-    const next = moves[i + 1];
-    if (!next) {
-      cursorVx = m.x;
-      cursorVy = m.y;
-    } else {
-      const tNext = next.ts / 1000;
-      const span = Math.max(0.001, tNext - tNow);
-      const lerp = Math.min(1, Math.max(0, (timeS - tNow) / span));
-      cursorVx = m.x + (next.x - m.x) * lerp;
-      cursorVy = m.y + (next.y - m.y) * lerp;
+  if (clicks.length > 0) {
+    // Default — before the first click, sit at the first click's spot
+    cursorVx = clicks[0].x;
+    cursorVy = clicks[0].y;
+    for (let i = 0; i < clicks.length; i++) {
+      const tc = clicks[i].ts / 1000;
+      if (timeS >= tc) {
+        cursorVx = clicks[i].x;
+        cursorVy = clicks[i].y;
+        continue;
+      }
+      // We are between clicks[i-1] and clicks[i] (or before the first)
+      const prev = i > 0 ? clicks[i - 1] : clicks[i];
+      const travelStart = Math.max((prev.ts / 1000) + 0.05, tc - TRAVEL_S);
+      if (timeS <= travelStart) {
+        cursorVx = prev.x;
+        cursorVy = prev.y;
+      } else {
+        const span = Math.max(0.001, tc - travelStart);
+        const tRaw = Math.min(1, Math.max(0, (timeS - travelStart) / span));
+        const tEased = Easing.bezier(0.22, 1, 0.36, 1)(tRaw); // ease-out so the cursor decelerates onto the target
+        cursorVx = prev.x + (clicks[i].x - prev.x) * tEased;
+        cursorVy = prev.y + (clicks[i].y - prev.y) * tEased;
+      }
+      break;
     }
-    break;
   }
   const cursor = toCanvas(cursorVx, cursorVy);
 
@@ -287,9 +303,12 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
 
 /**
  * Pointer + click flash drawn on top of the recording. Lives inside the
- * pan-zoom transform so it tracks the zoomed page coordinates exactly.
- * `counterScale` keeps the SVG visually constant in size as the parent
- * scales up/down (a 1.4× zoom would otherwise make the cursor 40% bigger).
+ * pan-zoom transform so the cursor tracks the zoomed page coordinates
+ * exactly. The SVG counter-scales to keep its on-screen size constant as
+ * the parent scales up/down. The pointer's tip (viewBox 3,2) is pinned
+ * EXACTLY to (cx, cy) — without this the click ring lands a few pixels
+ * off-target and the visual contract ("cursor is on the thing it clicks")
+ * breaks down on zoom-in.
  */
 const CursorOverlay: React.FC<{
   cx: number;
@@ -297,7 +316,15 @@ const CursorOverlay: React.FC<{
   flashAmount: number; // 0 → 1, peaks at the click moment
   counterScale: number;
 }> = ({ cx, cy, flashAmount, counterScale }) => {
-  const ringScale = 0.4 + flashAmount * 1.6;
+  // Smaller cursor than v1: 32px nominal vs the previous 56px. Roughly
+  // matches a real OS cursor at the recording's effective scale.
+  const NOMINAL = 32;
+  const cursorSize = NOMINAL * counterScale;
+  // SVG viewBox tip at (3, 2) inside a 28×28 box. Map to pixel offsets in
+  // the rendered SVG so we can offset the SVG so its tip sits at (cx, cy).
+  const tipX = cursorSize * (3 / 28);
+  const tipY = cursorSize * (2 / 28);
+  const ringScale = 0.5 + flashAmount * 1.4;
   const ringOpacity = flashAmount * 0.85;
   return (
     <>
@@ -307,40 +334,47 @@ const CursorOverlay: React.FC<{
             position: "absolute",
             left: cx,
             top: cy,
-            width: 160,
-            height: 160,
-            borderRadius: "50%",
-            border: `${6 * counterScale}px solid #00e5a0`,
-            transform: `translate(-50%, -50%) scale(${ringScale * counterScale})`,
-            opacity: ringOpacity,
-            boxShadow: `0 0 ${48 * counterScale}px #00e5a0`,
+            width: 0,
+            height: 0,
             pointerEvents: "none",
           }}
-        />
+        >
+          <div
+            style={{
+              position: "absolute",
+              left: -90 * counterScale,
+              top: -90 * counterScale,
+              width: 180 * counterScale,
+              height: 180 * counterScale,
+              borderRadius: "50%",
+              border: `${5 * counterScale}px solid #00e5a0`,
+              transform: `scale(${ringScale})`,
+              opacity: ringOpacity,
+              boxShadow: `0 0 ${44 * counterScale}px #00e5a0`,
+            }}
+          />
+        </div>
       )}
-      <div
+      <svg
+        viewBox="0 0 28 28"
+        width={cursorSize}
+        height={cursorSize}
         style={{
           position: "absolute",
-          left: cx,
-          top: cy,
-          width: 56,
-          height: 56,
-          transform: `translate(-18%, -12%) scale(${counterScale})`,
-          transformOrigin: "0 0",
-          filter: "drop-shadow(0 6px 18px rgba(0,0,0,0.7))",
+          left: cx - tipX,
+          top: cy - tipY,
+          filter: "drop-shadow(0 4px 10px rgba(0,0,0,0.6))",
           pointerEvents: "none",
         }}
       >
-        <svg viewBox="0 0 28 28" width={56} height={56}>
-          <path
-            d="M3 2 L3 22 L8.5 17 L12 25 L15 23.5 L11.5 15.5 L19 15.5 Z"
-            fill="#ffffff"
-            stroke="#0a0a0a"
-            strokeWidth={1.4}
-            strokeLinejoin="round"
-          />
-        </svg>
-      </div>
+        <path
+          d="M3 2 L3 22 L8.5 17 L12 25 L15 23.5 L11.5 15.5 L19 15.5 Z"
+          fill="#ffffff"
+          stroke="#0a0a0a"
+          strokeWidth={1.6}
+          strokeLinejoin="round"
+        />
+      </svg>
     </>
   );
 };
