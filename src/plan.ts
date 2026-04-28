@@ -14,7 +14,8 @@ Output ONLY a single JSON object (no prose, no markdown fences):
   "name": string,
   "summary": string,
   "startUrl": string,            // MUST equal Context's Target URL exactly — preview root, no sub-path
-  "viewport": { "width": number, "height": number },
+  "viewport": { "width": number, "height": number },  // see VIEWPORT below — pick based on PR signals
+
   "goals": Array<{
     "id": string,                // short kebab-case id
     "intent": string,            // natural-language goal — describes WHAT to do, not which selectors to use
@@ -23,6 +24,12 @@ Output ONLY a single JSON object (no prose, no markdown fences):
     "importance": "low"|"normal"|"high"|"critical"
   }>
 }
+
+VIEWPORT — pick the size that best showcases the change. Read the PR text, diff, and comments for signals:
+- 390×844 (mobile portrait) — pick when the PR mentions mobile/phone/small-screen/touch, when the diff touches mobile-only surfaces (drawers, sheets, bottom-sheets, mobile nav), or when responsive breakpoints below ~768px are involved. Mobile aspect also fills the reel canvas best for changes that ARE mobile-shaped.
+- 768×1024 (tablet portrait) — only when explicitly relevant; rare.
+- 1280×800 (desktop) — default. Use for changes to desktop-first surfaces (sidebars, multi-column layouts, hover states, keyboard shortcuts) and when the PR gives no mobile signal.
+Pick ONE viewport. If the change renders identically across sizes, pick the size most relevant to the PR's audience. Project-setup may pin a viewport in tiktest.md — only override that pin when the PR signal is unambiguous.
 
 GOAL-WRITING GUIDANCE:
 1. **1-{{MAX_GOALS}} goals. Ruthlessly tight.** The video is a scroll-feed review under 60 seconds. One PRIMARY goal (the core flow of what this PR does), optionally up to {{MAX_SECONDARY_GOALS}} secondary goals (bug-probing variants — double-click, edge case, keyboard shortcut). If you can't justify an extra goal as essential, leave it out.
