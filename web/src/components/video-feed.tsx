@@ -23,7 +23,27 @@ function flatten(prs: OpenPR[]): FeedItem[] {
 }
 
 export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }; prs: OpenPR[] }) {
-  const allItems = useMemo(() => flatten(prs), [prs]);
+  // PRs the user has merged in-session. Removed optimistically from the feed
+  // and the empty-state triage list as soon as the merge call resolves. Server
+  // data only refreshes on the next navigation, so without this set a merged
+  // PR would linger as a dead row until the page reloads. The Set lives at
+  // VideoFeed level so the same merge from a child surface (mobile drawer or
+  // empty-state row) updates every other surface in the tree at once.
+  const [mergedNumbers, setMergedNumbers] = useState<Set<number>>(() => new Set());
+  const displayPrs = useMemo(
+    () => (mergedNumbers.size === 0 ? prs : prs.filter((p) => !mergedNumbers.has(p.number))),
+    [prs, mergedNumbers],
+  );
+  const onMerged = useCallback((number: number) => {
+    setMergedNumbers((prev) => {
+      if (prev.has(number)) return prev;
+      const next = new Set(prev);
+      next.add(number);
+      return next;
+    });
+  }, []);
+
+  const allItems = useMemo(() => flatten(displayPrs), [displayPrs]);
   // Mount-time snapshot of seen IDs. We filter against this snapshot — not the
   // live `seenIds` from the hook — so a video the user marks seen during the
   // session doesn't vanish out from under their cursor mid-navigation. The
@@ -189,8 +209,9 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
   if (allItems.length === 0) {
     return (
       <EmptyStatePRList
-        prs={prs}
+        prs={displayPrs}
         repo={repo}
+        onMerged={onMerged}
         heading="Nothing to review yet"
         subheading={`tik-test hasn't posted a video on any open PR in ${repo.owner}/${repo.name}.`}
       />
@@ -206,8 +227,9 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
   if (idx >= items.length) {
     return (
       <InboxZero
-        prs={prs}
+        prs={displayPrs}
         repo={repo}
+        onMerged={onMerged}
         onRestart={() => setIdx(0)}
       />
     );
@@ -367,7 +389,7 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
           </Button>
         </div>
 
-        <MobileDrawer pr={pr} repo={repo} checklist={video.checklist}>
+        <MobileDrawer pr={pr} repo={repo} checklist={video.checklist} onMerged={onMerged}>
           {sidebar}
         </MobileDrawer>
       </div>
@@ -822,16 +844,19 @@ function InboxZero({
   prs,
   repo,
   onRestart,
+  onMerged,
 }: {
   prs: OpenPR[];
   repo: { owner: string; name: string };
   onRestart: () => void;
+  onMerged?: (number: number) => void;
 }) {
   return (
     <div className="flex flex-col gap-4">
       <EmptyStatePRList
         prs={prs}
         repo={repo}
+        onMerged={onMerged}
         heading="Inbox zero."
         subheading="You've worked through every tik-test review in this repo. Open PRs and their merge readiness below."
       />

@@ -32,9 +32,13 @@ interface Props {
    *  "every video already seen". */
   heading: string;
   subheading?: string;
+  /** Fired ~1.2s after a successful merge so the parent (VideoFeed) can drop
+   *  the merged PR from the list. Without this the merged row would linger
+   *  with a stale "Merge" button that errors with "not mergeable" if pressed. */
+  onMerged?: (number: number) => void;
 }
 
-export function EmptyStatePRList({ prs, repo, heading, subheading }: Props) {
+export function EmptyStatePRList({ prs, repo, heading, subheading, onMerged }: Props) {
   if (prs.length === 0) {
     return (
       <div className="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center gap-3 px-6 text-center">
@@ -59,14 +63,22 @@ export function EmptyStatePRList({ prs, repo, heading, subheading }: Props) {
       </header>
       <ul className="flex flex-col gap-3">
         {prs.map((pr) => (
-          <PRRow key={pr.number} pr={pr} repo={repo} />
+          <PRRow key={pr.number} pr={pr} repo={repo} onMerged={onMerged} />
         ))}
       </ul>
     </div>
   );
 }
 
-function PRRow({ pr, repo }: { pr: OpenPR; repo: { owner: string; name: string } }) {
+function PRRow({
+  pr,
+  repo,
+  onMerged,
+}: {
+  pr: OpenPR;
+  repo: { owner: string; name: string };
+  onMerged?: (number: number) => void;
+}) {
   const [confirming, setConfirming] = useState(false);
   const [pending, startTransition] = useTransition();
   const [result, setResult] = useState<{ kind: "ok"; sha?: string } | { kind: "err"; message: string } | null>(null);
@@ -87,6 +99,8 @@ function PRRow({ pr, repo }: { pr: OpenPR; repo: { owner: string; name: string }
       if (res.ok) {
         setResult({ kind: "ok", sha: res.sha });
         setConfirming(false);
+        // Brief "Merged ✓" pill flash, then the parent removes this row.
+        if (onMerged) setTimeout(() => onMerged(pr.number), 1200);
       } else {
         setResult({ kind: "err", message: res.error });
       }
