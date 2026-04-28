@@ -179,13 +179,53 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
 
    Do not proceed if anything is missing.
 
-2. **Resolve the target URL.** Three resolution paths — remember which one you took, step 4 branches on it:
+2. **Resolve the target URL.** Three resolution paths — remember which one you took, step 5 branches on it:
    - **(a)** If `$ARGUMENTS` starts with `http://` or `https://`, that is the URL.
    - **(b)** Else, probe each of these in order with `curl -sf -o /dev/null --max-time 1 <url>` and use the first that responds: `http://localhost:3000`, `http://localhost:5173`, `http://localhost:4173`, `http://localhost:8080`.
    - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or a `README.md` containing either a `## TikTest`/`## Testing` (or alias) heading or a bare `http://` / `https://` URL — the CLI extracts the URL from any of these. In this path no URL is resolved here — the CLI parses it from the file.
    - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:run http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
-3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
+3. **Summarise the change and announce a plan (soft confirmation).** Help the user feel that the agent understands what they just shipped — read the diff, summarise it, list what you'll exercise, then proceed. The user can interrupt with corrections mid-stream; **never** ask an explicit yes/no question.
+
+   First, check whether this step applies at all:
+
+   ```bash
+   git rev-parse --git-dir 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null
+   ```
+
+   **Skip this entire step (proceed silently to step 4) if any of:**
+   - The `git rev-parse --git-dir` command failed (cwd is not a git repo).
+   - The current branch is `main` or `master` (no feature to summarise).
+   - There's no diff vs `origin/main` AND no uncommitted changes — i.e. both `git diff --stat` and `git diff origin/main..HEAD --stat` print nothing.
+   - You took **path (a)** in step 2 (the user passed an explicit URL as `$ARGUMENTS`). They already know what they want; don't slow them down with a plan summary.
+
+   Otherwise, gather a quick view of the change (token-aware — don't read the full diff for large changes):
+
+   ```bash
+   # Recent commits on this branch (fall back to `main` if `origin/main` doesn't exist; skip silently if neither does)
+   git log origin/main..HEAD --oneline -10 2>/dev/null || git log main..HEAD --oneline -10 2>/dev/null
+   # File-level summary
+   git diff origin/main..HEAD --stat 2>/dev/null
+   git diff --stat
+   # If the total `--stat` output suggests <200 lines changed, also grab the full diff:
+   git diff origin/main..HEAD 2>/dev/null
+   ```
+
+   For larger diffs, stop at the file list and a few representative hunks — don't read the whole thing.
+
+   Then write **one short paragraph** (~2 sentences) describing what the change appears to be. Be concrete — reference filenames, function names, route paths, UI components from the diff. Follow with **3–5 bullet points** listing the specific things you'll exercise. Generic structure (do not echo any product names from this prompt — fill in from what the diff actually shows):
+
+   > "Looks like you've added [one-line summary referencing concrete files/symbols from the diff]. I'll exercise:
+   > 1. [first thing — e.g. opening the new surface]
+   > 2. [second thing — e.g. exercising the primary action with valid input]
+   > 3. [third thing — e.g. an edge case the diff hints at]
+   > 4. [optional fourth — e.g. error handling]
+   >
+   > Running now — interrupt if you want a different focus."
+
+   **Proceed automatically.** Do not ask "should I continue?" or "is this right?" — print the summary, then move to step 4. The user retains the ability to interrupt with words mid-stream; that's the soft-confirmation contract.
+
+4. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
 
    ```bash
    TIKTEST_TMP=$(mktemp -d -t tiktest-XXXXXX)
@@ -206,7 +246,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
 
      Substitute `<RESOLVED_URL>` with the URL you resolved in step 2. Substitute `<ARGUMENTS_IF_NOT_URL>` with the literal text of `$ARGUMENTS` only if it didn't itself look like a URL — otherwise drop that line entirely. The Write tool writes the content as-is, so no shell expansion occurs. Set `<CONFIG_PATH>` to `${TIKTEST_TMP}/tiktest.md`.
 
-4. **Run the CLI.** Use the `tik-test` binary on PATH (installed via `npm install -g tik-test`) — version-locked with the plugin you're running. Do **not** use `npx -y tik-test@latest` (that would fetch a different version than the plugin and defeat the reuse principle).
+5. **Run the CLI.** Use the `tik-test` binary on PATH (installed via `npm install -g tik-test`) — version-locked with the plugin you're running. Do **not** use `npx -y tik-test@latest` (that would fetch a different version than the plugin and defeat the reuse principle).
 
    - **If you resolved a URL in step 2 (paths a or b)**, pass it explicitly:
 
@@ -227,7 +267,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
 
    Stream the output back to the user as it runs. The CLI prints four numbered phases (plan, run, checklist, edit) and lands on a `✓ done` line with the path to the produced MP4.
 
-5. **Move the MP4 to a stable, user-visible location.**
+6. **Move the MP4 to a stable, user-visible location.**
 
    ```bash
    STAMP=$(date -u +"%Y%m%dT%H%M%SZ")
@@ -245,7 +285,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
    echo "$OUT"
    ```
 
-6. **Report back** with two parts: (a) the absolute path to the MP4 (e.g. `~/Desktop/tiktest-<timestamp>.mp4`) plus one line describing what the walkthrough shows, and (b) the checklist as printed by the CLI in stdout — copy the section ending with the `N checks · M passed · K failed · J skipped` summary line, including the labelled `✓` / `✗` / `·` rows above it, so the user (or their agent) can immediately see what passed, what failed, and start fixing failures.
+7. **Report back** with two parts: (a) the absolute path to the MP4 (e.g. `~/Desktop/tiktest-<timestamp>.mp4`) plus one line describing what the walkthrough shows, and (b) the checklist as printed by the CLI in stdout — copy the section ending with the `N checks · M passed · K failed · J skipped` summary line, including the labelled `✓` / `✗` / `·` rows above it, so the user (or their agent) can immediately see what passed, what failed, and start fixing failures.
 
 ## What NOT to do
 
@@ -321,13 +361,53 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
 
    Do not proceed if anything is missing.
 
-2. **Resolve the target URL.** Three resolution paths — remember which one you took, step 4 branches on it:
+2. **Resolve the target URL.** Three resolution paths — remember which one you took, step 5 branches on it:
    - **(a)** If `$ARGUMENTS` starts with `http://` or `https://`, that is the URL.
    - **(b)** Else, probe each of these in order with `curl -sf -o /dev/null --max-time 1 <url>` and use the first that responds: `http://localhost:3000`, `http://localhost:5173`, `http://localhost:4173`, `http://localhost:8080`.
    - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or a `README.md` containing either a `## TikTest`/`## Testing` (or alias) heading or a bare `http://` / `https://` URL — the CLI extracts the URL from any of these. In this path no URL is resolved here — the CLI parses it from the file.
    - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:quick http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
-3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
+3. **Summarise the change and announce a plan (soft confirmation).** Help the user feel that the agent understands what they just shipped — read the diff, summarise it, list what you'll exercise, then proceed. The user can interrupt with corrections mid-stream; **never** ask an explicit yes/no question.
+
+   First, check whether this step applies at all:
+
+   ```bash
+   git rev-parse --git-dir 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null
+   ```
+
+   **Skip this entire step (proceed silently to step 4) if any of:**
+   - The `git rev-parse --git-dir` command failed (cwd is not a git repo).
+   - The current branch is `main` or `master` (no feature to summarise).
+   - There's no diff vs `origin/main` AND no uncommitted changes — i.e. both `git diff --stat` and `git diff origin/main..HEAD --stat` print nothing.
+   - You took **path (a)** in step 2 (the user passed an explicit URL as `$ARGUMENTS`). They already know what they want; don't slow them down with a plan summary.
+
+   Otherwise, gather a quick view of the change (token-aware — don't read the full diff for large changes):
+
+   ```bash
+   # Recent commits on this branch (fall back to `main` if `origin/main` doesn't exist; skip silently if neither does)
+   git log origin/main..HEAD --oneline -10 2>/dev/null || git log main..HEAD --oneline -10 2>/dev/null
+   # File-level summary
+   git diff origin/main..HEAD --stat 2>/dev/null
+   git diff --stat
+   # If the total `--stat` output suggests <200 lines changed, also grab the full diff:
+   git diff origin/main..HEAD 2>/dev/null
+   ```
+
+   For larger diffs, stop at the file list and a few representative hunks — don't read the whole thing.
+
+   Then write **one short paragraph** (~2 sentences) describing what the change appears to be. Be concrete — reference filenames, function names, route paths, UI components from the diff. Follow with **3–5 bullet points** listing the specific things you'll exercise. Generic structure (do not echo any product names from this prompt — fill in from what the diff actually shows):
+
+   > "Looks like you've added [one-line summary referencing concrete files/symbols from the diff]. I'll exercise:
+   > 1. [first thing — e.g. opening the new surface]
+   > 2. [second thing — e.g. exercising the primary action with valid input]
+   > 3. [third thing — e.g. an edge case the diff hints at]
+   > 4. [optional fourth — e.g. error handling]
+   >
+   > Running now — interrupt if you want a different focus."
+
+   **Proceed automatically.** Do not ask "should I continue?" or "is this right?" — print the summary, then move to step 4. The user retains the ability to interrupt with words mid-stream; that's the soft-confirmation contract.
+
+4. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
 
    ```bash
    TIKTEST_TMP=$(mktemp -d -t tiktest-XXXXXX)
@@ -348,7 +428,7 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
 
      Substitute `<RESOLVED_URL>` with the URL you resolved in step 2. Substitute `<ARGUMENTS_IF_NOT_URL>` with the literal text of `$ARGUMENTS` only if it didn't itself look like a URL — otherwise drop that line entirely. The Write tool writes the content as-is, so no shell expansion occurs. Set `<CONFIG_PATH>` to `${TIKTEST_TMP}/tiktest.md`.
 
-4. **Run the CLI in checks-only mode.** Use the `tik-test` binary on PATH (installed via `npm install -g tik-test`) — version-locked with the plugin you're running. Do **not** use `npx -y tik-test@latest` (that would fetch a different version than the plugin and defeat the reuse principle). Both branches must pass `--no-video` so the CLI skips the Remotion render and only emits the checklist.
+5. **Run the CLI in checks-only mode.** Use the `tik-test` binary on PATH (installed via `npm install -g tik-test`) — version-locked with the plugin you're running. Do **not** use `npx -y tik-test@latest` (that would fetch a different version than the plugin and defeat the reuse principle). Both branches must pass `--no-video` so the CLI skips the Remotion render and only emits the checklist.
 
    - **If you resolved a URL in step 2 (paths a or b)**, pass it explicitly:
 
@@ -371,7 +451,7 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
 
    Stream the output back to the user as it runs. The CLI prints its planned phases and lands on a `✓ done` (or `✗`) summary line.
 
-5. **Surface the checklist.** Relay the CLI's printed checklist back to the user verbatim — the `✓` (passed), `✗` (failed), and `·` (skipped / not-attempted) lines are the whole point of this command. Mention the path to the run's `events.json` so the user can dig into raw tool-use events if they want more than the summary. The events.json lives at the path printed by:
+6. **Surface the checklist.** Relay the CLI's printed checklist back to the user verbatim — the `✓` (passed), `✗` (failed), and `·` (skipped / not-attempted) lines are the whole point of this command. Mention the path to the run's `events.json` so the user can dig into raw tool-use events if they want more than the summary. The events.json lives at the path printed by:
 
    ```bash
    find "$TIKTEST_TMP/runs" -name "events.json" -print -quit
@@ -457,13 +537,53 @@ A single dispatch prompt may combine any of the above.
 
    Do not proceed if anything is missing.
 
-2. **Resolve target URL.** Three resolution paths — remember which one you took, step 4 branches on it:
+2. **Resolve target URL.** Three resolution paths — remember which one you took, step 5 branches on it:
    - **(a)** If the dispatch prompt contains an explicit URL (starts with `http://` or `https://`), that is the URL.
    - **(b)** Else, probe each of these in order with `curl -sf -o /dev/null --max-time 1 <url>` and use the first that responds: `http://localhost:3000`, `http://localhost:5173`, `http://localhost:4173`, `http://localhost:8080`.
    - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or a `README.md` containing either a `## TikTest`/`## Testing` (or alias) heading or a bare `http://` / `https://` URL — the CLI extracts the URL from any of these. In this path no URL is resolved here — the CLI parses it from the file.
    - Else, stop and return to the parent: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, dispatch with an explicit URL in the prompt, or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
-3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
+3. **Summarise the change and announce a plan to the parent (soft confirmation).** When dispatched from a parent session that's working in a git repo, give the parent a quick read on what you think they want tested. Report the plan back so they can interrupt if needed; **never** ask an explicit yes/no question.
+
+   First, check whether this step applies at all:
+
+   ```bash
+   git rev-parse --git-dir 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null
+   ```
+
+   **Skip this entire step (proceed silently to step 4) if any of:**
+   - The `git rev-parse --git-dir` command failed (cwd is not a git repo).
+   - The current branch is `main` or `master` (no feature to summarise).
+   - There's no diff vs `origin/main` AND no uncommitted changes — i.e. both `git diff --stat` and `git diff origin/main..HEAD --stat` print nothing.
+   - You took **path (a)** in step 2 (the dispatch prompt provided an explicit URL). The parent already knows what they want.
+
+   Otherwise, gather a quick view of the change (token-aware — don't read the full diff for large changes):
+
+   ```bash
+   # Recent commits on this branch (fall back to `main` if `origin/main` doesn't exist; skip silently if neither does)
+   git log origin/main..HEAD --oneline -10 2>/dev/null || git log main..HEAD --oneline -10 2>/dev/null
+   # File-level summary
+   git diff origin/main..HEAD --stat 2>/dev/null
+   git diff --stat
+   # If the total `--stat` output suggests <200 lines changed, also grab the full diff:
+   git diff origin/main..HEAD 2>/dev/null
+   ```
+
+   For larger diffs, stop at the file list and a few representative hunks — don't read the whole thing.
+
+   Then report **one short paragraph** (~2 sentences) describing what the change appears to be — be concrete, reference filenames, function names, route paths, or UI components from the diff. Follow with **3–5 bullet points** listing the specific things you'll exercise. Generic structure (do not echo any product names from this prompt — fill in from what the diff actually shows):
+
+   > "Looks like the change adds [one-line summary referencing concrete files/symbols from the diff]. I'll exercise:
+   > 1. [first thing — e.g. opening the new surface]
+   > 2. [second thing — e.g. exercising the primary action with valid input]
+   > 3. [third thing — e.g. an edge case the diff hints at]
+   > 4. [optional fourth — e.g. error handling]
+   >
+   > Running now — interrupt if you want a different focus."
+
+   **Proceed automatically.** Do not ask the parent "should I continue?" or "is this right?" — emit the summary, then move to step 4. The parent retains the ability to interrupt mid-stream; that's the soft-confirmation contract.
+
+4. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
 
    ```bash
    TIKTEST_TMP=$(mktemp -d -t tiktest-XXXXXX)
@@ -484,7 +604,7 @@ A single dispatch prompt may combine any of the above.
 
      Substitute `<RESOLVED_URL>` with the URL you resolved in step 2. Substitute `<FOCUS_CONTEXT>` with the literal focus description from your dispatch prompt if any was provided — otherwise drop that trailing sentence fragment entirely. Do not use a Bash heredoc; use the Write tool so the content lands as-is. Set `<CONFIG_PATH>` to `${TIKTEST_TMP}/tiktest.md`.
 
-4. **Invoke the CLI.** **Decide mode now.** Checks-only mode if the dispatch prompt indicated *no video / checks only / checklist only / skip render / just the checks / a checklist*; video mode otherwise (this is the default).
+5. **Invoke the CLI.** **Decide mode now.** Checks-only mode if the dispatch prompt indicated *no video / checks only / checklist only / skip render / just the checks / a checklist*; video mode otherwise (this is the default).
 
    Use the `tik-test` binary on PATH (installed via `npm install -g tik-test`) — version-locked with the plugin you're running. Do **not** use `npx -y tik-test@latest` (that would fetch a different version than the plugin and defeat the reuse principle).
 
@@ -511,7 +631,7 @@ A single dispatch prompt may combine any of the above.
 
    Stream the output back to the parent as it runs. The CLI prints its planned phases and lands on a `✓ done` (or `✗`) summary line.
 
-5. **Move the MP4 to a stable, user-visible location.** **Video mode only** — skip this entire step in checks-only mode (the CLI didn't produce an MP4, there's nothing to move).
+6. **Move the MP4 to a stable, user-visible location.** **Video mode only** — skip this entire step in checks-only mode (the CLI didn't produce an MP4, there's nothing to move).
 
    ```bash
    STAMP=$(date -u +"%Y%m%dT%H%M%SZ")
@@ -529,7 +649,7 @@ A single dispatch prompt may combine any of the above.
    echo "$OUT"
    ```
 
-6. **Return to parent.**
+7. **Return to parent.**
    - **Video mode:** the absolute MP4 path plus a single sentence describing what the walkthrough shows (a generic "Walkthrough recorded — open in any video player." is fine).
    - **Checks mode:** the checklist as the CLI printed it verbatim — the `✓` (passed), `✗` (failed), and `·` (skipped / not-attempted) lines are the whole point of this dispatch — plus the path to `events.json`, so the parent can dig into raw tool-use events if it wants more than the summary. The events.json lives at the path printed by:
 
@@ -1078,6 +1198,74 @@ The cost is one extra Claude `sonnet` call per run (~5–10s for the synthesis p
   ```
 
   No `dist/` rebuild — the source is the committed change; the next `npm publish` (or the smoke tests in Task 7) will pick it up.
+
+---
+
+## Task 11: Diff-aware plan-before-run in run / quick skills + sub-agent
+
+**Why:** the plugin runs an agent for several minutes against a feature the user just shipped. Today the agent has zero awareness of *what* changed — it just exercises whatever surfaces it discovers in the resolved URL. Users want a quick, visible signal that the agent has read the diff and intends to test the right things, with the option to redirect it before minutes of compute go to waste. We add a soft-confirmation step: read the diff, summarise the change, list 3–5 things to exercise, then proceed automatically. The user can interrupt with corrections mid-stream — no explicit yes/no gate.
+
+**Files:**
+- Modify: `plugin/skills/run/SKILL.md` (insert new step 3 between URL resolution and run-dir setup; renumber subsequent steps + their internal references)
+- Modify: `plugin/skills/quick/SKILL.md` (same insertion / renumbering)
+- Modify: `plugin/agents/tiktest-runner.md` (same insertion / renumbering, with phrasing aimed at the parent rather than the user)
+- Modify: `docs/superpowers/plans/2026-04-28-claude-code-plugin.md` (mirror all three SKILL/agent block updates byte-for-byte; this Task 11 section is the documentation of the change)
+
+**Placement note:** the new step lives **after** URL resolution (current step 2) rather than before. The skip-when-explicit-URL branch needs to know whether the URL came from `$ARGUMENTS` (path a in step 2), so evaluating after URL resolution reads cleaner than special-casing the dependency the other way.
+
+**Skip-gracefully logic** (the new step exits silently if any of these are true):
+- Cwd is not a git repo (`git rev-parse --git-dir` fails).
+- Current branch is `main` or `master` (no feature to summarise).
+- No diff vs `origin/main` AND no uncommitted changes.
+- The URL was provided as an explicit `$ARGUMENTS` (path a) — the user already knows what they want.
+
+**Soft-confirmation contract:** print the summary + the 3–5-item exercise plan, then move to the next step automatically. Never ask "should I continue?" or "is this right?" — the user retains the ability to interrupt with words mid-stream; that's the contract.
+
+**Token-budget guard:** for diffs <200 lines, the step grabs the full `git diff origin/main..HEAD`. For larger diffs it stops at the file list (`--stat`) plus a few representative hunks. Don't read the whole tree.
+
+- [x] **Step 11.1: Insert the new step in `plugin/skills/run/SKILL.md`** (between current steps 1 and 2 → after step 2 per the placement note above; renumber 3→4, 4→5, 5→6, 6→7; update the "step 4 branches on it" reference in step 2 to "step 5").
+
+- [x] **Step 11.2: Same insertion + renumbering in `plugin/skills/quick/SKILL.md`** (renumber 3→4, 4→5, 5→6; update "step 4 branches on it" → "step 5").
+
+- [x] **Step 11.3: Same insertion + renumbering in `plugin/agents/tiktest-runner.md`** (renumber 3→4, 4→5, 5→6, 6→7; update "step 4 branches on it" → "step 5"; phrase the announce-the-plan output as "Report the plan back to the parent" rather than aimed at the user).
+
+- [x] **Step 11.4: Mirror the three updated blocks in this plan doc.** Verify with `diff` that each embedded block matches its SKILL/agent file byte-for-byte:
+
+  ```bash
+  python3 -c "
+  import subprocess
+  with open('docs/superpowers/plans/2026-04-28-claude-code-plugin.md') as f:
+      lines = f.readlines()
+  blocks = {
+      'plugin/skills/run/SKILL.md': (147, 295),
+      'plugin/skills/quick/SKILL.md': (329, 466),
+      'plugin/agents/tiktest-runner.md': (500, 667),
+  }
+  for fname, (s, e) in blocks.items():
+      content = ''.join(lines[s:e-1])
+      tmp = f'/tmp/_extract_{fname.replace(chr(47), chr(95))}'
+      open(tmp, 'w').write(content)
+      r = subprocess.run(['diff', tmp, fname], capture_output=True, text=True)
+      print(f'{\"OK\" if r.returncode == 0 else \"MISMATCH\"}: {fname}')
+  "
+  ```
+
+  Expected: `OK` for all three.
+
+- [x] **Step 11.5: Domain-agnostic regression grep**
+
+  ```bash
+  grep -in -E "taskpad|todo|crm|inspiration|theater" plugin/skills/run/SKILL.md plugin/skills/quick/SKILL.md plugin/agents/tiktest-runner.md
+  ```
+
+  Expected: no matches. The new step's example uses generic placeholders (`[one-line summary referencing concrete files/symbols from the diff]`, "the new surface", "the primary action") — never product names from the consumer config.
+
+- [x] **Step 11.6: Commit**
+
+  ```bash
+  git add plugin/skills/run/SKILL.md plugin/skills/quick/SKILL.md plugin/agents/tiktest-runner.md docs/superpowers/plans/2026-04-28-claude-code-plugin.md
+  git commit -m "feat(plugin): summarise the diff and announce a plan before running"
+  ```
 
 ---
 

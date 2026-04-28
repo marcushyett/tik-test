@@ -37,13 +37,53 @@ A single dispatch prompt may combine any of the above.
 
    Do not proceed if anything is missing.
 
-2. **Resolve target URL.** Three resolution paths — remember which one you took, step 4 branches on it:
+2. **Resolve target URL.** Three resolution paths — remember which one you took, step 5 branches on it:
    - **(a)** If the dispatch prompt contains an explicit URL (starts with `http://` or `https://`), that is the URL.
    - **(b)** Else, probe each of these in order with `curl -sf -o /dev/null --max-time 1 <url>` and use the first that responds: `http://localhost:3000`, `http://localhost:5173`, `http://localhost:4173`, `http://localhost:8080`.
    - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or a `README.md` containing either a `## TikTest`/`## Testing` (or alias) heading or a bare `http://` / `https://` URL — the CLI extracts the URL from any of these. In this path no URL is resolved here — the CLI parses it from the file.
    - Else, stop and return to the parent: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, dispatch with an explicit URL in the prompt, or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
-3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
+3. **Summarise the change and announce a plan to the parent (soft confirmation).** When dispatched from a parent session that's working in a git repo, give the parent a quick read on what you think they want tested. Report the plan back so they can interrupt if needed; **never** ask an explicit yes/no question.
+
+   First, check whether this step applies at all:
+
+   ```bash
+   git rev-parse --git-dir 2>/dev/null && git rev-parse --abbrev-ref HEAD 2>/dev/null
+   ```
+
+   **Skip this entire step (proceed silently to step 4) if any of:**
+   - The `git rev-parse --git-dir` command failed (cwd is not a git repo).
+   - The current branch is `main` or `master` (no feature to summarise).
+   - There's no diff vs `origin/main` AND no uncommitted changes — i.e. both `git diff --stat` and `git diff origin/main..HEAD --stat` print nothing.
+   - You took **path (a)** in step 2 (the dispatch prompt provided an explicit URL). The parent already knows what they want.
+
+   Otherwise, gather a quick view of the change (token-aware — don't read the full diff for large changes):
+
+   ```bash
+   # Recent commits on this branch (fall back to `main` if `origin/main` doesn't exist; skip silently if neither does)
+   git log origin/main..HEAD --oneline -10 2>/dev/null || git log main..HEAD --oneline -10 2>/dev/null
+   # File-level summary
+   git diff origin/main..HEAD --stat 2>/dev/null
+   git diff --stat
+   # If the total `--stat` output suggests <200 lines changed, also grab the full diff:
+   git diff origin/main..HEAD 2>/dev/null
+   ```
+
+   For larger diffs, stop at the file list and a few representative hunks — don't read the whole thing.
+
+   Then report **one short paragraph** (~2 sentences) describing what the change appears to be — be concrete, reference filenames, function names, route paths, or UI components from the diff. Follow with **3–5 bullet points** listing the specific things you'll exercise. Generic structure (do not echo any product names from this prompt — fill in from what the diff actually shows):
+
+   > "Looks like the change adds [one-line summary referencing concrete files/symbols from the diff]. I'll exercise:
+   > 1. [first thing — e.g. opening the new surface]
+   > 2. [second thing — e.g. exercising the primary action with valid input]
+   > 3. [third thing — e.g. an edge case the diff hints at]
+   > 4. [optional fourth — e.g. error handling]
+   >
+   > Running now — interrupt if you want a different focus."
+
+   **Proceed automatically.** Do not ask the parent "should I continue?" or "is this right?" — emit the summary, then move to step 4. The parent retains the ability to interrupt mid-stream; that's the soft-confirmation contract.
+
+4. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
 
    ```bash
    TIKTEST_TMP=$(mktemp -d -t tiktest-XXXXXX)
@@ -64,7 +104,7 @@ A single dispatch prompt may combine any of the above.
 
      Substitute `<RESOLVED_URL>` with the URL you resolved in step 2. Substitute `<FOCUS_CONTEXT>` with the literal focus description from your dispatch prompt if any was provided — otherwise drop that trailing sentence fragment entirely. Do not use a Bash heredoc; use the Write tool so the content lands as-is. Set `<CONFIG_PATH>` to `${TIKTEST_TMP}/tiktest.md`.
 
-4. **Invoke the CLI.** **Decide mode now.** Checks-only mode if the dispatch prompt indicated *no video / checks only / checklist only / skip render / just the checks / a checklist*; video mode otherwise (this is the default).
+5. **Invoke the CLI.** **Decide mode now.** Checks-only mode if the dispatch prompt indicated *no video / checks only / checklist only / skip render / just the checks / a checklist*; video mode otherwise (this is the default).
 
    Use the `tik-test` binary on PATH (installed via `npm install -g tik-test`) — version-locked with the plugin you're running. Do **not** use `npx -y tik-test@latest` (that would fetch a different version than the plugin and defeat the reuse principle).
 
@@ -91,7 +131,7 @@ A single dispatch prompt may combine any of the above.
 
    Stream the output back to the parent as it runs. The CLI prints its planned phases and lands on a `✓ done` (or `✗`) summary line.
 
-5. **Move the MP4 to a stable, user-visible location.** **Video mode only** — skip this entire step in checks-only mode (the CLI didn't produce an MP4, there's nothing to move).
+6. **Move the MP4 to a stable, user-visible location.** **Video mode only** — skip this entire step in checks-only mode (the CLI didn't produce an MP4, there's nothing to move).
 
    ```bash
    STAMP=$(date -u +"%Y%m%dT%H%M%SZ")
@@ -109,7 +149,7 @@ A single dispatch prompt may combine any of the above.
    echo "$OUT"
    ```
 
-6. **Return to parent.**
+7. **Return to parent.**
    - **Video mode:** the absolute MP4 path plus a single sentence describing what the walkthrough shows (a generic "Walkthrough recorded — open in any video player." is fine).
    - **Checks mode:** the checklist as the CLI printed it verbatim — the `✓` (passed), `✗` (failed), and `·` (skipped / not-attempted) lines are the whole point of this dispatch — plus the path to `events.json`, so the parent can dig into raw tool-use events if it wants more than the summary. The events.json lives at the path printed by:
 
