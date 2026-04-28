@@ -872,6 +872,151 @@ EOF
 
 ---
 
+## Task 9: `/tiktest:setup` skill
+
+**Why:** the existing `run` / `quick` skills work without a `tiktest.md` (they synthesise a temp config from the resolved URL plus `$ARGUMENTS`), but the resulting agent run misses every project-specific signal — login flow, demo credentials, what surfaces matter, what selectors are stable. A persistent `tiktest.md` is the difference between a generic "click around" run and a focused walkthrough. Forcing the user to hand-write that file is the obvious onboarding cliff. `/tiktest:setup` removes the cliff: inspect the project, fill what's clearly there, ask about what isn't, write the file once.
+
+**Files:**
+- Create: `plugin/skills/setup/SKILL.md`
+- Modify: `docs/PLUGIN.md` (add a third bullet to the "Slash commands" section)
+- Modify: `README.md` (add `/tiktest:setup` as the first bullet in the `### 3. Claude Code plugin` slash-command code block)
+
+- [ ] **Step 9.1: Create the skill directory**
+
+```bash
+mkdir -p plugin/skills/setup
+```
+
+- [ ] **Step 9.2: Write `plugin/skills/setup/SKILL.md`**
+
+Use the Write tool. The body matches the existing `run` / `quick` SKILLs in style — frontmatter with `description` + `allowed-tools`, a short H1, a numbered Steps section, and a What-NOT-to-do section. Keep it concise (~80–120 lines). The full content is:
+
+```markdown
+---
+description: Scaffold a tiktest.md config file in the current project by inferring dev-server URL, start command, and auth flow from README, package.json, and framework configs. Use when the user wants to set up tik-test for a new project, or when /tiktest:run / /tiktest:quick says "no tiktest.md found".
+allowed-tools: Bash, Read, Write
+---
+
+# tiktest:setup
+
+The user wants a real, persistent `tiktest.md` in their project so they can run `/tiktest:run` / `/tiktest:quick` without re-deriving the URL, start command, and login each time. Inspect the project, infer what you can, ask the user for what you can't, and write the file.
+
+## Steps
+
+1. **Bail if a config already exists.** Check the cwd for either filename:
+
+   ```bash
+   ls tiktest.md tik-test.md 2>/dev/null
+   ```
+
+   If either prints, stop and report: "Found existing config at `<path>`. Edit it directly, or delete it first if you want to regenerate." Do **not** overwrite.
+
+2. **Inspect the project — opportunistically, not exhaustively.** Read whatever config and source files give the strongest signal about how the project runs locally and whether it has auth. Pick what's relevant per project; do not enumerate every possible file. The Read tool handles missing files gracefully — try the obvious candidates and stop once you have enough signal.
+
+   Useful sources (sample, don't exhaust):
+   - The package / build manifest (`package.json`, `pyproject.toml`, `Gemfile`, `Cargo.toml`, `go.mod`) for project name + description + dev-server scripts.
+   - `README.md` — look for sections like "Local dev", "Getting started", "Development", "Install", "Login", "Demo credentials".
+   - Framework configs that pin a dev port (`vite.config.*`, `next.config.*`, `astro.config.*`, `svelte.config.*`, `vue.config.*`, `nuxt.config.*`, `webpack.config.*`, `vercel.json`, `turbo.json`).
+   - Server entry points for non-JS stacks (FastAPI / Flask / Django `app.py` or `manage.py`, Sinatra `config.ru`, Go `main.go` for `http.ListenAndServe`).
+   - `Makefile` / `justfile` for `dev` / `start` / `run` targets.
+   - `.env.example` for default ports and any committed dev credentials.
+   - `docker-compose.yml` for service ports.
+
+   If the answer's already in `package.json` and `README.md`, you're done — don't read the rest of the source tree.
+
+3. **Synthesize a draft `tiktest.md`** from what you found. The shape is:
+
+   ```markdown
+   # <Project name>
+
+   <One-paragraph description of what the project does and the primary surfaces.>
+
+   ## Login
+
+   <Auth instructions — only include this section if you found evidence of an auth flow.>
+
+   ## Local dev
+
+   start: <command that starts the dev server>
+
+   The project serves at <URL>.
+   ```
+
+   Fill what you can confidently infer:
+   - **Project title + description**: from the manifest's `name` + `description`, or the README's H1 + first paragraph.
+   - **URL**: the framework's default dev port (e.g. a Vite default → `http://localhost:5173`, a Next.js default → `http://localhost:3000`) or an explicit port from a config file. Use `http://localhost:<port>`.
+   - **Start command**: whichever script the manifest exposes (`npm run dev`, `pnpm dev`, `yarn dev`, `python3 -m http.server <port>`, `cargo run`, etc).
+   - **Login**: only fill this section if there's clear evidence (committed demo credentials in `.env.example`, a "## Demo credentials" section in the README, a hard-coded test user in source). **Do NOT invent credentials.**
+
+4. **Identify gaps and ask one question at a time.** Anywhere you didn't find clear evidence, ask the user. Wait for the answer before asking the next question. Common gaps:
+
+   - **No URL detected** (no framework config, no port in any inspected file): "What URL does the dev server run at? (e.g., `http://localhost:3000`)"
+   - **No start command detected**: "What command starts the dev server? (e.g., `npm run dev`)"
+   - **Auth surface present but no test creds found**: "Does the project require login? If so, paste any demo or test credentials we should use, or say 'no creds — manual login required'."
+   - **Anything else worth asking** the user might want the agent to focus on or steer clear of (a half-built surface, a flaky modal, etc).
+
+   Ask each question separately. Do not bundle them. If the user gives you everything in one reply, that's fine — incorporate and move on.
+
+5. **Show the user the draft before writing.** Render the markdown in chat (inside a fenced block) and ask:
+
+   > "Here's the draft `tiktest.md` I'm about to write:
+   >
+   > ```markdown
+   > <draft>
+   > ```
+   >
+   > Want me to write it as-is, or tweak anything first?"
+
+   If the user wants edits, incorporate the feedback and re-render. Loop until the user approves.
+
+6. **Write and confirm.** Use the Write tool (not a Bash heredoc — same shell-injection rationale as the other skills) to write the approved markdown to `<cwd>/tiktest.md`. Then tell the user:
+
+   > "Created `tiktest.md`. You can edit it directly any time, or run `/tiktest:run` or `/tiktest:quick` to start using it."
+
+## What NOT to do
+
+- **Do not invent credentials, URLs, or commands.** If inspection didn't find evidence, ask the user. Silently fabricating any of these will mislead every future run.
+- **Do not read the entire source tree.** Sample a handful of likely-relevant files, then stop. Token budget is real.
+- **Do not overwrite an existing `tiktest.md` / `tik-test.md`.** Bail per Step 1.
+- **Do not write the file before showing the draft.** The user must see and approve the draft first.
+```
+
+- [ ] **Step 9.3: Lint the SKILL for app-specific wording**
+
+```bash
+grep -in -E "taskpad|todo|crm|inspiration|theater" plugin/skills/setup/SKILL.md
+```
+
+Expected: no output. The SKILL must stay domain-agnostic per the CLAUDE.md hard rule — examples inside it must be generic placeholders ("the project", "the dev server", `http://localhost:<port>`), never real product names.
+
+- [ ] **Step 9.4: Update `docs/PLUGIN.md` "Slash commands" section**
+
+Add a third bullet for `/tiktest:setup` ahead of the existing two, matching their style:
+
+```markdown
+- `/tiktest:setup` — Inspects your project (package manifest, README, framework configs) and scaffolds a `tiktest.md` with the dev-server URL, start command, and login flow filled in. Asks for anything it can't infer. Run this first when setting up tik-test for a new project.
+```
+
+- [ ] **Step 9.5: Update README.md `### 3. Claude Code plugin` code block**
+
+The slash-command snippet in README.md gets `/tiktest:setup` as the first bullet (users run it before `:run` / `:quick`). Replace the existing block:
+
+```
+/tiktest:setup                # scaffolds tiktest.md by inspecting your project, asks for what it can't infer
+/tiktest:run                  # auto-detects localhost dev server, drops MP4 on Desktop
+/tiktest:run http://localhost:5173    # explicit URL
+/tiktest:quick                # no video — faster, prints checklist in chat
+```
+
+- [ ] **Step 9.6: Commit**
+
+```bash
+git add plugin/skills/setup/SKILL.md docs/PLUGIN.md README.md docs/superpowers/plans/2026-04-28-claude-code-plugin.md
+git commit -m "feat(plugin): add /tiktest:setup skill to scaffold tiktest.md"
+```
+
+---
+
 ## Self-review checklist (run after writing the plan, before execution)
 
 - [x] **Spec coverage** — every Phase 1 checkbox in issue #15's "Phase 1" section maps to a task above (manifest → Task 1; slash command + URL probe → Tasks 2 & 3; sub-agent → Task 4; `package.json` files → Task 5; `docs/PLUGIN.md` → Task 6; marketplace publish — explicitly documented as out-of-scope per the spec ("requires in-app submission form")).

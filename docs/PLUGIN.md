@@ -39,6 +39,7 @@ To use the plugin across sessions without `--plugin-dir`, follow the [marketplac
 
 ## Slash commands
 
+- `/tiktest:setup` — Inspects your project (package manifest, README, framework configs) and scaffolds a `tiktest.md` with the dev-server URL, start command, and login flow filled in. Asks for anything it can't infer. Run this first when setting up tik-test for a new project.
 - `/tiktest:run [url]` — Records a ~60-second walkthrough and drops `~/Desktop/tiktest-<timestamp>.mp4` (`~/tiktest-<timestamp>.mp4` on Linux). Auto-detects a dev server on ports 3000, 5173, 4173, 8080. Pass a URL explicitly to override.
 - `/tiktest:quick [url]` — Runs the same agent pass without rendering a video and prints a `✓` / `✗` checklist into the chat. Faster and cheaper than `:run`.
 

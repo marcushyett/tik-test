@@ -213,6 +213,7 @@ claude --plugin-dir "$(npm root -g)/tik-test/plugin"    # load the plugin
 Then in the Claude Code prompt:
 
 ```
+/tiktest:setup                # scaffolds tiktest.md by inspecting your project, asks for what it can't infer
 /tiktest:run                  # auto-detects localhost dev server, drops MP4 on Desktop
 /tiktest:run http://localhost:5173    # explicit URL
 /tiktest:quick                # no video — faster, prints checklist in chat
