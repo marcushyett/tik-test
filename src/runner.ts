@@ -212,14 +212,22 @@ const BROKEN_IMAGE_FALLBACK = `
  */
 const INTERACTION_RECORDER_INIT = `
 (() => {
+  // Drop synthesized / programmatic clicks at (0,0) or in the top-left corner.
+  // These are dispatched by frameworks during page bootstrap (focus
+  // restoration, hidden a11y nodes, scrollIntoView side-effects) and have
+  // no relationship to a real mouse interaction. Letting them through
+  // produces a phantom cursor punch + zoom in the top-left of the video.
+  const CORNER_PX = 5;
   let lastMove = 0;
   document.addEventListener('mousemove', (e) => {
     const now = performance.now();
     if (now - lastMove < 33) return; // ~30Hz throttle keeps the stream small
     lastMove = now;
+    if (e.clientX <= CORNER_PX && e.clientY <= CORNER_PX) return;
     try { window.__tikRecord && window.__tikRecord({ kind: 'move', x: e.clientX, y: e.clientY }); } catch {}
   }, true);
   document.addEventListener('click', (e) => {
+    if (e.clientX <= CORNER_PX && e.clientY <= CORNER_PX) return;
     try { window.__tikRecord && window.__tikRecord({ kind: 'click', x: e.clientX, y: e.clientY }); } catch {}
   }, true);
   document.addEventListener('keydown', (e) => {

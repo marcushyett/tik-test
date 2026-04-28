@@ -377,11 +377,20 @@ export async function editSingleVideo({
     });
   }
   if (artifacts.toolWindows && artifacts.toolWindows.length > 0) {
+    let trimmedSkipCount = 0;
     for (const tw of artifacts.toolWindows) {
+      // Skip the "skip" class (browser_snapshot, ToolSearch, Read, Glob,
+      // Bash) — these are agent-thinking moments where the page sits
+      // motionless. Adding them to rawWindows tells the trim planner
+      // they're "active" and worth keeping, which produces visible
+      // pauses in the final video. Drop them so the trim planner
+      // collapses those stretches into idle gaps and removes them.
+      if (classifyTool(tw.kind) === "skip") { trimmedSkipCount++; continue; }
       const s = Math.max(0, Math.min(rawDurS, tw.startMs / 1000));
       const e = Math.max(s + 0.2, Math.min(rawDurS, tw.endMs / 1000));
       rawWindows.push({ start: s, end: e });
     }
+    if (trimmedSkipCount) console.log(chalk.dim(`  trimmed ${trimmedSkipCount} agent-thinking tool windows (snapshot/read/etc)`));
   }
 
   // ── 3. Build trim plan + render master. After this we know `masterDurS`.

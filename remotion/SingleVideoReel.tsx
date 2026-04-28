@@ -163,26 +163,6 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   const interactions = input.interactions ?? [];
   const clicks = interactions.filter((i) => i.kind === "click");
 
-  // Targeted pan-zoom — bell curve around each click (peaks ~0.2s after
-  // the click, fades to 0 at ±0.9s). The "winning" click for the current
-  // frame is the one with the highest active weight, so densely-spaced
-  // clicks chain smoothly without snapping back to neutral between them.
-  const ZOOM_HALF_WINDOW_S = 0.9;
-  const ZOOM_PEAK = 1.42; // 1.0 → 1.42 punch-in
-  let bestWeight = 0;
-  let bestClick: typeof clicks[number] | null = null;
-  for (const c of clicks) {
-    const dt = timeS - c.ts / 1000;
-    // Slight lead so the camera is already on the element when the click
-    // ripple fires (humans look at things before they click them).
-    const centred = dt + 0.18;
-    const w = Math.max(0, 1 - Math.abs(centred) / ZOOM_HALF_WINDOW_S);
-    if (w > bestWeight) { bestWeight = w; bestClick = c; }
-  }
-  const eased = Easing.bezier(0.4, 0, 0.2, 1)(bestWeight);
-  const zoomScale = 1 + (ZOOM_PEAK - 1) * eased;
-  const focus = bestClick ? toCanvas(bestClick.x, bestClick.y) : { cx: canvasW / 2, cy: canvasH / 2 };
-
   // Cursor path — click-to-click travel with ease-out. Playwright MCP
   // emits very few raw mousemove events (its locator.click() hits the
   // target without painting an intermediate trail), so interpolating
@@ -223,6 +203,34 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   }
   const cursor = toCanvas(cursorVx, cursorVy);
 
+  // Targeted pan-zoom — always-on baseline + bell-curve punch-in on each
+  // click. The recording's letterbox-fit footprint (page rendered at ~56%
+  // of canvas height because of objectFit:contain on a wide viewport)
+  // looks tiny without zoom, so we hold a 1.4× baseline that keeps the
+  // page comfortably large the whole time. Each click rides on top of
+  // that baseline up to a 2.0× peak (integer scale = sharper) for ~1.8s,
+  // then eases back to the baseline. Densely-spaced clicks chain.
+  const ZOOM_HALF_WINDOW_S = 0.9;
+  const ZOOM_BASELINE = 1.4; // always-on
+  const ZOOM_PEAK = 2.0;     // integer-scale peak — bilinear sampling lines up cleanly
+  let bestWeight = 0;
+  let bestClick: typeof clicks[number] | null = null;
+  for (const c of clicks) {
+    const dt = timeS - c.ts / 1000;
+    // Slight lead so the camera is already on the element when the click
+    // ripple fires (humans look at things before they click them).
+    const centred = dt + 0.18;
+    const w = Math.max(0, 1 - Math.abs(centred) / ZOOM_HALF_WINDOW_S);
+    if (w > bestWeight) { bestWeight = w; bestClick = c; }
+  }
+  const eased = Easing.bezier(0.4, 0, 0.2, 1)(bestWeight);
+  const zoomScale = ZOOM_BASELINE + (ZOOM_PEAK - ZOOM_BASELINE) * eased;
+  // When no click is active, focus on the cursor so the always-on baseline
+  // zoom keeps the user's attention on where the cursor will go next.
+  const focus = bestClick
+    ? toCanvas(bestClick.x, bestClick.y)
+    : toCanvas(cursorVx, cursorVy);
+
   // Click flash — any click within ±0.18s gets a ring expansion centred on
   // the click point.
   const FLASH_HALF_S = 0.18;
@@ -239,52 +247,32 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
     <AbsoluteFill>
       <Background accent="#00e5a0" intensity={0.7} />
 
-      {/* The trimmed master recording. Browsers move any element with a
-          non-identity `transform` (or `will-change: transform`) onto its
-          own GPU compositing layer, which then gets bilinear-sampled into
-          the parent every frame — that's where the persistent text
-          blur was coming from, NOT the source video resolution. Solution:
-          mount the transform wrapper ONLY when we're actively punching
-          in on a click. The rest of the time (which is most of the
-          video) the <Video> renders directly into the parent and text
-          is pixel-sharp. */}
+      {/* The trimmed master recording. The transform wrapper is always
+          mounted because the baseline zoom is > 1 (the page would
+          otherwise render too small inside the portrait canvas). Video
+          + cursor share the same transform so they zoom together; the
+          cursor SVG counter-scales to keep its on-screen size constant. */}
       <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#0a0a0a" }}>
-        {zoomScale > 1.001 ? (
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              transform: `scale(${zoomScale})`,
-              transformOrigin: `${focus.cx}px ${focus.cy}px`,
-            }}
-          >
-            <Video
-              src={staticFile(input.masterVideoSrc)}
-              muted
-              style={{ width: "100%", height: "100%", objectFit: "contain" }}
-            />
-            <CursorOverlay
-              cx={cursor.cx}
-              cy={cursor.cy}
-              flashAmount={flashAmount}
-              counterScale={1 / zoomScale}
-            />
-          </div>
-        ) : (
-          <>
-            <Video
-              src={staticFile(input.masterVideoSrc)}
-              muted
-              style={{ width: "100%", height: "100%", objectFit: "contain" }}
-            />
-            <CursorOverlay
-              cx={cursor.cx}
-              cy={cursor.cy}
-              flashAmount={flashAmount}
-              counterScale={1}
-            />
-          </>
-        )}
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            transform: `scale(${zoomScale})`,
+            transformOrigin: `${focus.cx}px ${focus.cy}px`,
+          }}
+        >
+          <Video
+            src={staticFile(input.masterVideoSrc)}
+            muted
+            style={{ width: "100%", height: "100%", objectFit: "contain" }}
+          />
+          <CursorOverlay
+            cx={cursor.cx}
+            cy={cursor.cy}
+            flashAmount={flashAmount}
+            counterScale={1 / zoomScale}
+          />
+        </div>
       </div>
 
       {/* One Sequence per body chunk. Chunks are guaranteed non-overlapping
