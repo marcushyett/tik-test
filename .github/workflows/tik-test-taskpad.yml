@@ -71,3 +71,9 @@ jobs:
           # the change affects. The taskpad video is the manual eyeball
           # check for those.
           quick-and-dirty: true
+          # Bumped from default 540s — generating narration for the bundled
+          # taskpad demo with full video on slow Claude responses regularly
+          # hits the 9min ceiling. 15min is comfortably above the observed
+          # p95 (~6min). Doesn't slow the happy path; only matters if the
+          # API is unusually slow that run.
+          narration-timeout: 900
