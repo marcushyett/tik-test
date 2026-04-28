@@ -30,8 +30,8 @@ Claude Code plugins ship markdown, not binaries — so we cannot literally bundl
 - ❌ Phase 3 (`/tiktest:init` and `/tiktest:config`) — deferred
 
 **Naming decisions (resolved during planning):**
-- Plugin name: `tiktest` (no hyphen). Plugin skills are *always* namespaced `/<plugin-name>:<skill-name>` per the current spec, so the issue's `/tiktest` becomes `/tiktest:record` / `/tiktest:checks`. Plugin name `tiktest` keeps the namespace tight; `tik-test` would give `/tik-test:record` which reads worse.
-- Two skills (`record` and `checks`) instead of one with a `--no-video` arg. Cleaner mental model for the user; argument-parsing inside `$ARGUMENTS` is fiddly and the two flows produce visibly different output (MP4 vs printed checklist).
+- Plugin name: `tiktest` (no hyphen). Plugin skills are *always* namespaced `/<plugin-name>:<skill-name>` per the current spec, so the issue's `/tiktest` becomes `/tiktest:run` / `/tiktest:quick`. Plugin name `tiktest` keeps the namespace tight; `tik-test` would give `/tik-test:run` which reads worse.
+- Two skills (`run` and `quick`) instead of one with a `--no-video` arg. Cleaner mental model for the user; argument-parsing inside `$ARGUMENTS` is fiddly and the two flows produce visibly different output (MP4 vs printed checklist).
 - Output: `~/Desktop/tiktest-<ISO-timestamp>.mp4` on macOS, `~/tiktest-<ISO-timestamp>.mp4` on Linux (Desktop convention is mac-specific).
 - Sub-agent: a single `tiktest-runner` agent that can do either flow based on its prompt — same shell-out logic but invocable as a Task from any session.
 
@@ -69,8 +69,8 @@ Files **created** under the new worktree (`../tik-test-plugin/`):
 | Path | Responsibility |
 | --- | --- |
 | `plugin/.claude-plugin/plugin.json` | Plugin manifest (name, version, description, author, repo URL). |
-| `plugin/skills/record/SKILL.md` | `/tiktest:record` — produces an MP4 walkthrough on Desktop. |
-| `plugin/skills/checks/SKILL.md` | `/tiktest:checks` — runs `--no-video` and prints the checklist. |
+| `plugin/skills/run/SKILL.md` | `/tiktest:run` — produces an MP4 walkthrough on Desktop. |
+| `plugin/skills/quick/SKILL.md` | `/tiktest:quick` — runs `--no-video` and prints the checklist. |
 | `plugin/agents/tiktest-runner.md` | Sub-agent definition; invocable via Task in any Claude Code session. |
 | `docs/PLUGIN.md` | Install + first-run walkthrough; how to publish to the marketplace. |
 
@@ -129,17 +129,17 @@ git commit -m "feat(plugin): add Claude Code plugin manifest"
 
 ---
 
-## Task 2: `/tiktest:record` skill
+## Task 2: `/tiktest:run` skill
 
 **Files:**
-- Create: `plugin/skills/record/SKILL.md`
+- Create: `plugin/skills/run/SKILL.md`
 
 The skill body is the prompt Claude reads when the user invokes the slash command. It must (1) preflight-check prerequisites, (2) probe localhost ports for a running dev server (or honour `--url <url>` if the user passed one), (3) ensure a `tiktest.md` exists in cwd or generate a minimal temp config, (4) shell out to `tik-test run` (the binary on PATH from `npm install -g tik-test`) with the right flags, (5) move the resulting MP4 to `~/Desktop` (or `~/` on Linux), (6) print the path back to the user. **Domain-agnostic per CLAUDE.md hard rules** — no product-specific examples.
 
 - [ ] **Step 2.1: Create the skill directory**
 
 ```bash
-mkdir -p plugin/skills/record
+mkdir -p plugin/skills/run
 ```
 
 - [ ] **Step 2.2: Write the skill**
@@ -150,7 +150,7 @@ description: Record a TikTok-style video walkthrough of the dev server running o
 allowed-tools: Bash, Read, Write
 ---
 
-# tiktest:record
+# tiktest:run
 
 The user wants a short MP4 walkthrough of whatever's running locally. Drive the `tik-test` CLI to produce one and drop it on their Desktop.
 
@@ -183,7 +183,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
    - **(a)** If `$ARGUMENTS` starts with `http://` or `https://`, that is the URL.
    - **(b)** Else, probe each of these in order with `curl -sf -o /dev/null --max-time 1 <url>` and use the first that responds: `http://localhost:3000`, `http://localhost:5173`, `http://localhost:4173`, `http://localhost:8080`.
    - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or a `README.md` containing either a `## TikTest`/`## Testing` (or alias) heading or a bare `http://` / `https://` URL — the CLI extracts the URL from any of these. In this path no URL is resolved here — the CLI parses it from the file.
-   - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:record http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
+   - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:run http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
 3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
 
@@ -201,7 +201,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
      url: <RESOLVED_URL>
      ---
 
-     Auto-generated config from /tiktest:record. Explore the primary surface and exercise the main user-facing actions. <ARGUMENTS_IF_NOT_URL>
+     Auto-generated config from /tiktest:run. Explore the primary surface and exercise the main user-facing actions. <ARGUMENTS_IF_NOT_URL>
      ```
 
      Substitute `<RESOLVED_URL>` with the URL you resolved in step 2. Substitute `<ARGUMENTS_IF_NOT_URL>` with the literal text of `$ARGUMENTS` only if it didn't itself look like a URL — otherwise drop that line entirely. The Write tool writes the content as-is, so no shell expansion occurs. Set `<CONFIG_PATH>` to `${TIKTEST_TMP}/tiktest.md`.
@@ -257,7 +257,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
 - [ ] **Step 2.3: Lint for app-specific wording per CLAUDE.md hard rules**
 
 ```bash
-grep -in -E "taskpad|todo|crm|inspiration|theater" plugin/skills/record/SKILL.md
+grep -in -E "taskpad|todo|crm|inspiration|theater" plugin/skills/run/SKILL.md
 ```
 
 Expected: no matches (per CLAUDE.md "prompts must be completely domain-agnostic").
@@ -265,23 +265,23 @@ Expected: no matches (per CLAUDE.md "prompts must be completely domain-agnostic"
 - [ ] **Step 2.4: Commit**
 
 ```bash
-git add plugin/skills/record/SKILL.md
-git commit -m "feat(plugin): add /tiktest:record slash command"
+git add plugin/skills/run/SKILL.md
+git commit -m "feat(plugin): add /tiktest:run slash command"
 ```
 
 ---
 
-## Task 3: `/tiktest:checks` skill
+## Task 3: `/tiktest:quick` skill
 
 **Files:**
-- Create: `plugin/skills/checks/SKILL.md`
+- Create: `plugin/skills/quick/SKILL.md`
 
-Same shape as `record`, but with `--no-video` and prints the checklist into the chat instead of writing an MP4.
+Same shape as `run`, but with `--no-video` and prints the checklist into the chat instead of writing an MP4.
 
 - [ ] **Step 3.1: Create the skill directory**
 
 ```bash
-mkdir -p plugin/skills/checks
+mkdir -p plugin/skills/quick
 ```
 
 - [ ] **Step 3.2: Write the skill**
@@ -292,9 +292,9 @@ description: Run tik-test in checks-only mode (no video render) and print the ch
 allowed-tools: Bash, Read, Write
 ---
 
-# tiktest:checks
+# tiktest:quick
 
-The user wants a fast, cheap pass over whatever's running locally — same agent run as `/tiktest:record` but without rendering a video; output is a chat-printed checklist.
+The user wants a fast, cheap pass over whatever's running locally — same agent run as `/tiktest:run` but without rendering a video; output is a chat-printed checklist.
 
 ## Argument
 
@@ -302,7 +302,7 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
 
 ## Steps
 
-1. **Preflight check prerequisites.** Run all four checks in parallel and collect any failures before doing anything else. (`ffmpeg` isn't strictly needed in `--no-video` mode, but check it anyway for consistency with `/tiktest:record` — the same install gives you both.)
+1. **Preflight check prerequisites.** Run all four checks in parallel and collect any failures before doing anything else. (`ffmpeg` isn't strictly needed in `--no-video` mode, but check it anyway for consistency with `/tiktest:run` — the same install gives you both.)
 
    ```bash
    command -v tik-test || echo "MISSING tik-test"
@@ -325,7 +325,7 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
    - **(a)** If `$ARGUMENTS` starts with `http://` or `https://`, that is the URL.
    - **(b)** Else, probe each of these in order with `curl -sf -o /dev/null --max-time 1 <url>` and use the first that responds: `http://localhost:3000`, `http://localhost:5173`, `http://localhost:4173`, `http://localhost:8080`.
    - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or a `README.md` containing either a `## TikTest`/`## Testing` (or alias) heading or a bare `http://` / `https://` URL — the CLI extracts the URL from any of these. In this path no URL is resolved here — the CLI parses it from the file.
-   - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:checks http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
+   - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:quick http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
 3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
 
@@ -343,7 +343,7 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
      url: <RESOLVED_URL>
      ---
 
-     Auto-generated config from /tiktest:checks. Exercise the primary surface. <ARGUMENTS_IF_NOT_URL>
+     Auto-generated config from /tiktest:quick. Exercise the primary surface. <ARGUMENTS_IF_NOT_URL>
      ```
 
      Substitute `<RESOLVED_URL>` with the URL you resolved in step 2. Substitute `<ARGUMENTS_IF_NOT_URL>` with the literal text of `$ARGUMENTS` only if it didn't itself look like a URL — otherwise drop that line entirely. The Write tool writes the content as-is, so no shell expansion occurs. Set `<CONFIG_PATH>` to `${TIKTEST_TMP}/tiktest.md`.
@@ -381,14 +381,14 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
 
 ## What NOT to do
 
-- Do not produce an MP4 — `--no-video` is the whole point of this command. If you find yourself moving an `.mp4` file anywhere, you've got the wrong skill; use `/tiktest:record`.
+- Do not produce an MP4 — `--no-video` is the whole point of this command. If you find yourself moving an `.mp4` file anywhere, you've got the wrong skill; use `/tiktest:run`.
 - Do not retry the CLI on failure — surface the CLI's own error message verbatim and stop. The CLI's errors are already actionable.
 ```
 
 - [ ] **Step 3.3: Lint for app-specific wording**
 
 ```bash
-grep -in -E "taskpad|todo|crm|inspiration|theater" plugin/skills/checks/SKILL.md
+grep -in -E "taskpad|todo|crm|inspiration|theater" plugin/skills/quick/SKILL.md
 ```
 
 Expected: no matches.
@@ -396,8 +396,8 @@ Expected: no matches.
 - [ ] **Step 3.4: Commit**
 
 ```bash
-git add plugin/skills/checks/SKILL.md
-git commit -m "feat(plugin): add /tiktest:checks slash command"
+git add plugin/skills/quick/SKILL.md
+git commit -m "feat(plugin): add /tiktest:quick slash command"
 ```
 
 ---
@@ -597,7 +597,7 @@ Edit `package.json` so the array reads:
 npm pack --dry-run 2>&1 | grep "plugin/"
 ```
 
-Expected: at least four lines mentioning `plugin/.claude-plugin/plugin.json`, `plugin/skills/record/SKILL.md`, `plugin/skills/checks/SKILL.md`, `plugin/agents/tiktest-runner.md`.
+Expected: at least four lines mentioning `plugin/.claude-plugin/plugin.json`, `plugin/skills/run/SKILL.md`, `plugin/skills/quick/SKILL.md`, `plugin/agents/tiktest-runner.md`.
 
 - [ ] **Step 5.4: Commit**
 
@@ -658,8 +658,8 @@ To use the plugin across sessions without `--plugin-dir`, follow the [marketplac
 
 ## Slash commands
 
-- `/tiktest:record [url]` — Records a ~60-second walkthrough and drops `~/Desktop/tiktest-<timestamp>.mp4` (`~/tiktest-<timestamp>.mp4` on Linux). Auto-detects a dev server on ports 3000, 5173, 4173, 8080. Pass a URL explicitly to override.
-- `/tiktest:checks [url]` — Runs the same agent pass without rendering a video and prints a `✓` / `✗` checklist into the chat. Faster and cheaper than `:record`.
+- `/tiktest:run [url]` — Records a ~60-second walkthrough and drops `~/Desktop/tiktest-<timestamp>.mp4` (`~/tiktest-<timestamp>.mp4` on Linux). Auto-detects a dev server on ports 3000, 5173, 4173, 8080. Pass a URL explicitly to override.
+- `/tiktest:quick [url]` — Runs the same agent pass without rendering a video and prints a `✓` / `✗` checklist into the chat. Faster and cheaper than `:run`.
 
 Both commands use the existing `tik-test` CLI under the hood, so the same OAuth token and Claude subscription budget apply (no separate API key).
 
@@ -683,7 +683,7 @@ The plugin is a thin markdown-only wrapper. **All test execution, agent driving,
 
 ## Troubleshooting
 
-- **"Couldn't find a dev server on ports …"** — Start your dev server, or pass `/tiktest:record http://localhost:<your-port>`.
+- **"Couldn't find a dev server on ports …"** — Start your dev server, or pass `/tiktest:run http://localhost:<your-port>`.
 - **Plugin doesn't show up in `/help`** — Run `/reload-plugins`, or restart Claude Code with `--plugin-dir` pointed at the right path.
 - **CLI errors during the run** — The plugin surfaces tik-test's own errors verbatim. Most are actionable (missing URL, dev server returned 5xx, etc).
 
@@ -717,9 +717,9 @@ claude --plugin-dir "$(npm root -g)/tik-test/plugin"    # load the plugin
 Then in the Claude Code prompt:
 
 ```
-/tiktest:record                  # auto-detects localhost dev server, drops MP4 on Desktop
-/tiktest:record http://localhost:5173    # explicit URL
-/tiktest:checks                  # checks-only (no MP4 — faster, prints checklist in chat)
+/tiktest:run                  # auto-detects localhost dev server, drops MP4 on Desktop
+/tiktest:run http://localhost:5173    # explicit URL
+/tiktest:quick                # no video — faster, prints checklist in chat
 ```
 
 Or invoke the bundled sub-agent from any session: *"Use the tiktest-runner agent to record a walkthrough of …"*.
@@ -785,22 +785,22 @@ mkdir /tmp/tiktest-plugin-smoke && cd /tmp/tiktest-plugin-smoke
 claude --plugin-dir /Users/marcushyett/dev/tik-test-plugin/plugin
 ```
 
-In the Claude Code prompt, run `/help` and verify both `/tiktest:record` and `/tiktest:checks` appear, and that `/agents` lists `tiktest-runner`.
+In the Claude Code prompt, run `/help` and verify both `/tiktest:run` and `/tiktest:quick` appear, and that `/agents` lists `tiktest-runner`.
 
-- [ ] **Step 7.4: Smoke-test `/tiktest:checks`**
+- [ ] **Step 7.4: Smoke-test `/tiktest:quick`**
 
 Inside the plugin-loaded Claude Code session:
 
 ```
-/tiktest:checks http://localhost:4173
+/tiktest:quick http://localhost:4173
 ```
 
 Expected: the agent runs, the CLI streams its three phases, a checklist prints. **No MP4** is produced.
 
-- [ ] **Step 7.5: Smoke-test `/tiktest:record`**
+- [ ] **Step 7.5: Smoke-test `/tiktest:run`**
 
 ```
-/tiktest:record http://localhost:4173
+/tiktest:run http://localhost:4173
 ```
 
 Expected: same agent run, plus an MP4 lands at `~/Desktop/tiktest-<timestamp>.mp4` (or `~/tiktest-<timestamp>.mp4` on Linux). Open it in a video player and confirm it plays.
@@ -818,14 +818,14 @@ Expected: a sub-agent dispatches, runs the CLI with `--no-video`, returns a chec
 In a directory with no `tiktest.md` and no dev server running:
 
 ```
-/tiktest:record
+/tiktest:run
 ```
 
 Expected: the agent reports the explicit error "Couldn't find a dev server on ports 3000/5173/4173/8080…" — does not crash, does not silently hang.
 
 - [ ] **Step 7.8: Test the preflight error path**
 
-Temporarily mask one of the prereqs (e.g. `PATH=/usr/bin claude --plugin-dir …` to hide `tik-test` and `ffmpeg` from PATH), then invoke `/tiktest:record http://localhost:4173`.
+Temporarily mask one of the prereqs (e.g. `PATH=/usr/bin claude --plugin-dir …` to hide `tik-test` and `ffmpeg` from PATH), then invoke `/tiktest:run http://localhost:4173`.
 
 Expected: the skill prints the install commands for the missing prereqs and stops *before* attempting to run the CLI. Restore PATH after.
 
@@ -857,9 +857,9 @@ Closes #15 (Phase 1).
 Phase 2 (MCP server) and Phase 3 (`/tiktest:init` + `/tiktest:config`) remain open for follow-up.
 
 ## Test plan
-- [x] `claude --plugin-dir ./plugin` loads the plugin; `/help` shows `/tiktest:record` and `/tiktest:checks`; `/agents` shows `tiktest-runner`
-- [x] `/tiktest:checks http://localhost:4173` against the bundled demo prints a checklist, no MP4 produced
-- [x] `/tiktest:record http://localhost:4173` produces `~/Desktop/tiktest-<timestamp>.mp4` and the file plays
+- [x] `claude --plugin-dir ./plugin` loads the plugin; `/help` shows `/tiktest:run` and `/tiktest:quick`; `/agents` shows `tiktest-runner`
+- [x] `/tiktest:quick http://localhost:4173` against the bundled demo prints a checklist, no MP4 produced
+- [x] `/tiktest:run http://localhost:4173` produces `~/Desktop/tiktest-<timestamp>.mp4` and the file plays
 - [x] Sub-agent invocation via Task produces equivalent output
 - [x] No-URL fallback prints the explicit error message
 
@@ -876,6 +876,6 @@ EOF
 
 - [x] **Spec coverage** — every Phase 1 checkbox in issue #15's "Phase 1" section maps to a task above (manifest → Task 1; slash command + URL probe → Tasks 2 & 3; sub-agent → Task 4; `package.json` files → Task 5; `docs/PLUGIN.md` → Task 6; marketplace publish — explicitly documented as out-of-scope per the spec ("requires in-app submission form")).
 - [x] **No placeholders** — every code block contains the actual content. The only intentional placeholders are `<RESOLVED_URL>` and `<CONFIG_PATH>` inside the SKILL.md prompt bodies — those are *for the model to fill in at runtime*, which is the whole point of a slash-command prompt.
-- [x] **Type / name consistency** — plugin name `tiktest` is used uniformly; skill names `record` / `checks`; agent name `tiktest-runner`; environment variable `TIKTEST_TMP` is used in all three skill bodies.
+- [x] **Type / name consistency** — plugin name `tiktest` is used uniformly; skill names `run` / `quick`; agent name `tiktest-runner`; environment variable `TIKTEST_TMP` is used in all three skill bodies.
 - [x] **Domain-agnostic** — Tasks 2.3 / 3.3 / 4.3 / 6.3 each include an explicit `grep` for product-name leakage, per the CLAUDE.md hard rule.
 - [x] **Branch hygiene** — Step 0b creates a fresh worktree off `origin/main`; the existing `feat/auto-advance-on-merge` branch (already merged upstream) is not touched.

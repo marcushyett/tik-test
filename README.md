@@ -213,9 +213,9 @@ claude --plugin-dir "$(npm root -g)/tik-test/plugin"    # load the plugin
 Then in the Claude Code prompt:
 
 ```
-/tiktest:record                  # auto-detects localhost dev server, drops MP4 on Desktop
-/tiktest:record http://localhost:5173    # explicit URL
-/tiktest:checks                  # checks-only (no MP4 — faster, prints checklist in chat)
+/tiktest:run                  # auto-detects localhost dev server, drops MP4 on Desktop
+/tiktest:run http://localhost:5173    # explicit URL
+/tiktest:quick                # no video — faster, prints checklist in chat
 ```
 
 Or invoke the bundled sub-agent from any session: *"Use the tiktest-runner agent to record a walkthrough of …"*.

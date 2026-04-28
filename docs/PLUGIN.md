@@ -39,8 +39,8 @@ To use the plugin across sessions without `--plugin-dir`, follow the [marketplac
 
 ## Slash commands
 
-- `/tiktest:record [url]` — Records a ~60-second walkthrough and drops `~/Desktop/tiktest-<timestamp>.mp4` (`~/tiktest-<timestamp>.mp4` on Linux). Auto-detects a dev server on ports 3000, 5173, 4173, 8080. Pass a URL explicitly to override.
-- `/tiktest:checks [url]` — Runs the same agent pass without rendering a video and prints a `✓` / `✗` checklist into the chat. Faster and cheaper than `:record`.
+- `/tiktest:run [url]` — Records a ~60-second walkthrough and drops `~/Desktop/tiktest-<timestamp>.mp4` (`~/tiktest-<timestamp>.mp4` on Linux). Auto-detects a dev server on ports 3000, 5173, 4173, 8080. Pass a URL explicitly to override.
+- `/tiktest:quick [url]` — Runs the same agent pass without rendering a video and prints a `✓` / `✗` checklist into the chat. Faster and cheaper than `:run`.
 
 Both commands use the existing `tik-test` CLI under the hood, so the same OAuth token and Claude subscription budget apply (no separate API key).
 
@@ -64,7 +64,7 @@ The plugin is a thin markdown-only wrapper. **All test execution, agent driving,
 
 ## Troubleshooting
 
-- **"Couldn't find a dev server on ports …"** — Start your dev server, or pass `/tiktest:record http://localhost:<your-port>`.
+- **"Couldn't find a dev server on ports …"** — Start your dev server, or pass `/tiktest:run http://localhost:<your-port>`.
 - **Plugin doesn't show up in `/help`** — Run `/reload-plugins`, or restart Claude Code with `--plugin-dir` pointed at the right path.
 - **CLI errors during the run** — The plugin surfaces tik-test's own errors verbatim. Most are actionable (missing URL, dev server returned 5xx, etc).
 

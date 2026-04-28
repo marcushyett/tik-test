@@ -3,9 +3,9 @@ description: Run tik-test in checks-only mode (no video render) and print the ch
 allowed-tools: Bash, Read, Write
 ---
 
-# tiktest:checks
+# tiktest:quick
 
-The user wants a fast, cheap pass over whatever's running locally — same agent run as `/tiktest:record` but without rendering a video; output is a chat-printed checklist.
+The user wants a fast, cheap pass over whatever's running locally — same agent run as `/tiktest:run` but without rendering a video; output is a chat-printed checklist.
 
 ## Argument
 
@@ -13,7 +13,7 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
 
 ## Steps
 
-1. **Preflight check prerequisites.** Run all four checks in parallel and collect any failures before doing anything else. (`ffmpeg` isn't strictly needed in `--no-video` mode, but check it anyway for consistency with `/tiktest:record` — the same install gives you both.)
+1. **Preflight check prerequisites.** Run all four checks in parallel and collect any failures before doing anything else. (`ffmpeg` isn't strictly needed in `--no-video` mode, but check it anyway for consistency with `/tiktest:run` — the same install gives you both.)
 
    ```bash
    command -v tik-test || echo "MISSING tik-test"
@@ -36,7 +36,7 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
    - **(a)** If `$ARGUMENTS` starts with `http://` or `https://`, that is the URL.
    - **(b)** Else, probe each of these in order with `curl -sf -o /dev/null --max-time 1 <url>` and use the first that responds: `http://localhost:3000`, `http://localhost:5173`, `http://localhost:4173`, `http://localhost:8080`.
    - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or a `README.md` containing either a `## TikTest`/`## Testing` (or alias) heading or a bare `http://` / `https://` URL — the CLI extracts the URL from any of these. In this path no URL is resolved here — the CLI parses it from the file.
-   - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:checks http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
+   - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:quick http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
 3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
 
@@ -54,7 +54,7 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
      url: <RESOLVED_URL>
      ---
 
-     Auto-generated config from /tiktest:checks. Exercise the primary surface. <ARGUMENTS_IF_NOT_URL>
+     Auto-generated config from /tiktest:quick. Exercise the primary surface. <ARGUMENTS_IF_NOT_URL>
      ```
 
      Substitute `<RESOLVED_URL>` with the URL you resolved in step 2. Substitute `<ARGUMENTS_IF_NOT_URL>` with the literal text of `$ARGUMENTS` only if it didn't itself look like a URL — otherwise drop that line entirely. The Write tool writes the content as-is, so no shell expansion occurs. Set `<CONFIG_PATH>` to `${TIKTEST_TMP}/tiktest.md`.
@@ -92,5 +92,5 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
 
 ## What NOT to do
 
-- Do not produce an MP4 — `--no-video` is the whole point of this command. If you find yourself moving an `.mp4` file anywhere, you've got the wrong skill; use `/tiktest:record`.
+- Do not produce an MP4 — `--no-video` is the whole point of this command. If you find yourself moving an `.mp4` file anywhere, you've got the wrong skill; use `/tiktest:run`.
 - Do not retry the CLI on failure — surface the CLI's own error message verbatim and stop. The CLI's errors are already actionable.
