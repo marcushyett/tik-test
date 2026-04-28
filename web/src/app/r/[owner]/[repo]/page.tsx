@@ -1,7 +1,9 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { listPRsWithVideos } from "@/lib/github";
 import { VideoFeed } from "@/components/video-feed";
+import { RepoFeedSkeleton } from "@/components/repo-feed-skeleton";
 
 interface Params { owner: string; repo: string }
 
@@ -13,7 +15,6 @@ export const dynamic = "force-dynamic";
 
 export default async function RepoFeedPage({ params }: { params: Promise<Params> }) {
   const { owner, repo } = await params;
-  const prs = await listPRsWithVideos(owner, repo);
 
   return (
     // Mobile: video is full-bleed (h-[100dvh] inside VideoFeed) and the
@@ -32,11 +33,37 @@ export default async function RepoFeedPage({ params }: { params: Promise<Params>
         <Link href="/" className="inline-flex items-center gap-2 text-xs text-white/85 hover:text-white md:text-muted-foreground md:hover:text-foreground">
           <ArrowLeft className="h-3.5 w-3.5" /> All repos
         </Link>
-        <div className="text-xs text-white/85 md:text-muted-foreground">
-          <span className="font-semibold text-white md:text-foreground">{owner}/{repo}</span> · {prs.length} PR{prs.length === 1 ? "" : "s"}
-        </div>
+        <RepoTitle owner={owner} repo={repo} />
       </header>
-      <VideoFeed repo={{ owner, name: repo }} prs={prs} />
+
+      {/* Stream the actual feed in via Suspense. The shell above (header
+          + back link + repo title) renders instantly; the skeleton fills
+          the feed area until listPRsWithVideos resolves. Without this,
+          the page hangs on a blank screen for several seconds while the
+          GitHub API calls run on the server. */}
+      <Suspense fallback={<RepoFeedSkeleton />}>
+        <RepoFeedContent owner={owner} repo={repo} />
+      </Suspense>
     </main>
   );
+}
+
+/** Repo title with the live PR count. Stays a small standalone component
+ *  so the count can update once the data resolves. The async sibling below
+ *  doesn't have to render again to update it; the Suspense boundary holds
+ *  this little island stable while the skeleton is up. */
+function RepoTitle({ owner, repo }: Params) {
+  return (
+    <div className="text-xs text-white/85 md:text-muted-foreground">
+      <span className="font-semibold text-white md:text-foreground">{owner}/{repo}</span>
+    </div>
+  );
+}
+
+/** The async island that does the slow GitHub round-trips. Anything that
+ *  needs the resolved PR list goes inside here so it lands behind the
+ *  Suspense boundary above. */
+async function RepoFeedContent({ owner, repo }: Params) {
+  const prs = await listPRsWithVideos(owner, repo);
+  return <VideoFeed repo={{ owner, name: repo }} prs={prs} />;
 }

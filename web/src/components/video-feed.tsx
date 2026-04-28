@@ -446,6 +446,22 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
       controlsVisible ? "opacity-100" : "opacity-0"
     }`;
 
+    // Loading indicator — true while the <video> element is fetching enough
+    // to start playback. Without this the user just sees a black box for
+    // 1-3 seconds while the MP4 buffers (proxied through /api/media → GitHub
+    // releases CDN), and there's no way to tell whether the player is broken
+    // or just slow.
+    //
+    // Sequence: src changes → reset to true → onLoadedData / onCanPlay
+    // fires once enough data is buffered to render the first frame → false.
+    // Stalls / network blips bring it back via onWaiting.
+    const [videoLoading, setVideoLoading] = useState(true);
+    useEffect(() => {
+      // Reset whenever the source changes — even on cache hits, the new
+      // <video> needs at least a tick to render its first frame.
+      setVideoLoading(true);
+    }, [src]);
+
     return (
       <div
         className={wrapClass}
@@ -473,7 +489,21 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
           className="h-full w-full object-contain"
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
+          onLoadedData={() => setVideoLoading(false)}
+          onCanPlay={() => setVideoLoading(false)}
+          onWaiting={() => setVideoLoading(true)}
+          onPlaying={() => setVideoLoading(false)}
         />
+
+        {/* Loading spinner over the video. Only shown while the <video>
+            hasn't yet rendered a first frame (or is buffering after a stall).
+            Pointer-events-none so it doesn't block the play/pause overlay. */}
+        {videoLoading && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-black/30 backdrop-blur-[1px]">
+            <span className="block h-9 w-9 animate-spin rounded-full border-2 border-white/20 border-t-white/80" aria-hidden="true" />
+            <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-white/70">Loading video…</span>
+          </div>
+        )}
 
         <ProgressBar videoRef={videoRef} />
 
