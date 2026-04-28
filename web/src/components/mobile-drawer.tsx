@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { CheckCircle2, Clock, GripHorizontal, Minus, Plus, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, GitMerge, GripHorizontal, Minus, Plus, X, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AIChecksBadge } from "./ai-checks-list";
 import type { OpenPR } from "@/lib/github";
@@ -67,9 +67,14 @@ export function MobileDrawer({
   };
 
   const ciIcon =
-    pr.ciState === "success" ? <CheckCircle2 className="h-3.5 w-3.5 text-primary" /> :
-    pr.ciState === "failure" || pr.ciState === "error" ? <XCircle className="h-3.5 w-3.5 text-destructive" /> :
-    pr.ciState === "pending" ? <Clock className="h-3.5 w-3.5 text-[hsl(45,100%,64%)] animate-pulse" /> : null;
+    pr.ciState === "success" ? <CheckCircle2 className="h-3.5 w-3.5 text-primary" aria-label="CI green" /> :
+    pr.ciState === "failure" || pr.ciState === "error" ? <XCircle className="h-3.5 w-3.5 text-destructive" aria-label="CI red" /> :
+    pr.ciState === "pending" ? <Clock className="h-3.5 w-3.5 text-[hsl(45,100%,64%)] animate-pulse" aria-label="CI pending" /> : null;
+
+  const mergeIcon =
+    pr.mergeable === "clean" ? <GitMerge className="h-3.5 w-3.5 text-primary" aria-label="No merge conflicts" /> :
+    pr.mergeable === "conflicting" ? <AlertTriangle className="h-3.5 w-3.5 text-destructive" aria-label="Merge conflicts" /> :
+    pr.mergeable === "checking" ? <Clock className="h-3.5 w-3.5 text-white/40 animate-pulse" aria-label="Mergeable: checking" /> : null;
 
   return (
     <>
@@ -100,6 +105,7 @@ export function MobileDrawer({
               <span className="inline-flex items-center gap-1 text-primary"><Plus className="h-3 w-3" />{pr.additions}</span>
               <span className="inline-flex items-center gap-1 text-destructive"><Minus className="h-3 w-3" />{pr.deletions}</span>
               {ciIcon}
+              {mergeIcon}
             </div>
             {checklist && checklist.length > 0 && (
               <div className="mt-1.5">

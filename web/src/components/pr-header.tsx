@@ -1,4 +1,4 @@
-import { CheckCircle2, Clock, ExternalLink, FileText, GitPullRequest, Minus, Plus, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, ExternalLink, FileText, GitMerge, GitPullRequest, Minus, Plus, XCircle } from "lucide-react";
 import type { OpenPR } from "@/lib/github";
 
 /**
@@ -11,6 +11,7 @@ import type { OpenPR } from "@/lib/github";
  */
 export function PRHeader({ repo, pr }: { repo: { owner: string; name: string }; pr: OpenPR }) {
   const ciBadge = renderCI(pr.ciState);
+  const mergeBadge = renderMergeable(pr.mergeable);
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-start gap-3">
@@ -50,6 +51,7 @@ export function PRHeader({ repo, pr }: { repo: { owner: string; name: string }; 
           <Metric icon={<XCircle className="h-3 w-3" />} value={`${pr.reviews.changesRequested} blocking`} tone="negative" />
         )}
         {ciBadge}
+        {mergeBadge}
       </div>
     </div>
   );
@@ -83,6 +85,19 @@ function renderCI(state: OpenPR["ciState"]) {
   }
   if (state === "pending") {
     return <Metric icon={<Clock className="h-3 w-3 animate-pulse" />} value="ci pending" tone="warn" />;
+  }
+  return null;
+}
+
+function renderMergeable(state: OpenPR["mergeable"]) {
+  if (state === "clean") {
+    return <Metric icon={<GitMerge className="h-3 w-3" />} value="no conflicts" tone="positive" />;
+  }
+  if (state === "conflicting") {
+    return <Metric icon={<AlertTriangle className="h-3 w-3" />} value="conflicts" tone="negative" />;
+  }
+  if (state === "checking") {
+    return <Metric icon={<Clock className="h-3 w-3 animate-pulse" />} value="merge: checking" tone="muted" />;
   }
   return null;
 }

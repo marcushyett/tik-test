@@ -37,10 +37,14 @@ export interface OpenPR {
   headSha: string;
   reviews: { approvals: number; changesRequested: number; total: number };
   ciState: "pending" | "success" | "failure" | "error" | "unknown";
-  /** Normalized merge state (see mapping in listPRsWithVideos). Same shape
-   *  as PR #21's feature; this field is duplicated here so #64 can ship
-   *  independently of that PR landing. Once #21 is merged, the field
-   *  definitions converge. */
+  /** Normalized merge state. "clean" = no conflicts and the PR can land;
+   *  "conflicting" = there are merge conflicts the author needs to resolve;
+   *  "checking" = GitHub is still computing mergeability (the first read
+   *  after a push routinely returns null and resolves on a follow-up);
+   *  "unknown" = anything else GitHub reports (draft PR, blocked by reviews,
+   *  branch behind base, CI failing/unstable) — none of those are conflicts
+   *  per se, so we lump them under "unknown" for THIS indicator and let
+   *  other indicators (CI, reviews) speak for themselves. */
   mergeable: "clean" | "conflicting" | "checking" | "unknown";
   videos: TikTestVideo[];
   comments: Array<{ id: number; author: string; body: string; createdAt: string }>;
@@ -111,9 +115,12 @@ export async function listPRsWithVideos(owner: string, repo: string): Promise<Op
       if (s === "success" || s === "failure" || s === "error" || s === "pending") ciState = s as OpenPR["ciState"];
     }
 
-    // Mergeable state: GitHub returns mergeable as null while still computing
-    // (typical right after a push); mergeable_state is more granular.
-    const mergeableRaw = detail.data.mergeable;
+    // Normalize mergeable state. detail.data.mergeable is null while GitHub
+    // is still computing it — that's normal right after a push. mergeable_state
+    // is more granular ("clean" / "dirty" / "blocked" / "behind" / "draft" /
+    // "unstable" / "unknown"). We map both into one display state focused on
+    // the conflicts question.
+    const mergeableRaw = detail.data.mergeable; // boolean | null | undefined
     const mergeStateRaw = (detail.data as any).mergeable_state as string | undefined;
     let mergeable: OpenPR["mergeable"] = "unknown";
     if (mergeStateRaw === "dirty" || mergeableRaw === false) mergeable = "conflicting";
