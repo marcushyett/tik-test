@@ -202,26 +202,31 @@ Useful flags:
 
 ### 3. Claude Code plugin
 
-Already inside a Claude Code session? Install the plugin and record a walkthrough of whatever's running locally — no PR or CI required.
+Already inside a Claude Code session? Install the plugin from the bundled marketplace:
 
 ```sh
-npm install -g tik-test                                 # CLI + plugin in one tarball
-npx playwright install chromium                         # browser the agent drives
-claude --plugin-dir "$(npm root -g)/tik-test/plugin"    # load the plugin
+npm install -g tik-test                          # CLI binary the plugin shells out to
+npx playwright install chromium                  # browser the agent drives
 ```
 
 Then in the Claude Code prompt:
 
 ```
-/tiktest:setup                # scaffolds tiktest.md by inspecting your project, asks for what it can't infer
-/tiktest:run                  # auto-detects localhost dev server, drops MP4 on Desktop
-/tiktest:run http://localhost:5173    # explicit URL
+/plugin marketplace add marcushyett/tik-test
+/plugin install tiktest@tiktest
+```
+
+That's it — the slash commands are now available across all your sessions:
+
+```
+/tiktest:setup                # scaffolds tiktest.md by inspecting your project
+/tiktest:run                  # auto-detects localhost dev server, drops MP4 on Desktop, prints checklist
 /tiktest:quick                # no video — faster, prints checklist in chat
 ```
 
-Or invoke the bundled sub-agent from any session: *"Use the tiktest-runner agent to record a walkthrough of …"*.
+Or invoke the bundled sub-agent: *"Use the tiktest-runner agent to record a walkthrough of …"*.
 
-Full install + troubleshooting guide: [docs/PLUGIN.md](docs/PLUGIN.md).
+Working on the plugin itself or want a feature branch? Use `claude --plugin-dir ./plugin` from a checkout — see [docs/PLUGIN.md](docs/PLUGIN.md) for details.
 
 ---
 

@@ -16,18 +16,24 @@ The plugin is markdown-only — all the heavy lifting happens in the `tik-test` 
 
 The plugin's slash commands run all four runtime checks before doing anything expensive (Node.js is implied by `tik-test`) and print a copy-pasteable install command for each missing piece.
 
-## Install (local development)
+## Install (recommended — via the bundled marketplace)
 
-Until the plugin is on the official marketplace, install from the npm tarball:
+`tik-test` ships a tiny self-hosted marketplace at the repo root, so you can install the plugin in two short commands inside Claude Code:
 
-```bash
-npm install -g tik-test                                    # gets CLI + plugin in one tarball
-claude --plugin-dir "$(npm root -g)/tik-test/plugin"       # load the plugin
+```sh
+/plugin marketplace add marcushyett/tik-test
+/plugin install tiktest@tiktest
 ```
 
-The CLI binary, the plugin, and every transitive runtime dep are now version-locked under one install — bumping the npm package updates everything in lockstep, including the GitHub Action's published artifact.
+After this, the slash commands and the sub-agent are available across all your Claude Code sessions automatically — no `--plugin-dir` flag needed.
 
-Or clone the repo and point `--plugin-dir` at the cloned `plugin/`:
+Updates are pulled by `/plugin marketplace update tiktest` (you'll see them whenever the maintainer bumps `plugin/.claude-plugin/plugin.json`'s `version` field on `main`).
+
+You'll still need the prereqs above — `npm install -g tik-test` (for the CLI binary the plugin shells out to), `npx playwright install chromium`, and `ffmpeg` on PATH.
+
+## Install (alternative — for plugin development)
+
+If you're hacking on the plugin itself or want to test a feature branch without going through the marketplace:
 
 ```bash
 git clone https://github.com/marcushyett/tik-test
@@ -35,7 +41,9 @@ cd tik-test && npm install && npm run build && npm link    # makes `tik-test` av
 claude --plugin-dir ./plugin
 ```
 
-To use the plugin across sessions without `--plugin-dir`, follow the [marketplace install instructions](https://code.claude.com/docs/en/discover-plugins) once the plugin is published.
+`npm link` makes `tik-test` available on PATH from your local checkout. `--plugin-dir` loads the plugin into the current session only.
+
+To use the plugin across sessions without `--plugin-dir`, follow the [marketplace install instructions](https://code.claude.com/docs/en/discover-plugins) once the plugin is published to the official marketplace, OR use the bundled marketplace as shown above.
 
 ## Slash commands
 
@@ -71,7 +79,8 @@ The plugin is a thin markdown-only wrapper. **All test execution, agent driving,
 
 ## Publishing to the official marketplace
 
-Once stable:
+tik-test ships its own marketplace at `./.claude-plugin/marketplace.json`, so end-users can install via `/plugin marketplace add marcushyett/tik-test` today. The OFFICIAL Anthropic marketplace is a separate, broader-discovery channel — submit there once the plugin has stabilised:
+
 1. Bump `plugin/.claude-plugin/plugin.json`'s `version` field.
 2. Submit at <https://claude.ai/settings/plugins/submit>.
 3. After approval, users can `claude plugin install tiktest` directly.

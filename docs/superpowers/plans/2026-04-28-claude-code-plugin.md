@@ -1269,6 +1269,28 @@ The cost is one extra Claude `sonnet` call per run (~5–10s for the synthesis p
 
 ---
 
+## Task 12: Self-hosted marketplace for direct installation
+
+**Why:** the existing `--plugin-dir` flow is fine for plugin developers but is awkward for end-users — every new shell session needs the flag, and `npm install -g tik-test` plus a `$(npm root -g)` path-construction trick has no obvious connection to the user's mental model of "install a plugin in Claude Code". The fix is to ship a self-hosted marketplace at the repo root so end-users get the canonical two-command install they already know from other Claude Code plugins:
+
+```
+/plugin marketplace add marcushyett/tik-test
+/plugin install tiktest@tiktest
+```
+
+That makes the bundled marketplace the primary install path and demotes `--plugin-dir` to a "for plugin development" alternative. The official Anthropic marketplace is still the eventual broader-discovery channel; this just stops blocking on it.
+
+**Files:**
+- New: `.claude-plugin/marketplace.json` at the repo root (NOT inside `plugin/.claude-plugin/`, which is the per-plugin manifest dir — the marketplace lives one level up). Validates as JSON, declares the single `tiktest` plugin pointing at `./plugin`. Intentionally NOT added to the npm `files` whitelist — the marketplace is for git/GitHub install, not npm install, so it would just be dead weight in the tarball.
+- Modify: `docs/PLUGIN.md` — flip the install section so marketplace install is shown FIRST as the recommended path; `--plugin-dir` becomes the development alternative. Update the "Publishing to the official marketplace" section's lede to acknowledge the bundled marketplace already gives end-users a working install today.
+- Modify: `README.md` — restructure `### 3. Claude Code plugin` so the marketplace `add` + `install` commands are the headline, with `--plugin-dir` as a one-liner pointer at `docs/PLUGIN.md` for plugin hackers.
+
+**Stale-reference guard:** since the docs flip touches every published install command, run `grep -in -E "tiktest:(record|checks)"` over the three files to make sure the older command names (renamed to `:run` / `:quick` upstream) didn't sneak back in via copy-paste.
+
+**End-user surface after this lands:** prereqs unchanged (still need `tik-test` on PATH for the CLI binary, plus Playwright Chromium and ffmpeg). The change is purely how the plugin itself is loaded into Claude Code — no behaviour change inside the plugin.
+
+---
+
 ## Self-review checklist (run after writing the plan, before execution)
 
 - [x] **Spec coverage** — every Phase 1 checkbox in issue #15's "Phase 1" section maps to a task above (manifest → Task 1; slash command + URL probe → Tasks 2 & 3; sub-agent → Task 4; `package.json` files → Task 5; `docs/PLUGIN.md` → Task 6; marketplace publish — explicitly documented as out-of-scope per the spec ("requires in-app submission form")).
