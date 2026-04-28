@@ -43,35 +43,41 @@ program
     console.log(chalk.bold(`\n▸ tik-test  ${chalk.dim(runId)}`));
     console.log(chalk.dim(`  target: ${cfg.url}`));
 
-    console.log(chalk.bold("\n1/3  generating test plan"));
+    const noVideo = opts.video === false;
+    const totalPhases = noVideo ? 3 : 4;
+
+    console.log(chalk.bold(`\n1/${totalPhases}  generating test plan`));
     const plan = await generatePlan(cfg);
     console.log(chalk.green(`     ✓ plan: ${plan.goals?.length ?? 0} goals — ${plan.name}`));
 
-    console.log(chalk.bold("\n2/3  running tests"));
+    console.log(chalk.bold(`\n2/${totalPhases}  running tests`));
     const bypass = opts.vercelBypass || process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
     const { extraHTTPHeaders, cookies } = buildVercelBypass(bypass, plan.startUrl);
     const artifacts = await runPlan({ plan, runDir, headed: opts.headed, extraHTTPHeaders, cookies });
     const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
     console.log(chalk.green(`     ✓ ${artifacts.events.length - failed}/${artifacts.events.length} passed, raw ${path.relative(process.cwd(), artifacts.rawVideoPath)}`));
 
-    // --no-video: skip render entirely. Still synthesise the checklist
-    // (it's the same one the video's outro shows) and write it to disk so
-    // CI / the Claude Code plugin can surface it. Commander's --no-X flag
-    // sets `opts.video === false`.
-    if (opts.video === false) {
-      console.log(chalk.bold("\n3/3  synthesising checklist (no video)"));
-      const checklist = await generateChecklist({ artifacts, prTitle: cfg.name });
-      const checklistPath = path.join(runDir, "checklist.json");
-      await writeFile(checklistPath, JSON.stringify(checklist ?? [], null, 2));
-      console.log(chalk.green(`     ✓ ${path.relative(process.cwd(), checklistPath)}`));
-      printChecklist(checklist, artifacts.events.length, failed);
+    // Phase 3 (always): synthesise + persist + print the checklist. Both
+    // CI / the Action and the Claude Code plugin benefit equally — a quick
+    // pass/fail summary is universally useful, and the cost of one extra
+    // Claude call is trivial next to the agent run that produced it. When
+    // we go on to render a video, we hand the checklist to the editor so
+    // it doesn't pay for a second synthesis.
+    console.log(chalk.bold(`\n3/${totalPhases}  synthesising checklist`));
+    const checklist = await generateChecklist({ artifacts, prTitle: cfg.name });
+    const checklistPath = path.join(runDir, "checklist.json");
+    await writeFile(checklistPath, JSON.stringify(checklist ?? [], null, 2));
+    console.log(chalk.green(`     ✓ ${path.relative(process.cwd(), checklistPath)}`));
+    printChecklist(checklist, artifacts.events.length, failed);
+
+    if (noVideo) {
       console.log(chalk.bold("\n✓ done (checks-only — no video produced)"));
       console.log(`  checklist: ${chalk.underline(checklistPath)}`);
       console.log(`  events:    ${chalk.underline(artifacts.eventsJsonPath)}`);
       return;
     }
 
-    console.log(chalk.bold("\n3/3  editing highlight reel"));
+    console.log(chalk.bold(`\n4/${totalPhases}  editing highlight reel`));
     const outPath = path.join(runDir, "highlights.mp4");
     const voice = opts.voice === false ? null : (opts.voice as string);
     await editSingleVideo({
@@ -80,12 +86,14 @@ program
       quick: !!opts.quick,
       focus: cfg.projectContext,
       prTitle: cfg.name,
+      precomputedChecklist: checklist,
     });
     console.log(chalk.green(`     ✓ ${path.relative(process.cwd(), outPath)}`));
 
     console.log(chalk.bold("\n✓ done"));
-    console.log(`  video:  ${chalk.underline(outPath)}`);
-    console.log(`  events: ${chalk.underline(artifacts.eventsJsonPath)}`);
+    console.log(`  video:     ${chalk.underline(outPath)}`);
+    console.log(`  checklist: ${chalk.underline(checklistPath)}`);
+    console.log(`  events:    ${chalk.underline(artifacts.eventsJsonPath)}`);
 
     if (opts.open) {
       process.env.TIK_RUNS_DIR = path.resolve(opts.outDir);

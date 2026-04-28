@@ -225,7 +225,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
        --out-dir "$TIKTEST_TMP/runs"
      ```
 
-   Stream the output back to the user as it runs. The CLI prints three numbered phases (plan, run, edit) and lands on a `✓ done` line with the path to the produced MP4.
+   Stream the output back to the user as it runs. The CLI prints four numbered phases (plan, run, checklist, edit) and lands on a `✓ done` line with the path to the produced MP4.
 
 5. **Move the MP4 to a stable, user-visible location.**
 
@@ -245,7 +245,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
    echo "$OUT"
    ```
 
-6. **Report back** with one line: the absolute path to the MP4 and a single sentence describing what it shows (read this from the run's `events.json` if you want, but a generic "Walkthrough recorded — open in any video player." is fine).
+6. **Report back** with two parts: (a) the absolute path to the MP4 (e.g. `~/Desktop/tiktest-<timestamp>.mp4`) plus one line describing what the walkthrough shows, and (b) the checklist as printed by the CLI in stdout — copy the section ending with the `N checks · M passed · K failed · J skipped` summary line, including the labelled `✓` / `✗` / `·` rows above it, so the user (or their agent) can immediately see what passed, what failed, and start fixing failures.
 
 ## What NOT to do
 
@@ -1014,6 +1014,70 @@ The slash-command snippet in README.md gets `/tiktest:setup` as the first bullet
 git add plugin/skills/setup/SKILL.md docs/PLUGIN.md README.md docs/superpowers/plans/2026-04-28-claude-code-plugin.md
 git commit -m "feat(plugin): add /tiktest:setup skill to scaffold tiktest.md"
 ```
+
+---
+
+## Task 10: CLI always prints the checklist + plugin surfaces it
+
+**Why:** today the `tik-test run` CLI only generates and prints a pass/fail checklist when invoked with `--no-video`. In normal video mode the checklist is buried inside the rendered MP4's outro card — so a `/tiktest:run` user gets the video path but no chat-side summary of what passed and what failed. They have to open the MP4 and pause on the outro, then transcribe what they saw before they can act on a failure. The checklist is universally useful — both the GitHub Action and the plugin benefit equally from having it printed to stdout — so the fix lives in `src/`, not in the SKILL prompts.
+
+The cost is one extra Claude `sonnet` call per run (~5–10s for the synthesis prompt), which is negligible compared to the 60–120s of video render that follows it. The video editor already calls `generateChecklist` internally; we lift that single call up into the CLI's common path and pass the result down to the editor so it doesn't pay twice.
+
+**Files:**
+- Modify: `src/cli.ts` (the `run` command)
+- Modify: `src/single-video-editor.ts` (accept an optional pre-computed checklist)
+- Modify: `plugin/skills/run/SKILL.md` (step 6 — relay the checklist to the user along with the MP4 path)
+
+- [ ] **Step 10.1: Refactor `src/cli.ts` `run` command**
+
+  New phase shape (4 phases when rendering a video, 3 when `--no-video`):
+
+  1. **Phase 1** — `generatePlan` (unchanged).
+  2. **Phase 2** — `runPlan` (unchanged).
+  3. **Phase 3 (always)** — `generateChecklist` → write `checklist.json` → `printChecklist` to stdout. The Claude Code plugin and CI both read this output.
+  4. **Phase 4 (only if not `--no-video`)** — `editSingleVideo`, passed the pre-computed checklist via the new `precomputedChecklist` option so the editor doesn't re-invoke Claude.
+
+  In `--no-video` mode, exit after phase 3 with the existing "checks-only — no video produced" footer. In video mode, exit after phase 4 with the MP4 path AND the checklist path printed alongside `events.json`.
+
+- [ ] **Step 10.2: Add `precomputedChecklist` to `SingleVideoEditOptions`**
+
+  In `src/single-video-editor.ts`, extend the options interface with an optional `precomputedChecklist?: ChecklistItem[] | null`. When the caller provides it (including explicitly `null`, meaning "we tried, the LLM returned nothing — fall back to goal-level rows"), the editor uses it instead of calling `generateChecklist` itself. When the caller omits the field, the editor synthesises one as before — the `pr` mode path stays unchanged.
+
+- [ ] **Step 10.3: Update `plugin/skills/run/SKILL.md` step 6**
+
+  Change step 6 from "report back the MP4 path with one line" to "report back the MP4 path AND the checklist as printed by the CLI" — the checklist is now in stdout for every run, so the SKILL just relays the labelled `✓` / `✗` / `·` rows + the summary line back to the user.
+
+  Also update step 4's "three numbered phases" line to say "four numbered phases" to match the new CLI output.
+
+- [ ] **Step 10.4: Verify**
+
+  ```bash
+  npx tsc -p tsconfig.json --noEmit
+  diff plugin/skills/run/SKILL.md <(sed -n '<start>,<end>p' docs/superpowers/plans/2026-04-28-claude-code-plugin.md)
+  grep -in -E "taskpad|todo|crm|inspiration|theater" plugin/skills/run/SKILL.md
+  ```
+
+  Typecheck must pass. The plan doc's embedded SKILL block must be byte-for-byte identical to the live SKILL.md (otherwise the doc drifts). The grep must be empty.
+
+  Smoke-test the CLI directly (no agent — we just want to confirm the refactor compiles and gets through config-load + the new phase numbering):
+
+  ```bash
+  cd /tmp && mkdir -p tiktest-cli-smoke && cd tiktest-cli-smoke
+  timeout 15 tsx /path/to/src/cli.ts run \
+    --config /path/to/examples/todo-app/tiktest.md \
+    --url "http://localhost:4173" --no-video --out-dir runs
+  ```
+
+  Expected: it prints "1/3 generating test plan" (correct phase numbering for `--no-video` mode) and then gets stopped by the timeout while talking to Claude.
+
+- [ ] **Step 10.5: Commit**
+
+  ```bash
+  git add src/cli.ts src/single-video-editor.ts plugin/skills/run/SKILL.md docs/superpowers/plans/2026-04-28-claude-code-plugin.md
+  git commit -m "feat(cli): always print the checklist after a run, regardless of video mode"
+  ```
+
+  No `dist/` rebuild — the source is the committed change; the next `npm publish` (or the smoke tests in Task 7) will pick it up.
 
 ---
 

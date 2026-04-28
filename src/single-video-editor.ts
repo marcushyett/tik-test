@@ -188,6 +188,14 @@ export interface SingleVideoEditOptions {
   prTitle?: string;
   prBody?: string;
   focus?: string;
+  /** Optional checklist already synthesised by the caller (e.g. the `run`
+   *  CLI command, which now always generates the checklist before deciding
+   *  whether to render the video). When provided, we reuse it for the outro
+   *  instead of paying for a second Claude call. Pass `null` to indicate the
+   *  caller tried but the LLM call returned nothing — same fallback path
+   *  fires as if we'd never had a checklist. Omit to let the editor
+   *  synthesise one itself (the original path, still used by `pr` mode). */
+  precomputedChecklist?: ChecklistItem[] | null;
 }
 
 interface TrimSegment {
@@ -341,7 +349,7 @@ export interface SingleVideoEditResult {
  */
 export async function editSingleVideo({
   artifacts, outPath, voice = "Samantha", quick = false,
-  prTitle, prBody, focus,
+  prTitle, prBody, focus, precomputedChecklist,
 }: SingleVideoEditOptions): Promise<SingleVideoEditResult> {
   const runDir = artifacts.runDir;
   const publicDir = path.join(runDir, "public");
@@ -508,8 +516,13 @@ export async function editSingleVideo({
 
   // ── 5. Single Claude call → coherent narration sized to scene targets.
   //      Kick off the checklist Claude call in parallel — it doesn't depend
-  //      on narration so we don't pay its latency twice.
-  const checklistPromise = generateChecklist({ artifacts, prTitle, prBody });
+  //      on narration so we don't pay its latency twice. Skip when the caller
+  //      already synthesised the checklist for us (e.g. the `run` CLI command
+  //      now generates + prints it before deciding whether to render a video).
+  const checklistPromise: Promise<ChecklistItem[] | null> =
+    precomputedChecklist !== undefined
+      ? Promise.resolve(precomputedChecklist)
+      : generateChecklist({ artifacts, prTitle, prBody });
   const narration = await generateTimedNarration({
     plan: artifacts.plan, prTitle, prBody, focus,
     scenes: sceneList,

@@ -78,7 +78,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
        --out-dir "$TIKTEST_TMP/runs"
      ```
 
-   Stream the output back to the user as it runs. The CLI prints three numbered phases (plan, run, edit) and lands on a `✓ done` line with the path to the produced MP4.
+   Stream the output back to the user as it runs. The CLI prints four numbered phases (plan, run, checklist, edit) and lands on a `✓ done` line with the path to the produced MP4.
 
 5. **Move the MP4 to a stable, user-visible location.**
 
@@ -98,7 +98,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
    echo "$OUT"
    ```
 
-6. **Report back** with one line: the absolute path to the MP4 and a single sentence describing what it shows (read this from the run's `events.json` if you want, but a generic "Walkthrough recorded — open in any video player." is fine).
+6. **Report back** with two parts: (a) the absolute path to the MP4 (e.g. `~/Desktop/tiktest-<timestamp>.mp4`) plus one line describing what the walkthrough shows, and (b) the checklist as printed by the CLI in stdout — copy the section ending with the `N checks · M passed · K failed · J skipped` summary line, including the labelled `✓` / `✗` / `·` rows above it, so the user (or their agent) can immediately see what passed, what failed, and start fixing failures.
 
 ## What NOT to do
 
