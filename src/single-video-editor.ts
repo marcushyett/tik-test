@@ -102,10 +102,12 @@ export interface SingleVideoInput {
   /** Body narration timeline — back-to-back chunks that cover the full
    *  master duration. Each chunk owns its voice + caption + optional badge. */
   bodyChunks: BodyChunk[];
-  /** Apply a slow continuous zoom to the body video (Ken-Burns style). When
-   *  false the body video stays stationary at its native aspect-fit. The
-   *  effect is purely cosmetic — it doesn't move pixels into or out of view. */
-  panZoom?: boolean;
+  /** Mouse + click + keystroke stream, mapped from raw video timeline into
+   *  master-timeline seconds (so timestamps line up with the trimmed video).
+   *  Remotion renders a cinematic cursor overlay using `move`+`click` events
+   *  and pans/zooms the body video toward each click. Interactions that
+   *  landed in a trimmed-out idle gap are dropped before this is built. */
+  interactions?: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }>;
   /** Per-goal results rendered as a vertical checklist on the outro. */
   checklist?: ChecklistItem[];
 }
@@ -183,11 +185,6 @@ export interface SingleVideoEditOptions {
   outPath: string;
   voice?: string | null;
   quick?: boolean;
-  /** Cinematic slow zoom on the body video. Default true at the CLI layer.
-   *  Forced false when `quick` is true — the cheap preset skips the effect
-   *  to keep render time down. Pass an explicit `false` from a non-quick
-   *  run to opt out of the zoom but keep full-res rendering. */
-  panZoom?: boolean;
   prTitle?: string;
   prBody?: string;
   focus?: string;
@@ -343,14 +340,9 @@ export interface SingleVideoEditResult {
  * across the whole timeline with zero overlap and zero silence.
  */
 export async function editSingleVideo({
-  artifacts, outPath, voice = "Samantha", quick = false, panZoom = true,
+  artifacts, outPath, voice = "Samantha", quick = false,
   prTitle, prBody, focus,
 }: SingleVideoEditOptions): Promise<SingleVideoEditResult> {
-  // Quick mode forces pan-zoom off regardless of the caller's preference —
-  // the cheap render preset skips heavy editing. Action.yml does the same
-  // forcing one layer up for quick-and-dirty; this is the safety net for
-  // any direct caller (CLI, tests) that doesn't go through that path.
-  const effectivePanZoom = panZoom && !quick;
   const runDir = artifacts.runDir;
   const publicDir = path.join(runDir, "public");
   await mkdir(publicDir, { recursive: true });
@@ -603,6 +595,28 @@ export async function editSingleVideo({
     console.log(chalk.dim(`  checklist: ${checklist.length} fallback goal-level items`));
   }
 
+  // Map raw-video-ms interactions onto the master timeline. Interactions
+  // that landed in a trimmed-out gap get filtered out (rawToTrimmed has no
+  // way to signal that, so we walk the trim plan ourselves). `key` events
+  // get coerced to the most recent move position so they still anchor a
+  // ToolBadge in the right spot, even though they don't need a cursor flash.
+  const mappedInteractions: SingleVideoInput["interactions"] = [];
+  if (artifacts.interactions?.length) {
+    for (const ev of artifacts.interactions) {
+      const rawS = ev.ts / 1000;
+      let mappedS: number | null = null;
+      for (const seg of plan) {
+        if (rawS >= seg.rawStartS && rawS <= seg.rawEndS + 1e-6) {
+          mappedS = seg.trimmedStartS + (rawS - seg.rawStartS) / seg.speed;
+          break;
+        }
+      }
+      if (mappedS == null) continue;
+      mappedInteractions.push({ ts: Math.max(0, Math.round(mappedS * 1000)), kind: ev.kind, x: ev.x, y: ev.y, key: ev.key });
+    }
+    console.log(chalk.dim(`  interactions: ${mappedInteractions.length}/${artifacts.interactions.length} kept after trim mapping`));
+  }
+
   const input: SingleVideoInput = {
     title: artifacts.plan.name || "Feature review",
     summary: artifacts.plan.summary || artifacts.plan.startUrl,
@@ -622,7 +636,7 @@ export async function editSingleVideo({
     outroCaption: sanitiseForSpeech(narration.chunks[narration.chunks.length - 1].captionText),
     versionTag: getVersionTag(),
     bodyChunks,
-    panZoom: effectivePanZoom,
+    interactions: mappedInteractions.length > 0 ? mappedInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,
   };
   await writeFile(path.join(runDir, "reel-input.json"), JSON.stringify(input, null, 2));

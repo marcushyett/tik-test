@@ -200,60 +200,32 @@ const BROKEN_IMAGE_FALLBACK = `
 })();
 `;
 
-const SYNTHETIC_CURSOR_INIT = `
-window.addEventListener('DOMContentLoaded', () => {
-  const cursor = document.createElement('div');
-  cursor.id = '__tik_cursor__';
-  cursor.style.cssText = [
-    'position:fixed','z-index:2147483647','pointer-events:none',
-    'width:28px','height:28px','top:0','left:0',
-    // Slower lerp so the pointer glides instead of snapping.
-    'transform:translate(-5px,-3px)','transition:transform 60ms linear',
-  ].join(';');
-  cursor.innerHTML = \`
-    <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-      <path d="M3 2 L3 22 L8.5 17 L12 25 L15 23.5 L11.5 15.5 L19 15.5 Z"
-        fill="#ffffff" stroke="#0a0a0a" stroke-width="1.2" stroke-linejoin="round"/>
-    </svg>\`;
-  document.body.appendChild(cursor);
-  let vx = 0, vy = 0, tx = 0, ty = 0;
-  function tick() {
-    // Softer lerp coefficient (0.17 vs 0.28) so the visible pointer trails the
-    // real mouse more — easier for a viewer to track.
-    vx += (tx - vx) * 0.17;
-    vy += (ty - vy) * 0.17;
-    cursor.style.transform = \`translate(\${vx - 5}px, \${vy - 3}px)\`;
-    requestAnimationFrame(tick);
-  }
-  tick();
-  document.addEventListener('mousemove', (e) => { tx = e.clientX; ty = e.clientY; }, true);
-  function ripple(x, y, color) {
-    const c = color || '#00e5a0';
-    const r = document.createElement('div');
-    r.style.cssText = [
-      'position:fixed','z-index:2147483646','pointer-events:none',
-      'left:' + x + 'px','top:' + y + 'px',
-      'width:10px','height:10px','margin:-5px 0 0 -5px',
-      'border-radius:50%','border:3px solid ' + c,'opacity:0.9',
-      'animation:tikRipple 520ms ease-out forwards','box-shadow:0 0 28px ' + c,
-    ].join(';');
-    document.body.appendChild(r);
-    setTimeout(function() { r.remove(); }, 560);
-  }
-  // Click ripple.
-  document.addEventListener('click', function(e) { ripple(e.clientX, e.clientY, '#00e5a0'); }, true);
-  // Non-click "look here" pulse — a warm amber ring so the viewer can see what
-  // we're asserting on even when the pointer is stationary. Triggered from the
-  // Playwright runner on assert steps.
-  (window).__tikPulse = function(x, y) {
-    ripple(x, y, '#ffb94a');
-    // Second, larger concentric ring for extra presence.
-    setTimeout(function() { ripple(x, y, '#ffb94a'); }, 160);
-  };
-  const style = document.createElement('style');
-  style.textContent = '@keyframes tikRipple{from{transform:scale(1);opacity:0.9}to{transform:scale(10);opacity:0}}';
-  document.head.appendChild(style);
-});
+/**
+ * Pure RECORDER — no painted cursor, no ripples, no DOM mutation. Just
+ * forwards mouse + click + keystroke events out via the
+ * context-exposed `__tikRecord` callback so Remotion can render a
+ * cinematic cursor + pan-zoom on top of the recorded video. The
+ * page-painted cursor was retired because (a) it was duplicated for
+ * each navigation, (b) Remotion can do a way slicker curved-path
+ * cursor with click flashes, (c) targeted pan-zoom toward click bboxes
+ * needs the same coord stream anyway.
+ */
+const INTERACTION_RECORDER_INIT = `
+(() => {
+  let lastMove = 0;
+  document.addEventListener('mousemove', (e) => {
+    const now = performance.now();
+    if (now - lastMove < 33) return; // ~30Hz throttle keeps the stream small
+    lastMove = now;
+    try { window.__tikRecord && window.__tikRecord({ kind: 'move', x: e.clientX, y: e.clientY }); } catch {}
+  }, true);
+  document.addEventListener('click', (e) => {
+    try { window.__tikRecord && window.__tikRecord({ kind: 'click', x: e.clientX, y: e.clientY }); } catch {}
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    try { window.__tikRecord && window.__tikRecord({ kind: 'key', x: 0, y: 0, key: e.key }); } catch {}
+  }, true);
+})();
 `;
 
 export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, projectContext, diff, comments, prTitle, prBody }: RunOptions): Promise<RunArtifacts> {
@@ -370,7 +342,15 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       console.log(chalk.yellow(`  [media FAILED ${resourceType}] ${url.slice(0, 120)}${url.length > 120 ? "…" : ""} · ${req.failure()?.errorText || "unknown"}`));
     }
   });
-  await context.addInitScript(SYNTHETIC_CURSOR_INIT);
+  // Mouse + click + keystroke stream from the page, forwarded into the
+  // runner via context.exposeFunction so it survives navigations. Times
+  // are normalised to runStart so they line up with the events[] timeline
+  // that drives the trim plan.
+  const interactions: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }> = [];
+  await context.exposeFunction("__tikRecord", (data: { kind: "move" | "click" | "key"; x: number; y: number; key?: string }) => {
+    interactions.push({ ts: Math.max(0, Math.round(performance.now() - runStart)), ...data });
+  });
+  await context.addInitScript(INTERACTION_RECORDER_INIT);
   await context.addInitScript(BROKEN_IMAGE_FALLBACK);
   const page = await context.newPage();
 
@@ -592,8 +572,16 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     finishedAt,
     totalMs,
     toolWindows: toolWindows.length ? toolWindows : undefined,
+    interactions: interactions.length ? interactions : undefined,
   };
   await writeFile(artifacts.eventsJsonPath, JSON.stringify({ plan, events, startedAt, finishedAt, totalMs, toolWindows: artifacts.toolWindows }, null, 2));
+  if (artifacts.interactions?.length) {
+    await writeFile(path.join(runDir, "interactions.json"), JSON.stringify(artifacts.interactions, null, 2));
+    const byKind: Record<string, number> = {};
+    for (const it of artifacts.interactions) byKind[it.kind] = (byKind[it.kind] ?? 0) + 1;
+    const breakdown = Object.entries(byKind).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(" ");
+    console.log(chalk.dim(`  interactions: ${artifacts.interactions.length} (${breakdown})`));
+  }
   if (artifacts.toolWindows?.length) {
     console.log(chalk.dim(`  tool windows: ${artifacts.toolWindows.length} (per-tool-call active spans for editor trim)`));
     const byKind: Record<string, number> = {};

@@ -39,10 +39,12 @@ export interface SingleVideoInput {
    *  Each chunk renders ONE Audio + ONE WordCaption Sequence + optional
    *  ToolBadge — guaranteed never to stack with siblings. */
   bodyChunks: BodyChunk[];
-  /** Apply a slow continuous Ken-Burns zoom across the body video. Default
-   *  off (no transform = stationary frame). Resolved upstream from the
-   *  `pan-zoom` action input AND auto-disabled by quick mode. */
-  panZoom?: boolean;
+  /** Mouse + click stream (already mapped to master-timeline ms by the editor).
+   *  `move` events drive the cursor overlay; `click` events drive both the
+   *  cursor flash AND the targeted pan-zoom toward the click bbox. Coords are
+   *  in VIEWPORT (page) pixels — Remotion maps them to canvas pixels via the
+   *  recording's objectFit:contain math. */
+  interactions?: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }>;
   checklist?: Array<{ outcome: "success" | "failure" | "skipped"; label: string; note?: string }>;
 }
 
@@ -140,43 +142,114 @@ const VersionBadge: React.FC<{ tag: string }> = ({ tag }) => (
 );
 
 const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
-  const { fps } = useVideoConfig();
+  const { fps, width: canvasW, height: canvasH } = useVideoConfig();
   const frame = useCurrentFrame();
-  const masterFrames = Math.max(1, Math.round(input.masterDurS * fps));
+  const timeS = frame / fps;
 
-  // Optional cinematic zoom. Slow ramp from 1.0 → 1.08 across the body,
-  // ease-in-out so the start/end aren't jarring. The container has
-  // `overflow: hidden` already, so a 1.08 scale crops ~4% from each edge —
-  // intentionally mild; we don't want to clip text in the recorded UI.
-  const zoomScale = input.panZoom
-    ? interpolate(frame, [0, masterFrames], [1, 1.08], {
-        extrapolateLeft: "clamp",
-        extrapolateRight: "clamp",
-        easing: Easing.inOut(Easing.cubic),
-      })
-    : 1;
+  // Recording → canvas mapping (objectFit: contain). Pure function of the
+  // viewport size and canvas size; computed once per render.
+  const vw = input.viewport.width;
+  const vh = input.viewport.height;
+  const fitScale = Math.min(canvasW / vw, canvasH / vh);
+  const fitW = vw * fitScale;
+  const fitH = vh * fitScale;
+  const offsetX = (canvasW - fitW) / 2;
+  const offsetY = (canvasH - fitH) / 2;
+  const toCanvas = (x: number, y: number) => ({
+    cx: offsetX + x * fitScale,
+    cy: offsetY + y * fitScale,
+  });
+
+  const interactions = input.interactions ?? [];
+  const moves = interactions.filter((i) => i.kind === "move");
+  const clicks = interactions.filter((i) => i.kind === "click");
+
+  // Targeted pan-zoom — bell curve around each click (peaks ~0.2s after
+  // the click, fades to 0 at ±0.9s). The "winning" click for the current
+  // frame is the one with the highest active weight, so densely-spaced
+  // clicks chain smoothly without snapping back to neutral between them.
+  const ZOOM_HALF_WINDOW_S = 0.9;
+  const ZOOM_PEAK = 1.42; // 1.0 → 1.42 punch-in
+  let bestWeight = 0;
+  let bestClick: typeof clicks[number] | null = null;
+  for (const c of clicks) {
+    const dt = timeS - c.ts / 1000;
+    // Slight lead so the camera is already on the element when the click
+    // ripple fires (humans look at things before they click them).
+    const centred = dt + 0.18;
+    const w = Math.max(0, 1 - Math.abs(centred) / ZOOM_HALF_WINDOW_S);
+    if (w > bestWeight) { bestWeight = w; bestClick = c; }
+  }
+  const eased = Easing.bezier(0.4, 0, 0.2, 1)(bestWeight);
+  const zoomScale = 1 + (ZOOM_PEAK - 1) * eased;
+  const focus = bestClick ? toCanvas(bestClick.x, bestClick.y) : { cx: canvasW / 2, cy: canvasH / 2 };
+
+  // Cursor position — interpolate between the bracketing `move` events.
+  // Falls back to the centre when no moves exist yet (very early frames).
+  let cursorVx = vw / 2;
+  let cursorVy = vh / 2;
+  for (let i = moves.length - 1; i >= 0; i--) {
+    const m = moves[i];
+    const tNow = m.ts / 1000;
+    if (tNow > timeS) continue;
+    const next = moves[i + 1];
+    if (!next) {
+      cursorVx = m.x;
+      cursorVy = m.y;
+    } else {
+      const tNext = next.ts / 1000;
+      const span = Math.max(0.001, tNext - tNow);
+      const lerp = Math.min(1, Math.max(0, (timeS - tNow) / span));
+      cursorVx = m.x + (next.x - m.x) * lerp;
+      cursorVy = m.y + (next.y - m.y) * lerp;
+    }
+    break;
+  }
+  const cursor = toCanvas(cursorVx, cursorVy);
+
+  // Click flash — any click within ±0.18s gets a ring expansion centred on
+  // the click point.
+  const FLASH_HALF_S = 0.18;
+  let flashAmount = 0;
+  for (const c of clicks) {
+    const dt = Math.abs(timeS - c.ts / 1000);
+    if (dt < FLASH_HALF_S) {
+      const local = 1 - dt / FLASH_HALF_S;
+      if (local > flashAmount) flashAmount = local;
+    }
+  }
 
   return (
     <AbsoluteFill>
       <Background accent="#00e5a0" intensity={0.7} />
 
-      {/* The trimmed master recording, full-bleed with object-fit: contain so
-          the gradient peeks through at mismatched aspect ratios. When panZoom
-          is on, a slow CSS zoom plays for a Ken-Burns feel; off keeps the
-          frame stationary and the chunked narration carries the story. */}
+      {/* The trimmed master recording. Wrapped in a container that scales +
+          translates around each click — viewer's eye stays glued to the
+          interaction point. Video and cursor share the SAME transform so
+          they zoom together; the cursor SVG counter-scales to keep its
+          on-screen size constant. */}
       <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#0a0a0a" }}>
-        <Video
-          src={staticFile(input.masterVideoSrc)}
-          muted
+        <div
           style={{
-            width: "100%",
-            height: "100%",
-            objectFit: "contain",
+            position: "absolute",
+            inset: 0,
             transform: `scale(${zoomScale})`,
-            transformOrigin: "center center",
-            willChange: input.panZoom ? "transform" : undefined,
+            transformOrigin: `${focus.cx}px ${focus.cy}px`,
+            willChange: "transform",
           }}
-        />
+        >
+          <Video
+            src={staticFile(input.masterVideoSrc)}
+            muted
+            style={{ width: "100%", height: "100%", objectFit: "contain" }}
+          />
+          <CursorOverlay
+            cx={cursor.cx}
+            cy={cursor.cy}
+            flashAmount={flashAmount}
+            counterScale={1 / zoomScale}
+          />
+        </div>
       </div>
 
       {/* One Sequence per body chunk. Chunks are guaranteed non-overlapping
@@ -209,5 +282,65 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
         );
       })}
     </AbsoluteFill>
+  );
+};
+
+/**
+ * Pointer + click flash drawn on top of the recording. Lives inside the
+ * pan-zoom transform so it tracks the zoomed page coordinates exactly.
+ * `counterScale` keeps the SVG visually constant in size as the parent
+ * scales up/down (a 1.4× zoom would otherwise make the cursor 40% bigger).
+ */
+const CursorOverlay: React.FC<{
+  cx: number;
+  cy: number;
+  flashAmount: number; // 0 → 1, peaks at the click moment
+  counterScale: number;
+}> = ({ cx, cy, flashAmount, counterScale }) => {
+  const ringScale = 0.4 + flashAmount * 1.6;
+  const ringOpacity = flashAmount * 0.85;
+  return (
+    <>
+      {flashAmount > 0.02 && (
+        <div
+          style={{
+            position: "absolute",
+            left: cx,
+            top: cy,
+            width: 160,
+            height: 160,
+            borderRadius: "50%",
+            border: `${6 * counterScale}px solid #00e5a0`,
+            transform: `translate(-50%, -50%) scale(${ringScale * counterScale})`,
+            opacity: ringOpacity,
+            boxShadow: `0 0 ${48 * counterScale}px #00e5a0`,
+            pointerEvents: "none",
+          }}
+        />
+      )}
+      <div
+        style={{
+          position: "absolute",
+          left: cx,
+          top: cy,
+          width: 56,
+          height: 56,
+          transform: `translate(-18%, -12%) scale(${counterScale})`,
+          transformOrigin: "0 0",
+          filter: "drop-shadow(0 6px 18px rgba(0,0,0,0.7))",
+          pointerEvents: "none",
+        }}
+      >
+        <svg viewBox="0 0 28 28" width={56} height={56}>
+          <path
+            d="M3 2 L3 22 L8.5 17 L12 25 L15 23.5 L11.5 15.5 L19 15.5 Z"
+            fill="#ffffff"
+            stroke="#0a0a0a"
+            strokeWidth={1.4}
+            strokeLinejoin="round"
+          />
+        </svg>
+      </div>
+    </>
   );
 };
