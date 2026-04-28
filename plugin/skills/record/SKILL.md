@@ -38,25 +38,26 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
    - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or `README.md` in the current working directory and pass it through as the config (the CLI extracts the URL from there). In this path no URL is resolved here — the CLI parses it from the file.
    - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:record http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
-3. **Ensure a config file.** The CLI reads its instructions from a markdown file. If the cwd already has `tiktest.md`, `tik-test.md`, or a `README.md` with a `## TikTest` (or `## Testing`) heading, use it directly via `--config`. Otherwise generate a minimal temporary config — **use the Write tool** (which is in `allowed-tools`) so shell metacharacters in `$ARGUMENTS` aren't expanded:
+3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
 
    ```bash
    TIKTEST_TMP=$(mktemp -d -t tiktest-XXXXXX)
    ```
 
-   Then call the Write tool with `file_path` set to `${TIKTEST_TMP}/tiktest.md` and `content` set to:
+   Then decide what `<CONFIG_PATH>` should be:
 
-   ```
-   ---
-   url: <RESOLVED_URL>
-   ---
+   - **If the cwd has `tiktest.md`, `tik-test.md`, or `README.md` with a `## TikTest` (or `## Testing`) heading** (step 2 path c, OR a usable config existed alongside a resolved URL): set `<CONFIG_PATH>` to that file's absolute path.
+   - **Otherwise** (paths a/b with no cwd config): use the Write tool (which is in `allowed-tools`, so shell metacharacters in `$ARGUMENTS` aren't expanded) to create a config file at `${TIKTEST_TMP}/tiktest.md` with this content:
 
-   Auto-generated config from /tiktest:record. Explore the primary surface and exercise the main user-facing actions. <ARGUMENTS_IF_NOT_URL>
-   ```
+     ```
+     ---
+     url: <RESOLVED_URL>
+     ---
 
-   Substitute `<RESOLVED_URL>` with the URL you resolved in step 2 (paths a or b). Substitute `<ARGUMENTS_IF_NOT_URL>` with the literal text of `$ARGUMENTS` only if it didn't itself look like a URL — otherwise drop that line entirely. The Write tool writes the content as-is, so no shell expansion occurs.
+     Auto-generated config from /tiktest:record. Explore the primary surface and exercise the main user-facing actions. <ARGUMENTS_IF_NOT_URL>
+     ```
 
-   (This branch is only reachable when you resolved a URL in step 2 paths a or b. If you fell through to path c, skip this step — the existing config file is the config.)
+     Substitute `<RESOLVED_URL>` with the URL you resolved in step 2. Substitute `<ARGUMENTS_IF_NOT_URL>` with the literal text of `$ARGUMENTS` only if it didn't itself look like a URL — otherwise drop that line entirely. The Write tool writes the content as-is, so no shell expansion occurs. Set `<CONFIG_PATH>` to `${TIKTEST_TMP}/tiktest.md`.
 
 4. **Run the CLI.** Use the `tik-test` binary on PATH (installed via `npm install -g tik-test`) — version-locked with the plugin you're running. Do **not** use `npx -y tik-test@latest` (that would fetch a different version than the plugin and defeat the reuse principle).
 
