@@ -94,6 +94,8 @@ function buildSystemPrompt(): string {
     "- browser_network_requests: at most once, only if the goal's success condition mentions network behaviour.",
     "",
     "USE THE UI LIKE A REAL USER:",
+    "- Before typing into ANY input/textarea/contenteditable, ALWAYS browser_click on it FIRST. Then browser_type. Two reasons: (1) the on-video cursor needs a click event to anchor the camera on the field — without the click, the value just appears mid-air and the viewer can't tell where it's being entered. (2) clicking ensures focus + caret position, so typing actually lands. Never browser_type without an immediately-preceding browser_click on the same field.",
+    "- When using browser_type, pass `slowly: true` so the keystrokes animate one-character-at-a-time (Playwright's character-delay typing). It looks like a real person typing instead of text instantly appearing. Skip `slowly` only for very long strings (>40 chars) where it would burn screen time.",
     "- Pick dates by clicking the date input and typing the date keystroke-by-keystroke (or using the native date picker), NEVER by injecting a value with evaluate.",
     "- Pick from <select> dropdowns by clicking the select and using browser_select_option, NEVER by setting .value with evaluate.",
     "- Toggle checkboxes by clicking the checkbox, NEVER by setting .checked with evaluate.",

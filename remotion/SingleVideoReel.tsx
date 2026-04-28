@@ -203,24 +203,74 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   }
   const cursor = toCanvas(cursorVx, cursorVy);
 
-  // Targeted pan-zoom — bell-curve punch-in on each click, neutral
-  // (zoom=1.0, no transform wrapper) between clicks. Peak 2.0× is an
-  // integer scale so bilinear sampling lines up cleanly at the punch-in.
-  const ZOOM_HALF_WINDOW_S = 0.9;
+  // Targeted pan-zoom with sustain + pan — much smoother than the v1
+  // bell-curve which zoomed in/out around every individual click.
+  // Behaviour:
+  //   • APPROACH: 0.5s before a click, ease zoom from 1.0 → PEAK
+  //   • SUSTAIN: hold zoom at PEAK for SUSTAIN_S after the click
+  //   • PAN: if the next click lands inside the sustain window of this
+  //     one, stay at PEAK and PAN the focus from this click bbox to
+  //     the next one (smooth ease-in-out across the gap)
+  //   • RELEASE: at end of sustain (no nearby next click), ease back
+  //     to 1.0 over RELEASE_S
+  // Net result: the camera "rides" between adjacent clicks instead
+  // of bouncing 1→PEAK→1→PEAK→1, which was the jittery "zoom in/out
+  // all the time" symptom.
   const ZOOM_PEAK = 2.0;
-  let bestWeight = 0;
-  let bestClick: typeof clicks[number] | null = null;
+  const APPROACH_S = 0.5;
+  const SUSTAIN_S = 4.5;
+  const RELEASE_S = 0.6;
+
+  let prevClick: typeof clicks[number] | null = null;
+  let nextClick: typeof clicks[number] | null = null;
   for (const c of clicks) {
-    const dt = timeS - c.ts / 1000;
-    // Slight lead so the camera is already on the element when the click
-    // ripple fires (humans look at things before they click them).
-    const centred = dt + 0.18;
-    const w = Math.max(0, 1 - Math.abs(centred) / ZOOM_HALF_WINDOW_S);
-    if (w > bestWeight) { bestWeight = w; bestClick = c; }
+    if (c.ts / 1000 <= timeS) prevClick = c;
+    else if (!nextClick) nextClick = c;
   }
-  const eased = Easing.bezier(0.4, 0, 0.2, 1)(bestWeight);
-  const zoomScale = 1 + (ZOOM_PEAK - 1) * eased;
-  const focus = bestClick ? toCanvas(bestClick.x, bestClick.y) : { cx: canvasW / 2, cy: canvasH / 2 };
+  const tPrev = prevClick ? prevClick.ts / 1000 : -Infinity;
+  const tNext = nextClick ? nextClick.ts / 1000 : Infinity;
+  const sincePrev = timeS - tPrev;
+  const untilNext = tNext - timeS;
+
+  let zoomScale = 1;
+  let focusVx = vw / 2;
+  let focusVy = vh / 2;
+
+  if (prevClick && nextClick && (tNext - tPrev) <= SUSTAIN_S + APPROACH_S) {
+    // Two adjacent clicks close enough to "ride between" — stay zoomed,
+    // pan focus from prev → next over the gap.
+    zoomScale = ZOOM_PEAK;
+    const span = Math.max(0.001, tNext - tPrev);
+    const t = Math.min(1, Math.max(0, (timeS - tPrev) / span));
+    const eased = Easing.bezier(0.42, 0, 0.58, 1)(t); // ease-in-out
+    focusVx = prevClick.x + (nextClick.x - prevClick.x) * eased;
+    focusVy = prevClick.y + (nextClick.y - prevClick.y) * eased;
+  } else if (prevClick && sincePrev < SUSTAIN_S) {
+    // Still inside the sustain window of the previous click, no nearby
+    // next click — hold on prevClick, then ease back to 1.0 in last RELEASE_S.
+    focusVx = prevClick.x;
+    focusVy = prevClick.y;
+    if (sincePrev < SUSTAIN_S - RELEASE_S) {
+      zoomScale = ZOOM_PEAK;
+    } else {
+      const t = (sincePrev - (SUSTAIN_S - RELEASE_S)) / RELEASE_S;
+      const eased = Easing.bezier(0.4, 0, 0.2, 1)(Math.min(1, Math.max(0, t)));
+      zoomScale = ZOOM_PEAK + (1 - ZOOM_PEAK) * eased;
+    }
+  } else if (nextClick && untilNext < APPROACH_S) {
+    // Approaching the next click — ease zoom in toward it.
+    focusVx = nextClick.x;
+    focusVy = nextClick.y;
+    const t = 1 - untilNext / APPROACH_S;
+    const eased = Easing.bezier(0.4, 0, 0.2, 1)(Math.min(1, Math.max(0, t)));
+    zoomScale = 1 + (ZOOM_PEAK - 1) * eased;
+  } else {
+    // Long stretch with no clicks — neutral zoom, centred. The
+    // conditional transform wrapper means we render the <Video>
+    // directly with no compositing layer = pixel-sharp text.
+    zoomScale = 1;
+  }
+  const focus = toCanvas(focusVx, focusVy);
 
   // Click flash — any click within ±0.18s gets a ring expansion centred on
   // the click point.
