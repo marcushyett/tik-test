@@ -337,7 +337,10 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
           </button>
         )}
 
-        {/* Right-edge swipe buttons (always reachable with the thumb). */}
+        {/* Right-edge action rail (always reachable with the thumb). The
+            corner mute + speed pills inside VideoFrame are hidden on mobile
+            because they sit behind the bottom drawer (z-40); this rail is
+            the mobile-only home for those controls. */}
         <div className="absolute right-2 top-1/2 flex -translate-y-1/2 flex-col gap-2">
           <Button size="icon" variant="secondary" className="h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80" onClick={goPrev} aria-label="Previous PR">
             <ChevronUp className="h-5 w-5" />
@@ -351,6 +354,14 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
           >
             {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
           </Button>
+          <button
+            type="button"
+            onClick={cycleRate}
+            aria-label={`Playback speed ${formatRate(rate as 1 | 0.5 | 1.5 | 2)}, tap to cycle`}
+            className="flex h-10 min-w-[2.5rem] items-center justify-center rounded-md bg-black/60 px-2 font-mono text-sm font-semibold text-white backdrop-blur-sm transition hover:bg-black/80 active:scale-95"
+          >
+            {formatRate(rate as 1 | 0.5 | 1.5 | 2)}
+          </button>
           <Button size="icon" variant="secondary" className="h-10 w-10 bg-black/60 backdrop-blur-sm hover:bg-black/80" onClick={goNext} aria-label="Next PR">
             <ChevronDown className="h-5 w-5" />
           </Button>
@@ -656,15 +667,19 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
             shows the CURRENT rate so the user always knows where they
             are; cycling forward speeds up by default (most users want
             to skim), with the slow option as the last step before
-            wrapping back to normal. */}
-        <button
-          type="button"
-          onClick={btn(onCycleRate)}
-          aria-label={`Playback speed ${formatRate(rate as 1 | 0.5 | 1.5 | 2)}, tap to cycle`}
-          className="absolute bottom-3 left-3 z-10 flex h-10 min-w-[3rem] items-center justify-center rounded-full bg-black/70 px-3 font-mono text-sm font-semibold text-white shadow backdrop-blur-sm transition hover:bg-black/90 active:scale-95"
-        >
-          {formatRate(rate as 1 | 0.5 | 1.5 | 2)}
-        </button>
+            wrapping back to normal. Desktop only — on mobile this
+            corner sits behind the PR drawer (z-40), so the mobile feed
+            renders its own speed button in the right-edge action rail. */}
+        {aspect === "9/16" && (
+          <button
+            type="button"
+            onClick={btn(onCycleRate)}
+            aria-label={`Playback speed ${formatRate(rate as 1 | 0.5 | 1.5 | 2)}, tap to cycle`}
+            className="absolute bottom-3 left-3 z-10 flex h-10 min-w-[3rem] items-center justify-center rounded-full bg-black/70 px-3 font-mono text-sm font-semibold text-white shadow backdrop-blur-sm transition hover:bg-black/90 active:scale-95"
+          >
+            {formatRate(rate as 1 | 0.5 | 1.5 | 2)}
+          </button>
+        )}
         {aspect === "9/16" && (
           <div className="absolute right-3 top-3 z-10 flex flex-col gap-2">
             <button
