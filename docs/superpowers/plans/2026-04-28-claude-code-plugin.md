@@ -182,7 +182,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
 2. **Resolve the target URL.** Three resolution paths — remember which one you took, step 4 branches on it:
    - **(a)** If `$ARGUMENTS` starts with `http://` or `https://`, that is the URL.
    - **(b)** Else, probe each of these in order with `curl -sf -o /dev/null --max-time 1 <url>` and use the first that responds: `http://localhost:3000`, `http://localhost:5173`, `http://localhost:4173`, `http://localhost:8080`.
-   - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or `README.md` in the current working directory and pass it through as the config (the CLI extracts the URL from there). In this path no URL is resolved here — the CLI parses it from the file.
+   - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or a `README.md` containing either a `## TikTest`/`## Testing` (or alias) heading or a bare `http://` / `https://` URL — the CLI extracts the URL from any of these. In this path no URL is resolved here — the CLI parses it from the file.
    - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:record http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
 3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
@@ -193,7 +193,7 @@ The user wants a short MP4 walkthrough of whatever's running locally. Drive the 
 
    Then decide what `<CONFIG_PATH>` should be:
 
-   - **If the cwd has `tiktest.md`, `tik-test.md`, or `README.md` with a `## TikTest` (or `## Testing`) heading** (step 2 path c, OR a usable config existed alongside a resolved URL): set `<CONFIG_PATH>` to that file's absolute path.
+   - **If the cwd has `tiktest.md`, `tik-test.md`, or `README.md` with any of these tik-test headings: `## TikTest`, `## tik-test`, `## Testing`, `## How to Test`, `## Test Setup`, `## Test Environment`, `## Test Instructions`** (step 2 path c, OR a usable config existed alongside a resolved URL): set `<CONFIG_PATH>` to that file's absolute path.
    - **Otherwise** (paths a/b with no cwd config): use the Write tool (which is in `allowed-tools`, so shell metacharacters in `$ARGUMENTS` aren't expanded) to create a config file at `${TIKTEST_TMP}/tiktest.md` with this content:
 
      ```
@@ -324,7 +324,7 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
 2. **Resolve the target URL.** Three resolution paths — remember which one you took, step 4 branches on it:
    - **(a)** If `$ARGUMENTS` starts with `http://` or `https://`, that is the URL.
    - **(b)** Else, probe each of these in order with `curl -sf -o /dev/null --max-time 1 <url>` and use the first that responds: `http://localhost:3000`, `http://localhost:5173`, `http://localhost:4173`, `http://localhost:8080`.
-   - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or `README.md` in the current working directory and pass it through as the config (the CLI extracts the URL from there). In this path no URL is resolved here — the CLI parses it from the file.
+   - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or a `README.md` containing either a `## TikTest`/`## Testing` (or alias) heading or a bare `http://` / `https://` URL — the CLI extracts the URL from any of these. In this path no URL is resolved here — the CLI parses it from the file.
    - Else, stop and tell the user: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, pass a URL as an argument (`/tiktest:checks http://localhost:1234`), or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
 3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
@@ -335,7 +335,7 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
 
    Then decide what `<CONFIG_PATH>` should be:
 
-   - **If the cwd has `tiktest.md`, `tik-test.md`, or `README.md` with a `## TikTest` (or `## Testing`) heading** (step 2 path c, OR a usable config existed alongside a resolved URL): set `<CONFIG_PATH>` to that file's absolute path.
+   - **If the cwd has `tiktest.md`, `tik-test.md`, or `README.md` with any of these tik-test headings: `## TikTest`, `## tik-test`, `## Testing`, `## How to Test`, `## Test Setup`, `## Test Environment`, `## Test Instructions`** (step 2 path c, OR a usable config existed alongside a resolved URL): set `<CONFIG_PATH>` to that file's absolute path.
    - **Otherwise** (paths a/b with no cwd config): use the Write tool (which is in `allowed-tools`, so shell metacharacters in `$ARGUMENTS` aren't expanded) to create a config file at `${TIKTEST_TMP}/tiktest.md` with this content:
 
      ```
@@ -460,7 +460,7 @@ A single dispatch prompt may combine any of the above.
 2. **Resolve target URL.** Three resolution paths — remember which one you took, step 4 branches on it:
    - **(a)** If the dispatch prompt contains an explicit URL (starts with `http://` or `https://`), that is the URL.
    - **(b)** Else, probe each of these in order with `curl -sf -o /dev/null --max-time 1 <url>` and use the first that responds: `http://localhost:3000`, `http://localhost:5173`, `http://localhost:4173`, `http://localhost:8080`.
-   - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or `README.md` in the current working directory and pass it through as the config (the CLI extracts the URL from there). In this path no URL is resolved here — the CLI parses it from the file.
+   - **(c)** Else, look for a `tiktest.md`, `tik-test.md`, or a `README.md` containing either a `## TikTest`/`## Testing` (or alias) heading or a bare `http://` / `https://` URL — the CLI extracts the URL from any of these. In this path no URL is resolved here — the CLI parses it from the file.
    - Else, stop and return to the parent: "Couldn't find a dev server on ports 3000/5173/4173/8080, and no tiktest.md in the current directory. Either start a dev server, dispatch with an explicit URL in the prompt, or add the URL to `tiktest.md` (either as a frontmatter `url:` line between `---` fences, or as a bare `http://…` / `https://…` URL anywhere in the body)."
 
 3. **Set up the run directory and config.** First create a tmpdir for run output (always — used for `--out-dir` regardless of config source):
@@ -471,7 +471,7 @@ A single dispatch prompt may combine any of the above.
 
    Then decide what `<CONFIG_PATH>` should be:
 
-   - **If the cwd has `tiktest.md`, `tik-test.md`, or `README.md` with a `## TikTest` (or `## Testing`) heading** (step 2 path c, OR a usable config existed alongside a resolved URL): set `<CONFIG_PATH>` to that file's absolute path.
+   - **If the cwd has `tiktest.md`, `tik-test.md`, or `README.md` with any of these tik-test headings: `## TikTest`, `## tik-test`, `## Testing`, `## How to Test`, `## Test Setup`, `## Test Environment`, `## Test Instructions`** (step 2 path c, OR a usable config existed alongside a resolved URL): set `<CONFIG_PATH>` to that file's absolute path.
    - **Otherwise** (paths a/b with no cwd config): use the **Write tool** (which is in `tools`, so the file content is written verbatim and shell metacharacters from the dispatch prompt aren't expanded) to create a config file at `${TIKTEST_TMP}/tiktest.md` with this content:
 
      ```

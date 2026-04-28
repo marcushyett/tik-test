@@ -14,7 +14,7 @@ The plugin is markdown-only — all the heavy lifting happens in the `tik-test` 
 | **`ffmpeg` on PATH** | Final mux step in the video pipeline | `brew install ffmpeg` (mac) / `sudo apt install ffmpeg` (Linux) |
 | **Playwright Chromium** | The browser the agent drives | `npx playwright install chromium` |
 
-The plugin's slash commands run all five checks before doing anything expensive and print a copy-pasteable install command for each missing piece.
+The plugin's slash commands run all four runtime checks before doing anything expensive (Node.js is implied by `tik-test`) and print a copy-pasteable install command for each missing piece.
 
 ## Install (local development)
 
