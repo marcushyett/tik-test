@@ -45,6 +45,7 @@ tik-test puts a **45-60s narrated video** on every PR: happy path, edge cases, b
 
 - `OPENAI_API_KEY` for voice narration (silent on Linux without it).
 - `VERCEL_AUTOMATION_BYPASS_SECRET` for protected previews.
+- **Claude Code CLI** (only required if you want to use the [Claude Code plugin](#3-claude-code-plugin)): install from <https://docs.claude.com/en/docs/claude-code/setup>.
 
 ---
 
@@ -198,6 +199,28 @@ Useful flags:
 | `--review <mode>` | `none` · `approve-on-pass` · `request-changes-on-fail` (default) · `always` |
 | `--vercel-bypass <secret>` | Bypass header + cookie |
 | `--no-voice` | Silent video |
+
+### 3. Claude Code plugin
+
+Already inside a Claude Code session? Install the plugin and record a walkthrough of whatever's running locally — no PR or CI required.
+
+```sh
+npm install -g tik-test                                 # CLI + plugin in one tarball
+npx playwright install chromium                         # browser the agent drives
+claude --plugin-dir "$(npm root -g)/tik-test/plugin"    # load the plugin
+```
+
+Then in the Claude Code prompt:
+
+```
+/tiktest:record                  # auto-detects localhost dev server, drops MP4 on Desktop
+/tiktest:record http://localhost:5173    # explicit URL
+/tiktest:checks                  # checks-only (no MP4 — faster, prints checklist in chat)
+```
+
+Or invoke the bundled sub-agent from any session: *"Use the tiktest-runner agent to record a walkthrough of …"*.
+
+Full install + troubleshooting guide: [docs/PLUGIN.md](docs/PLUGIN.md).
 
 ---
 
