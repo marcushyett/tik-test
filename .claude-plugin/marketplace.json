@@ -1,0 +1,15 @@
+{
+  "name": "tiktest",
+  "owner": {
+    "name": "Marcus Hyett",
+    "email": "marc.hyett@gmail.com"
+  },
+  "description": "Plugins for tik-test — automated PR video reviews and local walkthroughs from inside Claude Code.",
+  "plugins": [
+    {
+      "name": "tiktest",
+      "source": "./plugin",
+      "description": "Record a TikTok-style video walkthrough of your local dev server. Provides /tiktest:setup, /tiktest:run, /tiktest:quick, and a tiktest-runner sub-agent."
+    }
+  ]
+}
