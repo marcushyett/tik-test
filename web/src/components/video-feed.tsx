@@ -63,14 +63,22 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
   const goNext = useCallback(() => {
     pauseCurrent();
     setPosted(false);
-    setPlaying(true);
+    // No optimistic setPlaying(true) — the sync useEffect re-attaches to
+    // the newly-mounted <video> element after navigation and derives
+    // `playing` from v.paused via play/pause/playing/ended events. If
+    // autoplay succeeds on the new src the icon flips to Pause via the
+    // `play` event; if autoplay is blocked the icon stays on Play,
+    // matching the actual paused video. The previous optimistic update
+    // flashed Pause briefly while the new video was still mounting and
+    // could end up wrong when autoplay was blocked — the agent caught
+    // this on PR self-review ("PR 2 showed Pause; video paused, Play
+    // expected").
     setIdx((i) => Math.min(items.length, i + 1));
   }, [items.length, pauseCurrent]);
 
   const goPrev = useCallback(() => {
     pauseCurrent();
     setPosted(false);
-    setPlaying(true);
     setIdx((i) => Math.max(0, i - 1));
   }, [pauseCurrent]);
 
@@ -88,6 +96,41 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
     });
   }, []);
 
+  // Defence-in-depth play/pause sync. The button's icon is driven by the
+  // `playing` state, but a video element's actual paused/playing state can
+  // drift from that React state in several edge cases:
+  //   - v.play() returns a Promise that can reject silently (autoplay
+  //     policy on a new src, network blip, user-interaction requirement
+  //     not yet met). The previous code optimistically set
+  //     setPlaying(true) before the promise resolved; on rejection the
+  //     video stayed paused while the button kept showing the pause icon.
+  //   - The browser emits 'pause' on src-change, on tab-suspend, and on
+  //     'ended' — we need to catch all of them, not just user-driven
+  //     pauses.
+  // Subscribing to the full event surface and deriving state from
+  // `v.paused` at the moment of each event keeps the icon honest no
+  // matter how the video got into its current state.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const sync = () => setPlaying(!v.paused);
+    v.addEventListener("play", sync);
+    v.addEventListener("pause", sync);
+    v.addEventListener("playing", sync);
+    v.addEventListener("ended", sync);
+    v.addEventListener("emptied", sync);
+    // Initial sync after mount — autoplay can start firing events before
+    // this effect runs, leaving the state stale for the first paint.
+    sync();
+    return () => {
+      v.removeEventListener("play", sync);
+      v.removeEventListener("pause", sync);
+      v.removeEventListener("playing", sync);
+      v.removeEventListener("ended", sync);
+      v.removeEventListener("emptied", sync);
+    };
+  }, [current?.video.runId]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
@@ -97,7 +140,12 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
       else if (e.key === " ") {
         e.preventDefault();
         const v = videoRef.current; if (!v) return;
-        if (v.paused) { v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
+        // No optimistic setPlaying — the sync useEffect above will catch the
+        // resulting play/pause event and update state from v.paused. .catch()
+        // keeps a rejected play() promise from logging an unhandled rejection;
+        // the sync effect will see the still-paused video and set state right.
+        if (v.paused) v.play().catch(() => {});
+        else v.pause();
       }
       else if (e.key === "ArrowLeft") {
         e.preventDefault();
@@ -336,7 +384,13 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
 
     const togglePlay = () => {
       const v = videoRef.current; if (!v) return;
-      if (v.paused) { void v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
+      // Don't set React state here — the parent VideoFeed subscribes to
+      // play/pause/playing/ended/emptied events on the same element and
+      // syncs `playing` from v.paused at the moment of each event. Setting
+      // state optimistically here would race with a rejected play() promise
+      // and leave the icon out of sync (the previous bug).
+      if (v.paused) v.play().catch(() => {});
+      else v.pause();
     };
     const skip = (delta: number) => {
       const v = videoRef.current; if (!v) return;
