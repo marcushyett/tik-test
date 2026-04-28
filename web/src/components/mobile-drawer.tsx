@@ -23,6 +23,7 @@ export function MobileDrawer({
   repo,
   checklist,
   children,
+  onMerged,
 }: {
   pr: OpenPR;
   repo: { owner: string; name: string };
@@ -30,6 +31,11 @@ export function MobileDrawer({
    *  collapsed peek pill so reviewers see pass/fail counts at a glance. */
   checklist?: ChecklistItem[];
   children: React.ReactNode;
+  /** Fired ~1.2s after a successful merge so the parent can drop the merged
+   *  PR from the feed and advance the user. The brief delay lets the
+   *  "Merged ✓" success pill flash before the PR disappears, which is the
+   *  difference between "did anything happen?" and "I saw it confirm." */
+  onMerged?: (number: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   // Cross-surface merge flow: clicking Merge from the peek pill opens the
@@ -71,6 +77,10 @@ export function MobileDrawer({
       if (res.ok) {
         setMergeResult({ kind: "ok", sha: res.sha });
         setMergeConfirming(false);
+        // Brief flash of the "Merged ✓" pill before we tell the parent to
+        // drop this PR from the feed. The parent then marks the video as
+        // seen (via the existing prevRunId-tracking effect) and advances.
+        if (onMerged) setTimeout(() => onMerged(pr.number), 1200);
       } else {
         setMergeResult({ kind: "err", message: res.error });
       }
