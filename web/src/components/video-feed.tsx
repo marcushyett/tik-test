@@ -11,6 +11,7 @@ import { MobileDrawer } from "./mobile-drawer";
 import { AIChecksList, AIChecksBadge } from "./ai-checks-list";
 import { proxyMedia } from "@/lib/utils";
 import { getSeenIds, useSeenVideos } from "@/lib/seen-videos";
+import { formatRate, usePlaybackRate } from "@/lib/playback-rate";
 import { EmptyStatePRList } from "./empty-state-pr-list";
 import type { OpenPR } from "@/lib/github";
 import type { TikTestVideo } from "@/lib/marker";
@@ -46,6 +47,7 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
   const [muted, setMuted] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
   const { markSeen, isSeen } = useSeenVideos();
+  const { rate, cycleRate } = usePlaybackRate();
 
   const toggleShowSeen = useCallback(() => {
     setShowSeen((s) => !s);
@@ -155,6 +157,7 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
       if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); goNext(); }
       else if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); goPrev(); }
       else if (e.key === "m" || e.key === "M") { e.preventDefault(); toggleMute(); }
+      else if (e.key === "r" || e.key === "R") { e.preventDefault(); cycleRate(); }
       else if (e.key === " ") {
         e.preventDefault();
         const v = videoRef.current; if (!v) return;
@@ -179,7 +182,7 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [goNext, goPrev, toggleMute]);
+  }, [goNext, goPrev, toggleMute, cycleRate]);
 
   // Cold-load empty: no PR has a tik-test video at all. Show the PR triage
   // dashboard from #23 — every open PR with status flags + a Merge button.
@@ -267,6 +270,8 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
             onToggleMute={toggleMute}
             onPrev={goPrev}
             onNext={goNext}
+            rate={rate}
+            onCycleRate={cycleRate}
             aspect="9/16"
           />
           <KeyboardHint onSkip={goNext} />
@@ -286,6 +291,8 @@ export function VideoFeed({ repo, prs }: { repo: { owner: string; name: string }
           onToggleMute={toggleMute}
           onPrev={goPrev}
           onNext={goNext}
+          rate={rate}
+          onCycleRate={cycleRate}
           aspect="fill"
         />
 
@@ -453,11 +460,13 @@ interface VideoFrameProps {
   onToggleMute: () => void;
   onPrev: () => void;
   onNext: () => void;
+  rate: number;
+  onCycleRate: () => void;
   aspect: "9/16" | "fill";
 }
 
 const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoFrame(
-  { src, playing, setPlaying, muted, onToggleMute, onPrev, onNext, aspect },
+  { src, playing, setPlaying, muted, onToggleMute, onPrev, onNext, rate, onCycleRate, aspect },
   ref,
 ) {
     // React.forwardRef gives us the ref as an untyped ref; narrow it so the
@@ -525,6 +534,14 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
       return clearHideTimer;
     }, [playing, scheduleHide]);
 
+    // Apply rate live when the user cycles it. The onLoadedMetadata
+    // handler covers fresh mounts (after key={src} remount); this
+    // covers in-flight rate changes on the currently-playing element.
+    useEffect(() => {
+      const v = videoRef.current;
+      if (v) v.playbackRate = rate;
+    }, [rate, videoRef]);
+
     const overlayClass = `absolute inset-0 flex items-center justify-center gap-8 sm:gap-12 transition-opacity duration-300 cursor-pointer ${
       controlsVisible ? "opacity-100" : "opacity-0"
     }`;
@@ -570,6 +587,12 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
           playsInline
           preload="auto"
           className="h-full w-full object-contain"
+          // Apply user's chosen playback rate as soon as the video has its
+          // first frame loaded. The rate property exists on the element from
+          // mount, but Safari ignores it set before metadata; setting it on
+          // loadedmetadata is the universally-honored moment. We also set
+          // it again whenever the rate prop changes (see useEffect below).
+          onLoadedMetadata={(e) => { (e.currentTarget as HTMLVideoElement).playbackRate = rate; }}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onLoadedData={() => setVideoLoading(false)}
@@ -627,6 +650,20 @@ const VideoFrame = forwardRef<HTMLVideoElement, VideoFrameProps>(function VideoF
           className="absolute bottom-3 right-3 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-black/70 text-white shadow backdrop-blur-sm transition hover:bg-black/90"
         >
           {muted ? <VolumeX className="h-5 w-5" /> : <Volume2 className="h-5 w-5" />}
+        </button>
+        {/* Playback-speed pill — bottom-left, mirrors the mute button.
+            Tap to cycle through 1× → 1.5× → 2× → 0.5× → 1×. The label
+            shows the CURRENT rate so the user always knows where they
+            are; cycling forward speeds up by default (most users want
+            to skim), with the slow option as the last step before
+            wrapping back to normal. */}
+        <button
+          type="button"
+          onClick={btn(onCycleRate)}
+          aria-label={`Playback speed ${formatRate(rate as 1 | 0.5 | 1.5 | 2)}, tap to cycle`}
+          className="absolute bottom-3 left-3 z-10 flex h-10 min-w-[3rem] items-center justify-center rounded-full bg-black/70 px-3 font-mono text-sm font-semibold text-white shadow backdrop-blur-sm transition hover:bg-black/90 active:scale-95"
+        >
+          {formatRate(rate as 1 | 0.5 | 1.5 | 2)}
         </button>
         {aspect === "9/16" && (
           <div className="absolute right-3 top-3 z-10 flex flex-col gap-2">
@@ -755,7 +792,7 @@ function KeyboardHint({ onSkip }: { onSkip: () => void }) {
     <div className="flex items-center justify-between text-[11px] text-muted-foreground">
       <span className="inline-flex items-center gap-1.5">
         <Keyboard className="h-3.5 w-3.5" />
-        <Kbd>↑</Kbd><Kbd>↓</Kbd> navigate · <Kbd>←</Kbd><Kbd>→</Kbd> skip 5s · <Kbd>space</Kbd> pause · <Kbd>m</Kbd> mute
+        <Kbd>↑</Kbd><Kbd>↓</Kbd> navigate · <Kbd>←</Kbd><Kbd>→</Kbd> skip 5s · <Kbd>space</Kbd> pause · <Kbd>m</Kbd> mute · <Kbd>r</Kbd> speed
       </span>
       <Button variant="ghost" size="sm" onClick={onSkip}>Skip →</Button>
     </div>
