@@ -200,60 +200,40 @@ const BROKEN_IMAGE_FALLBACK = `
 })();
 `;
 
-const SYNTHETIC_CURSOR_INIT = `
-window.addEventListener('DOMContentLoaded', () => {
-  const cursor = document.createElement('div');
-  cursor.id = '__tik_cursor__';
-  cursor.style.cssText = [
-    'position:fixed','z-index:2147483647','pointer-events:none',
-    'width:28px','height:28px','top:0','left:0',
-    // Slower lerp so the pointer glides instead of snapping.
-    'transform:translate(-5px,-3px)','transition:transform 60ms linear',
-  ].join(';');
-  cursor.innerHTML = \`
-    <svg width="28" height="28" viewBox="0 0 28 28" xmlns="http://www.w3.org/2000/svg">
-      <path d="M3 2 L3 22 L8.5 17 L12 25 L15 23.5 L11.5 15.5 L19 15.5 Z"
-        fill="#ffffff" stroke="#0a0a0a" stroke-width="1.2" stroke-linejoin="round"/>
-    </svg>\`;
-  document.body.appendChild(cursor);
-  let vx = 0, vy = 0, tx = 0, ty = 0;
-  function tick() {
-    // Softer lerp coefficient (0.17 vs 0.28) so the visible pointer trails the
-    // real mouse more — easier for a viewer to track.
-    vx += (tx - vx) * 0.17;
-    vy += (ty - vy) * 0.17;
-    cursor.style.transform = \`translate(\${vx - 5}px, \${vy - 3}px)\`;
-    requestAnimationFrame(tick);
-  }
-  tick();
-  document.addEventListener('mousemove', (e) => { tx = e.clientX; ty = e.clientY; }, true);
-  function ripple(x, y, color) {
-    const c = color || '#00e5a0';
-    const r = document.createElement('div');
-    r.style.cssText = [
-      'position:fixed','z-index:2147483646','pointer-events:none',
-      'left:' + x + 'px','top:' + y + 'px',
-      'width:10px','height:10px','margin:-5px 0 0 -5px',
-      'border-radius:50%','border:3px solid ' + c,'opacity:0.9',
-      'animation:tikRipple 520ms ease-out forwards','box-shadow:0 0 28px ' + c,
-    ].join(';');
-    document.body.appendChild(r);
-    setTimeout(function() { r.remove(); }, 560);
-  }
-  // Click ripple.
-  document.addEventListener('click', function(e) { ripple(e.clientX, e.clientY, '#00e5a0'); }, true);
-  // Non-click "look here" pulse — a warm amber ring so the viewer can see what
-  // we're asserting on even when the pointer is stationary. Triggered from the
-  // Playwright runner on assert steps.
-  (window).__tikPulse = function(x, y) {
-    ripple(x, y, '#ffb94a');
-    // Second, larger concentric ring for extra presence.
-    setTimeout(function() { ripple(x, y, '#ffb94a'); }, 160);
-  };
-  const style = document.createElement('style');
-  style.textContent = '@keyframes tikRipple{from{transform:scale(1);opacity:0.9}to{transform:scale(10);opacity:0}}';
-  document.head.appendChild(style);
-});
+/**
+ * Pure RECORDER — no painted cursor, no ripples, no DOM mutation. Just
+ * forwards mouse + click + keystroke events out via the
+ * context-exposed `__tikRecord` callback so Remotion can render a
+ * cinematic cursor + pan-zoom on top of the recorded video. The
+ * page-painted cursor was retired because (a) it was duplicated for
+ * each navigation, (b) Remotion can do a way slicker curved-path
+ * cursor with click flashes, (c) targeted pan-zoom toward click bboxes
+ * needs the same coord stream anyway.
+ */
+const INTERACTION_RECORDER_INIT = `
+(() => {
+  // Drop synthesized / programmatic clicks at (0,0) or in the top-left corner.
+  // These are dispatched by frameworks during page bootstrap (focus
+  // restoration, hidden a11y nodes, scrollIntoView side-effects) and have
+  // no relationship to a real mouse interaction. Letting them through
+  // produces a phantom cursor punch + zoom in the top-left of the video.
+  const CORNER_PX = 5;
+  let lastMove = 0;
+  document.addEventListener('mousemove', (e) => {
+    const now = performance.now();
+    if (now - lastMove < 33) return; // ~30Hz throttle keeps the stream small
+    lastMove = now;
+    if (e.clientX <= CORNER_PX && e.clientY <= CORNER_PX) return;
+    try { window.__tikRecord && window.__tikRecord({ kind: 'move', x: e.clientX, y: e.clientY }); } catch {}
+  }, true);
+  document.addEventListener('click', (e) => {
+    if (e.clientX <= CORNER_PX && e.clientY <= CORNER_PX) return;
+    try { window.__tikRecord && window.__tikRecord({ kind: 'click', x: e.clientX, y: e.clientY }); } catch {}
+  }, true);
+  document.addEventListener('keydown', (e) => {
+    try { window.__tikRecord && window.__tikRecord({ kind: 'key', x: 0, y: 0, key: e.key }); } catch {}
+  }, true);
+})();
 `;
 
 export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, projectContext, diff, comments, prTitle, prBody }: RunOptions): Promise<RunArtifacts> {
@@ -263,7 +243,27 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   const shotsDir = path.join(runDir, "screenshots");
   await mkdir(shotsDir, { recursive: true });
 
-  const viewport = plan.viewport ?? { width: 1280, height: 800 };
+  // Snap viewport WIDTH to a canvas-friendly value (540 mobile, 720 tablet,
+  // 1080 desktop). Reason: the Remotion canvas is 1080×1920 and the body
+  // recording is rendered with objectFit:contain. If the recording's
+  // width doesn't divide 1080 cleanly (e.g. 1280 → 1080 is 0.84×), the
+  // browser bilinear-downsamples on every frame and ALL the page text
+  // looks aliased even at zoom=1.0. By snapping to {540, 720, 1080} the
+  // contain math becomes integer (2×, 1.5×, 1×) and text stays crisp.
+  // Heights round to the nearest 8 for x264 chroma-subsampling alignment.
+  const requested = plan.viewport ?? { width: 1280, height: 800 };
+  const snapWidth = (w: number): number => {
+    if (w <= 600) return 540;   // mobile portrait
+    if (w <= 900) return 720;   // tablet portrait
+    return 1080;                // desktop landscape
+  };
+  const targetWidth = snapWidth(requested.width);
+  // Preserve the agent's intended aspect ratio when scaling height.
+  const targetHeight = Math.max(8, Math.round((requested.height * targetWidth / requested.width) / 8) * 8);
+  const viewport = { width: targetWidth, height: targetHeight };
+  if (viewport.width !== requested.width || viewport.height !== requested.height) {
+    console.log(chalk.dim(`  viewport snapped: ${requested.width}×${requested.height} → ${viewport.width}×${viewport.height} (canvas-friendly)`));
+  }
   const startedAt = new Date().toISOString();
   const runStart = performance.now();
 
@@ -318,6 +318,13 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     // on the preview domain.
     storageState: storageStatePath,
   });
+  // Recording starts the moment newContext({recordVideo}) returns. All
+  // event + interaction timestamps below this line use this reference,
+  // NOT runStart, because the raw video file's time-zero is recordingStart
+  // — anything earlier (browser launch, CDP discovery, the 0.5-3s of
+  // bootstrapping) doesn't exist in the recorded video. Using runStart
+  // here was making clicks land 1-3s late in the rendered cursor.
+  const recordingStart = performance.now();
   if (cookies?.length) {
     await context.addCookies(cookies.map((c) => ({
       name: c.name,
@@ -370,7 +377,15 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       console.log(chalk.yellow(`  [media FAILED ${resourceType}] ${url.slice(0, 120)}${url.length > 120 ? "…" : ""} · ${req.failure()?.errorText || "unknown"}`));
     }
   });
-  await context.addInitScript(SYNTHETIC_CURSOR_INIT);
+  // Mouse + click + keystroke stream from the page, forwarded into the
+  // runner via context.exposeFunction so it survives navigations. Times
+  // are normalised to runStart so they line up with the events[] timeline
+  // that drives the trim plan.
+  const interactions: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }> = [];
+  await context.exposeFunction("__tikRecord", (data: { kind: "move" | "click" | "key"; x: number; y: number; key?: string }) => {
+    interactions.push({ ts: Math.max(0, Math.round(performance.now() - recordingStart)), ...data });
+  });
+  await context.addInitScript(INTERACTION_RECORDER_INIT);
   await context.addInitScript(BROKEN_IMAGE_FALLBACK);
   const page = await context.newPage();
 
@@ -483,7 +498,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     for (let gi = 0; gi < plan.goals.length; gi++) {
       const goal = plan.goals[gi];
       const t0 = performance.now();
-      const startMs = Math.max(0, Math.round(t0 - runStart));
+      const startMs = Math.max(0, Math.round(t0 - recordingStart));
       const goalStartedAtWall = Date.now();
       logLine(chalk.cyan("▶"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any);
       let result: Awaited<ReturnType<typeof runGoal>>;
@@ -492,7 +507,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       } catch (e) {
         result = { outcome: "failure", note: (e as Error).message.split("\n")[0], actions: [], bbox: undefined };
       }
-      const endMs = Math.max(startMs + 50, Math.round(performance.now() - runStart));
+      const endMs = Math.max(startMs + 50, Math.round(performance.now() - recordingStart));
       // Convert each tool-call's wall-clock `startedAt` into an active
       // window in raw-video timeline terms. Span 2.5s per call so the
       // viewer can actually see what happened; the trim planner keeps
@@ -592,8 +607,16 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     finishedAt,
     totalMs,
     toolWindows: toolWindows.length ? toolWindows : undefined,
+    interactions: interactions.length ? interactions : undefined,
   };
   await writeFile(artifacts.eventsJsonPath, JSON.stringify({ plan, events, startedAt, finishedAt, totalMs, toolWindows: artifacts.toolWindows }, null, 2));
+  if (artifacts.interactions?.length) {
+    await writeFile(path.join(runDir, "interactions.json"), JSON.stringify(artifacts.interactions, null, 2));
+    const byKind: Record<string, number> = {};
+    for (const it of artifacts.interactions) byKind[it.kind] = (byKind[it.kind] ?? 0) + 1;
+    const breakdown = Object.entries(byKind).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(" ");
+    console.log(chalk.dim(`  interactions: ${artifacts.interactions.length} (${breakdown})`));
+  }
   if (artifacts.toolWindows?.length) {
     console.log(chalk.dim(`  tool windows: ${artifacts.toolWindows.length} (per-tool-call active spans for editor trim)`));
     const byKind: Record<string, number> = {};

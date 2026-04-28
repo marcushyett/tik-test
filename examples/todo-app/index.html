@@ -166,7 +166,13 @@
     const total = state.tasks.length;
     const done = state.tasks.filter((t) => t.done).length;
     counterEl.textContent = `${total} ${total === 1 ? "task" : "tasks"}`;
-    statsEl.textContent = total ? `${done}/${total} done · ${state.tasks.filter((t) => t.priority === "high" && !t.done).length} high-priority pending` : "No tasks";
+    if (total) {
+      const pct = Math.round((done / total) * 100);
+      const pending = state.tasks.filter((t) => t.priority === "high" && !t.done).length;
+      statsEl.textContent = `${done}/${total} done (${pct}%) · ${pending} high-priority pending`;
+    } else {
+      statsEl.textContent = "No tasks";
+    }
 
     tasksEl.querySelectorAll("input[type=checkbox]").forEach((cb) => {
       cb.addEventListener("change", () => {

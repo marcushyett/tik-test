@@ -69,6 +69,11 @@ export interface RunArtifacts {
    *  and (via `result` string) surfaces non-tech overlays in the video so the
    *  viewer sees what the agent found during otherwise static tool calls. */
   toolWindows?: Array<{ startMs: number; endMs: number; kind: string; input?: string; result?: string }>;
+  /** Mouse + click + keystroke stream captured from the page. `ts` is in raw-video
+   *  ms (= performance.now() at event time minus runStart). Remotion uses this to
+   *  render a cinematic cursor overlay and pan-zoom toward each click bbox. `move`
+   *  is throttled to ~30Hz, `click` and `key` are unthrottled. */
+  interactions?: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }>;
 }
 
 export interface Config {

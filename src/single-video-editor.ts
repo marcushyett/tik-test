@@ -102,6 +102,12 @@ export interface SingleVideoInput {
   /** Body narration timeline — back-to-back chunks that cover the full
    *  master duration. Each chunk owns its voice + caption + optional badge. */
   bodyChunks: BodyChunk[];
+  /** Mouse + click + keystroke stream, mapped from raw video timeline into
+   *  master-timeline seconds (so timestamps line up with the trimmed video).
+   *  Remotion renders a cinematic cursor overlay using `move`+`click` events
+   *  and pans/zooms the body video toward each click. Interactions that
+   *  landed in a trimmed-out idle gap are dropped before this is built. */
+  interactions?: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }>;
   /** Per-goal results rendered as a vertical checklist on the outro. */
   checklist?: ChecklistItem[];
 }
@@ -371,11 +377,20 @@ export async function editSingleVideo({
     });
   }
   if (artifacts.toolWindows && artifacts.toolWindows.length > 0) {
+    let trimmedSkipCount = 0;
     for (const tw of artifacts.toolWindows) {
+      // Skip the "skip" class (browser_snapshot, ToolSearch, Read, Glob,
+      // Bash) — these are agent-thinking moments where the page sits
+      // motionless. Adding them to rawWindows tells the trim planner
+      // they're "active" and worth keeping, which produces visible
+      // pauses in the final video. Drop them so the trim planner
+      // collapses those stretches into idle gaps and removes them.
+      if (classifyTool(tw.kind) === "skip") { trimmedSkipCount++; continue; }
       const s = Math.max(0, Math.min(rawDurS, tw.startMs / 1000));
       const e = Math.max(s + 0.2, Math.min(rawDurS, tw.endMs / 1000));
       rawWindows.push({ start: s, end: e });
     }
+    if (trimmedSkipCount) console.log(chalk.dim(`  trimmed ${trimmedSkipCount} agent-thinking tool windows (snapshot/read/etc)`));
   }
 
   // ── 3. Build trim plan + render master. After this we know `masterDurS`.
@@ -589,6 +604,28 @@ export async function editSingleVideo({
     console.log(chalk.dim(`  checklist: ${checklist.length} fallback goal-level items`));
   }
 
+  // Map raw-video-ms interactions onto the master timeline. Interactions
+  // that landed in a trimmed-out gap get filtered out (rawToTrimmed has no
+  // way to signal that, so we walk the trim plan ourselves). `key` events
+  // get coerced to the most recent move position so they still anchor a
+  // ToolBadge in the right spot, even though they don't need a cursor flash.
+  const mappedInteractions: SingleVideoInput["interactions"] = [];
+  if (artifacts.interactions?.length) {
+    for (const ev of artifacts.interactions) {
+      const rawS = ev.ts / 1000;
+      let mappedS: number | null = null;
+      for (const seg of plan) {
+        if (rawS >= seg.rawStartS && rawS <= seg.rawEndS + 1e-6) {
+          mappedS = seg.trimmedStartS + (rawS - seg.rawStartS) / seg.speed;
+          break;
+        }
+      }
+      if (mappedS == null) continue;
+      mappedInteractions.push({ ts: Math.max(0, Math.round(mappedS * 1000)), kind: ev.kind, x: ev.x, y: ev.y, key: ev.key });
+    }
+    console.log(chalk.dim(`  interactions: ${mappedInteractions.length}/${artifacts.interactions.length} kept after trim mapping`));
+  }
+
   const input: SingleVideoInput = {
     title: artifacts.plan.name || "Feature review",
     summary: artifacts.plan.summary || artifacts.plan.startUrl,
@@ -608,6 +645,7 @@ export async function editSingleVideo({
     outroCaption: sanitiseForSpeech(narration.chunks[narration.chunks.length - 1].captionText),
     versionTag: getVersionTag(),
     bodyChunks,
+    interactions: mappedInteractions.length > 0 ? mappedInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,
   };
   await writeFile(path.join(runDir, "reel-input.json"), JSON.stringify(input, null, 2));

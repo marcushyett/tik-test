@@ -57,3 +57,26 @@ domain-specific — it's the example consumer config). The sister workflow
 `.github/workflows/tik-test-webapp.yml` covers the deployed `web/` reviewer
 app via a signed bypass URL. For everything in the tik-test source tree
 itself, see the rules above.
+
+## How to test what (which workflow exercises which change)
+
+Pick the workflow that decouples the SUT from the agent under test —
+otherwise you're trying to debug the editor with the editor.
+
+- **Webapp UI changes (`web/`)** → review with `tik-test-webapp.yml` against
+  the rebuilt Vercel preview. The agent and the SUT are separate
+  processes, so self-review is reliable.
+- **Agent / video editor / Remotion / prompt changes (`src/`, `remotion/`)**
+  → DON'T self-review. The agent reviewing the change *is* the agent
+  whose behaviour the change affects. Instead, include a small change
+  to `examples/todo-app/` in the same PR (e.g. a label change or a new
+  button) so `tik-test-taskpad.yml` runs on PR open and produces a
+  video that exercises your edits. Watch the resulting video manually
+  to evaluate.
+- **Pure prompt audit (no code change)** → `grep -in "<product-name>" src/`
+  per the prompt-rules section above, then ship.
+
+When unsure: a change touches the agent if it lives in `src/goal-agent.ts`,
+`src/plan.ts`, `src/timed-narration.ts`, `src/checklist.ts`, or
+`src/single-video-editor.ts` — anything an agent reviews about that
+codepath is observed through its own broken lens.
