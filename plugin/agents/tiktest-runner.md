@@ -64,25 +64,29 @@ A single dispatch prompt may combine any of the above.
 
      Substitute `<RESOLVED_URL>` with the URL you resolved in step 2. Substitute `<FOCUS_CONTEXT>` with the literal focus description from your dispatch prompt if any was provided — otherwise drop that trailing sentence fragment entirely. Do not use a Bash heredoc; use the Write tool so the content lands as-is. Set `<CONFIG_PATH>` to `${TIKTEST_TMP}/tiktest.md`.
 
-4. **Invoke the CLI.** Use the `tik-test` binary on PATH (installed via `npm install -g tik-test`) — version-locked with the plugin you're running. Do **not** use `npx -y tik-test@latest` (that would fetch a different version than the plugin and defeat the reuse principle). If the dispatch prompt indicated checks-only mode, append `--no-video` to the command in either branch below.
+4. **Invoke the CLI.** **Decide mode now.** Checks-only mode if the dispatch prompt indicated *no video / checks only / checklist only / skip render / just the checks / a checklist*; video mode otherwise (this is the default).
 
-   - **If you resolved a URL in step 2 (paths a or b)**, pass it explicitly:
+   Use the `tik-test` binary on PATH (installed via `npm install -g tik-test`) — version-locked with the plugin you're running. Do **not** use `npx -y tik-test@latest` (that would fetch a different version than the plugin and defeat the reuse principle).
+
+   - **If you resolved a URL in step 2 (paths a or b)**, pass it explicitly.
+
+     **If checks-only mode was selected (per the decision above), append `--no-video` to the command.**
 
      ```bash
      tik-test run \
        --config "<CONFIG_PATH>" \
        --out-dir "$TIKTEST_TMP/runs" \
        --url "<RESOLVED_URL>"
-     # append --no-video if checks-only mode was indicated
      ```
 
-   - **If you fell through to step 2 path c** (existing `tiktest.md` / `tik-test.md` / `README.md` in cwd), omit `--url` so the CLI extracts it from the config file:
+   - **If you fell through to step 2 path c** (existing `tiktest.md` / `tik-test.md` / `README.md` in cwd), omit `--url` so the CLI extracts it from the config file.
+
+     **If checks-only mode was selected (per the decision above), append `--no-video` to the command.**
 
      ```bash
      tik-test run \
        --config "<CONFIG_PATH>" \
        --out-dir "$TIKTEST_TMP/runs"
-     # append --no-video if checks-only mode was indicated
      ```
 
    Stream the output back to the parent as it runs. The CLI prints its planned phases and lands on a `✓ done` (or `✗`) summary line.
@@ -107,7 +111,13 @@ A single dispatch prompt may combine any of the above.
 
 6. **Return to parent.**
    - **Video mode:** the absolute MP4 path plus a single sentence describing what the walkthrough shows (a generic "Walkthrough recorded — open in any video player." is fine).
-   - **Checks mode:** the checklist as the CLI printed it verbatim — the `✓` (passed), `✗` (failed), and `·` (skipped / not-attempted) lines are the whole point of this dispatch — plus the path to `events.json`, which lives at `${TIKTEST_TMP}/runs/<run-id>/events.json` so the parent can dig into raw tool-use events if it wants more than the summary.
+   - **Checks mode:** the checklist as the CLI printed it verbatim — the `✓` (passed), `✗` (failed), and `·` (skipped / not-attempted) lines are the whole point of this dispatch — plus the path to `events.json`, so the parent can dig into raw tool-use events if it wants more than the summary. The events.json lives at the path printed by:
+
+     ```bash
+     find "$TIKTEST_TMP/runs" -name "events.json" -print -quit
+     ```
+
+     Pass that path back to the parent.
 
 ## Constraints
 

@@ -82,7 +82,13 @@ The user wants a fast, cheap pass over whatever's running locally — same agent
 
    Stream the output back to the user as it runs. The CLI prints its planned phases and lands on a `✓ done` (or `✗`) summary line.
 
-5. **Surface the checklist.** Relay the CLI's printed checklist back to the user verbatim — the `✓` (passed), `✗` (failed), and `·` (skipped / not-attempted) lines are the whole point of this command. Mention the path to the run's `events.json` (under `$TIKTEST_TMP/runs/<run-id>/events.json`) so the user can dig into raw tool-use events if they want more than the summary.
+5. **Surface the checklist.** Relay the CLI's printed checklist back to the user verbatim — the `✓` (passed), `✗` (failed), and `·` (skipped / not-attempted) lines are the whole point of this command. Mention the path to the run's `events.json` so the user can dig into raw tool-use events if they want more than the summary. The events.json lives at the path printed by:
+
+   ```bash
+   find "$TIKTEST_TMP/runs" -name "events.json" -print -quit
+   ```
+
+   Pass that path back to the user.
 
 ## What NOT to do
 
