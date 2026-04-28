@@ -239,33 +239,52 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
     <AbsoluteFill>
       <Background accent="#00e5a0" intensity={0.7} />
 
-      {/* The trimmed master recording. Wrapped in a container that scales +
-          translates around each click — viewer's eye stays glued to the
-          interaction point. Video and cursor share the SAME transform so
-          they zoom together; the cursor SVG counter-scales to keep its
-          on-screen size constant. */}
+      {/* The trimmed master recording. Browsers move any element with a
+          non-identity `transform` (or `will-change: transform`) onto its
+          own GPU compositing layer, which then gets bilinear-sampled into
+          the parent every frame — that's where the persistent text
+          blur was coming from, NOT the source video resolution. Solution:
+          mount the transform wrapper ONLY when we're actively punching
+          in on a click. The rest of the time (which is most of the
+          video) the <Video> renders directly into the parent and text
+          is pixel-sharp. */}
       <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#0a0a0a" }}>
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            transform: `scale(${zoomScale})`,
-            transformOrigin: `${focus.cx}px ${focus.cy}px`,
-            willChange: "transform",
-          }}
-        >
-          <Video
-            src={staticFile(input.masterVideoSrc)}
-            muted
-            style={{ width: "100%", height: "100%", objectFit: "contain" }}
-          />
-          <CursorOverlay
-            cx={cursor.cx}
-            cy={cursor.cy}
-            flashAmount={flashAmount}
-            counterScale={1 / zoomScale}
-          />
-        </div>
+        {zoomScale > 1.001 ? (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              transform: `scale(${zoomScale})`,
+              transformOrigin: `${focus.cx}px ${focus.cy}px`,
+            }}
+          >
+            <Video
+              src={staticFile(input.masterVideoSrc)}
+              muted
+              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+            />
+            <CursorOverlay
+              cx={cursor.cx}
+              cy={cursor.cy}
+              flashAmount={flashAmount}
+              counterScale={1 / zoomScale}
+            />
+          </div>
+        ) : (
+          <>
+            <Video
+              src={staticFile(input.masterVideoSrc)}
+              muted
+              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+            />
+            <CursorOverlay
+              cx={cursor.cx}
+              cy={cursor.cy}
+              flashAmount={flashAmount}
+              counterScale={1}
+            />
+          </>
+        )}
       </div>
 
       {/* One Sequence per body chunk. Chunks are guaranteed non-overlapping
