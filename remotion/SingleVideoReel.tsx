@@ -203,16 +203,11 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   }
   const cursor = toCanvas(cursorVx, cursorVy);
 
-  // Targeted pan-zoom — always-on baseline + bell-curve punch-in on each
-  // click. The recording's letterbox-fit footprint (page rendered at ~56%
-  // of canvas height because of objectFit:contain on a wide viewport)
-  // looks tiny without zoom, so we hold a 1.4× baseline that keeps the
-  // page comfortably large the whole time. Each click rides on top of
-  // that baseline up to a 2.0× peak (integer scale = sharper) for ~1.8s,
-  // then eases back to the baseline. Densely-spaced clicks chain.
+  // Targeted pan-zoom — bell-curve punch-in on each click, neutral
+  // (zoom=1.0, no transform wrapper) between clicks. Peak 2.0× is an
+  // integer scale so bilinear sampling lines up cleanly at the punch-in.
   const ZOOM_HALF_WINDOW_S = 0.9;
-  const ZOOM_BASELINE = 1.4; // always-on
-  const ZOOM_PEAK = 2.0;     // integer-scale peak — bilinear sampling lines up cleanly
+  const ZOOM_PEAK = 2.0;
   let bestWeight = 0;
   let bestClick: typeof clicks[number] | null = null;
   for (const c of clicks) {
@@ -224,12 +219,8 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
     if (w > bestWeight) { bestWeight = w; bestClick = c; }
   }
   const eased = Easing.bezier(0.4, 0, 0.2, 1)(bestWeight);
-  const zoomScale = ZOOM_BASELINE + (ZOOM_PEAK - ZOOM_BASELINE) * eased;
-  // When no click is active, focus on the cursor so the always-on baseline
-  // zoom keeps the user's attention on where the cursor will go next.
-  const focus = bestClick
-    ? toCanvas(bestClick.x, bestClick.y)
-    : toCanvas(cursorVx, cursorVy);
+  const zoomScale = 1 + (ZOOM_PEAK - 1) * eased;
+  const focus = bestClick ? toCanvas(bestClick.x, bestClick.y) : { cx: canvasW / 2, cy: canvasH / 2 };
 
   // Click flash — any click within ±0.18s gets a ring expansion centred on
   // the click point.
@@ -247,32 +238,51 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
     <AbsoluteFill>
       <Background accent="#00e5a0" intensity={0.7} />
 
-      {/* The trimmed master recording. The transform wrapper is always
-          mounted because the baseline zoom is > 1 (the page would
-          otherwise render too small inside the portrait canvas). Video
-          + cursor share the same transform so they zoom together; the
-          cursor SVG counter-scales to keep its on-screen size constant. */}
+      {/* The trimmed master recording. Mount the transform wrapper ONLY
+          when actively punching in on a click — any non-identity
+          transform forces the video onto its own GPU compositing layer,
+          which gets bilinear-resampled into the parent every frame and
+          softens text. With the wrapper conditional, the long stretches
+          between clicks render the <Video> directly into the parent
+          and stay pixel-sharp (assuming the recording's viewport size
+          is canvas-friendly — see runner.ts viewport snapping). */}
       <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "#0a0a0a" }}>
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            transform: `scale(${zoomScale})`,
-            transformOrigin: `${focus.cx}px ${focus.cy}px`,
-          }}
-        >
-          <Video
-            src={staticFile(input.masterVideoSrc)}
-            muted
-            style={{ width: "100%", height: "100%", objectFit: "contain" }}
-          />
-          <CursorOverlay
-            cx={cursor.cx}
-            cy={cursor.cy}
-            flashAmount={flashAmount}
-            counterScale={1 / zoomScale}
-          />
-        </div>
+        {zoomScale > 1.001 ? (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              transform: `scale(${zoomScale})`,
+              transformOrigin: `${focus.cx}px ${focus.cy}px`,
+            }}
+          >
+            <Video
+              src={staticFile(input.masterVideoSrc)}
+              muted
+              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+            />
+            <CursorOverlay
+              cx={cursor.cx}
+              cy={cursor.cy}
+              flashAmount={flashAmount}
+              counterScale={1 / zoomScale}
+            />
+          </div>
+        ) : (
+          <>
+            <Video
+              src={staticFile(input.masterVideoSrc)}
+              muted
+              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+            />
+            <CursorOverlay
+              cx={cursor.cx}
+              cy={cursor.cy}
+              flashAmount={flashAmount}
+              counterScale={1}
+            />
+          </>
+        )}
       </div>
 
       {/* One Sequence per body chunk. Chunks are guaranteed non-overlapping

@@ -26,10 +26,10 @@ Output ONLY a single JSON object (no prose, no markdown fences):
 }
 
 VIEWPORT — pick the size that best showcases the change. Read the PR text, diff, and comments for signals:
-- 390×844 (mobile portrait) — pick when the PR mentions mobile/phone/small-screen/touch, when the diff touches mobile-only surfaces (drawers, sheets, bottom-sheets, mobile nav), or when responsive breakpoints below ~768px are involved. Mobile aspect also fills the reel canvas best for changes that ARE mobile-shaped.
-- 768×1024 (tablet portrait) — only when explicitly relevant; rare.
-- 1280×800 (desktop) — default. Use for changes to desktop-first surfaces (sidebars, multi-column layouts, hover states, keyboard shortcuts) and when the PR gives no mobile signal.
-Pick ONE viewport. If the change renders identically across sizes, pick the size most relevant to the PR's audience. Project-setup may pin a viewport in tiktest.md — only override that pin when the PR signal is unambiguous.
+- 540×960 (mobile portrait) — pick when the PR mentions mobile/phone/small-screen/touch, when the diff touches mobile-only surfaces (drawers, sheets, bottom-sheets, mobile nav), or when responsive breakpoints below ~768px are involved.
+- 720×1024 (tablet portrait) — only when explicitly relevant; rare.
+- 1080×800 (desktop) — default. Use for changes to desktop-first surfaces (sidebars, multi-column layouts, hover states, keyboard shortcuts) and when the PR gives no mobile signal.
+Pick ONE viewport. If the change renders identically across sizes, pick the size most relevant to the PR's audience. Project-setup may pin a viewport in tiktest.md — only override that pin when the PR signal is unambiguous. These widths are chosen to render crisply in the reel canvas (no aliased downscaling), so don't substitute other widths.
 
 GOAL-WRITING GUIDANCE:
 1. **1-{{MAX_GOALS}} goals. Ruthlessly tight.** The video is a scroll-feed review under 60 seconds. One PRIMARY goal (the core flow of what this PR does), optionally up to {{MAX_SECONDARY_GOALS}} secondary goals (bug-probing variants — double-click, edge case, keyboard shortcut). If you can't justify an extra goal as essential, leave it out.
