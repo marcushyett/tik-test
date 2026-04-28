@@ -203,22 +203,22 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   }
   const cursor = toCanvas(cursorVx, cursorVy);
 
-  // Targeted pan-zoom with sustain + pan — much smoother than the v1
-  // bell-curve which zoomed in/out around every individual click.
-  // Behaviour:
-  //   • APPROACH: 0.5s before a click, ease zoom from 1.0 → PEAK
-  //   • SUSTAIN: hold zoom at PEAK for SUSTAIN_S after the click
-  //   • PAN: if the next click lands inside the sustain window of this
-  //     one, stay at PEAK and PAN the focus from this click bbox to
-  //     the next one (smooth ease-in-out across the gap)
-  //   • RELEASE: at end of sustain (no nearby next click), ease back
-  //     to 1.0 over RELEASE_S
-  // Net result: the camera "rides" between adjacent clicks instead
-  // of bouncing 1→PEAK→1→PEAK→1, which was the jittery "zoom in/out
-  // all the time" symptom.
+  // Pan-zoom v3 — hold + fast-pan + wait, instead of slow drift.
+  //   • APPROACH (0.5s before a click): zoom from 1.0 → PEAK
+  //   • HOLD on prev click for HOLD_AFTER_CLICK_S so the page settles
+  //     and the viewer reads the result of the action
+  //   • PAN: fast — only kicks in PAN_DURATION_S BEFORE the next
+  //     click, so the camera arrives just-in-time. No slow drift.
+  //   • WAIT at next click position until that click actually fires
+  //     (this happens implicitly because the pan ends at tNext)
+  //   • RELEASE (no nearby next): ease back to 1.0 after the dwell
+  //   • Gaps longer than SUSTAIN_THRESHOLD_S → release for the gap,
+  //     re-approach when the next click is close
   const ZOOM_PEAK = 2.0;
   const APPROACH_S = 0.5;
-  const SUSTAIN_S = 4.5;
+  const HOLD_AFTER_CLICK_S = 1.2;
+  const PAN_DURATION_S = 0.55;       // fast pan ≈ same speed as APPROACH_S
+  const SUSTAIN_THRESHOLD_S = 12;    // up to this long, ride zoom between clicks
   const RELEASE_S = 0.6;
 
   let prevClick: typeof clicks[number] | null = null;
@@ -236,24 +236,30 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   let focusVx = vw / 2;
   let focusVy = vh / 2;
 
-  if (prevClick && nextClick && (tNext - tPrev) <= SUSTAIN_S + APPROACH_S) {
-    // Two adjacent clicks close enough to "ride between" — stay zoomed,
-    // pan focus from prev → next over the gap.
+  if (prevClick && nextClick && (tNext - tPrev) <= SUSTAIN_THRESHOLD_S) {
+    // RIDE — stay at PEAK between adjacent clicks. Hold on prev, then
+    // do a quick pan right before next, arriving at next-click position
+    // just as the click fires.
     zoomScale = ZOOM_PEAK;
-    const span = Math.max(0.001, tNext - tPrev);
-    const t = Math.min(1, Math.max(0, (timeS - tPrev) / span));
-    const eased = Easing.bezier(0.42, 0, 0.58, 1)(t); // ease-in-out
-    focusVx = prevClick.x + (nextClick.x - prevClick.x) * eased;
-    focusVy = prevClick.y + (nextClick.y - prevClick.y) * eased;
-  } else if (prevClick && sincePrev < SUSTAIN_S) {
-    // Still inside the sustain window of the previous click, no nearby
-    // next click — hold on prevClick, then ease back to 1.0 in last RELEASE_S.
+    const panStart = Math.max(tPrev + HOLD_AFTER_CLICK_S, tNext - PAN_DURATION_S);
+    if (timeS < panStart) {
+      focusVx = prevClick.x;
+      focusVy = prevClick.y;
+    } else {
+      const span = Math.max(0.001, tNext - panStart);
+      const t = Math.min(1, Math.max(0, (timeS - panStart) / span));
+      const eased = Easing.bezier(0.4, 0, 0.2, 1)(t); // ease-in-out, fast
+      focusVx = prevClick.x + (nextClick.x - prevClick.x) * eased;
+      focusVy = prevClick.y + (nextClick.y - prevClick.y) * eased;
+    }
+  } else if (prevClick && sincePrev < HOLD_AFTER_CLICK_S + RELEASE_S) {
+    // Just had a click but no nearby next — hold then ease out.
     focusVx = prevClick.x;
     focusVy = prevClick.y;
-    if (sincePrev < SUSTAIN_S - RELEASE_S) {
+    if (sincePrev < HOLD_AFTER_CLICK_S) {
       zoomScale = ZOOM_PEAK;
     } else {
-      const t = (sincePrev - (SUSTAIN_S - RELEASE_S)) / RELEASE_S;
+      const t = (sincePrev - HOLD_AFTER_CLICK_S) / RELEASE_S;
       const eased = Easing.bezier(0.4, 0, 0.2, 1)(Math.min(1, Math.max(0, t)));
       zoomScale = ZOOM_PEAK + (1 - ZOOM_PEAK) * eased;
     }
@@ -265,9 +271,9 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
     const eased = Easing.bezier(0.4, 0, 0.2, 1)(Math.min(1, Math.max(0, t)));
     zoomScale = 1 + (ZOOM_PEAK - 1) * eased;
   } else {
-    // Long stretch with no clicks — neutral zoom, centred. The
-    // conditional transform wrapper means we render the <Video>
-    // directly with no compositing layer = pixel-sharp text.
+    // Long stretch (intro/outro or genuine gap) — neutral, centred.
+    // Conditional transform wrapper kicks in because zoom < 1.001,
+    // so the <Video> renders directly with no compositing-layer blur.
     zoomScale = 1;
   }
   const focus = toCanvas(focusVx, focusVy);
