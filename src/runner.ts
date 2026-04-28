@@ -551,6 +551,11 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       });
       if (result.outcome === "success") {
         logLine(chalk.green("✓"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
+      } else if (result.outcome === "skipped") {
+        // Distinct visual from failure — yellow ⏭ so the runner log makes
+        // it clear this isn't a regression, just a goal the agent honestly
+        // couldn't auto-verify (tier 4 of the verification hierarchy).
+        logLine(chalk.yellow("⏭"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
       } else {
         logLine(chalk.red("✗"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
       }

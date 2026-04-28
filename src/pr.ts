@@ -186,6 +186,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
       console.log(chalk.bold("\n3/3  synthesising checklist (no video)"));
       const checklist = await generateChecklist({ artifacts, prTitle: meta.title, prBody: meta.body });
       const failedCount = artifacts.events.filter((e) => e.outcome === "failure").length;
+      const skippedCount = artifacts.events.filter((e) => e.outcome === "skipped").length;
       if (!opts.skipComment) {
         console.log(chalk.bold("\n4/4  posting checks-only comment"));
         await postPRChecklistComment(ref, {
@@ -195,7 +196,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
           checklist,
         });
         console.log(chalk.green(`     ✓ commented on ${ref.url}`));
-        await maybePostFormalReview(ref, opts.review, artifacts.events.length, failedCount);
+        await maybePostFormalReview(ref, opts.review, artifacts.events.length, failedCount, skippedCount);
       } else {
         console.log(chalk.dim("\n  --skip-comment set — checks-only comment not posted"));
       }
@@ -224,6 +225,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     console.log(chalk.green(`     ✓ ${gifPath}`));
 
     const failedCount = artifacts.events.filter((e) => e.outcome === "failure").length;
+    const skippedCount = artifacts.events.filter((e) => e.outcome === "skipped").length;
     if (!opts.skipComment) {
       console.log(chalk.bold("\n4/4  uploading + commenting on PR"));
       const assetRepo = opts.assetRepo ?? `${ref.owner}/${ref.repo}`;
@@ -237,7 +239,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
         checklist,
       });
       console.log(chalk.green(`     ✓ commented on ${ref.url}`));
-      await maybePostFormalReview(ref, opts.review, artifacts.events.length, failedCount);
+      await maybePostFormalReview(ref, opts.review, artifacts.events.length, failedCount, skippedCount);
     } else {
       console.log(chalk.dim("\n  --skip-comment set — video not posted"));
     }
@@ -574,8 +576,19 @@ function buildChecklistMarkdown(items: NonNullable<CommentData["checklist"]>): s
 
 async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
   const failed = data.events.filter((e) => e.outcome === "failure");
-  const passed = data.events.length - failed.length - data.events.filter((e) => e.outcome === "skipped").length;
-  const status = failed.length === 0 ? "All green" : `${failed.length} step${failed.length === 1 ? "" : "s"} failed`;
+  const skipped = data.events.filter((e) => e.outcome === "skipped");
+  const passed = data.events.length - failed.length - skipped.length;
+  // Status line distinguishes three outcomes:
+  //   - all green (everything verified, no failures)
+  //   - N failed (real regressions found)
+  //   - "needs human verification on N" (no failures but some goals couldn't
+  //      be auto-tested — agent honestly emitted OUTCOME: skipped)
+  // Skipped goals do NOT trigger request-changes — see maybePostFormalReview.
+  const status = failed.length > 0
+    ? `${failed.length} step${failed.length === 1 ? "" : "s"} failed`
+    : skipped.length > 0
+    ? `${skipped.length} step${skipped.length === 1 ? "" : "s"} need human verification`
+    : "All green";
 
   const preview = data.gifUrl
     // Inline GIF renders animated on GitHub. Wrap it in a link to the full MP4 so clicking it opens the download.
@@ -646,8 +659,13 @@ async function postPRChecklistComment(
   data: { plan: string; events: CommentData["events"]; totalMs: number; checklist: ChecklistItem[] | null },
 ): Promise<void> {
   const failed = data.events.filter((e) => e.outcome === "failure");
-  const passed = data.events.length - failed.length - data.events.filter((e) => e.outcome === "skipped").length;
-  const status = failed.length === 0 ? "All green" : `${failed.length} step${failed.length === 1 ? "" : "s"} failed`;
+  const skipped = data.events.filter((e) => e.outcome === "skipped");
+  const passed = data.events.length - failed.length - skipped.length;
+  const status = failed.length > 0
+    ? `${failed.length} step${failed.length === 1 ? "" : "s"} failed`
+    : skipped.length > 0
+    ? `${skipped.length} step${skipped.length === 1 ? "" : "s"} need human verification`
+    : "All green";
 
   const checklistMd = data.checklist && data.checklist.length > 0
     ? buildChecklistMarkdown(data.checklist)
@@ -686,16 +704,23 @@ async function maybePostFormalReview(
   reviewMode: PROptions["review"] | undefined,
   totalEvents: number,
   failedCount: number,
+  skippedCount: number = 0,
 ): Promise<void> {
   const mode = reviewMode ?? "request-changes-on-fail";
   if (mode === "none") return;
-  const passed = totalEvents - failedCount;
+  const passed = totalEvents - failedCount - skippedCount;
   const shouldApprove = failedCount === 0 && (mode === "approve-on-pass" || mode === "always");
   const shouldRequestChanges = failedCount > 0 && (mode === "request-changes-on-fail" || mode === "always");
   if (!shouldApprove && !shouldRequestChanges) return;
 
+  // Approval message acknowledges skipped goals so the reviewer knows the
+  // approval is "no regressions found, but N goals need eyeballs". An
+  // approve-on-pass mode that hides skipped goals would mislead a reviewer
+  // who's relying on the status to decide whether human review is still
+  // required.
+  const skippedNote = skippedCount > 0 ? ` (${skippedCount} need${skippedCount === 1 ? "s" : ""} human verification — see comment)` : "";
   const reviewBody = shouldApprove
-    ? `tik-test approved — ${passed}/${totalEvents} checks green.`
+    ? `tik-test approved — ${passed}/${totalEvents} checks green${skippedNote}.`
     : `tik-test flagged ${failedCount} regression${failedCount === 1 ? "" : "s"}. Passing ${passed}/${totalEvents} isn't enough — please review the failing checks before merging.`;
   const reviewEvent = shouldApprove ? "APPROVE" : "REQUEST_CHANGES";
   const { code } = await gh([

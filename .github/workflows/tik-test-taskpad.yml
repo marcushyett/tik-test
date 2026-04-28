@@ -63,10 +63,11 @@ jobs:
           # comments include a vercel.app preview URL the CLI would otherwise
           # auto-detect. Pin the target to the bundled Taskpad demo instead.
           preview-url: http://localhost:4173
-          # Taskpad demo PRs are noisy; we just want the agent to confirm the
-          # demo still works, fast. Sister webapp workflow keeps full quality.
+          # Taskpad demo PRs render full video so editor / agent / Remotion
+          # changes (pan-zoom, captions, narration) can be VISUALLY reviewed
+          # against the bundled demo per CLAUDE.md's test-strategy section.
+          # Self-review of editor changes against the webapp doesn't work —
+          # the agent reviewing the change *is* the agent whose video output
+          # the change affects. The taskpad video is the manual eyeball
+          # check for those.
           quick-and-dirty: true
-          # checks-only mode: ~5x faster, posts a text-only comment without
-          # the tik-test-video marker (so the reviewer feed stays clean).
-          # Same plan + agent + checklist — just no MP4 to render and host.
-          no-video: true

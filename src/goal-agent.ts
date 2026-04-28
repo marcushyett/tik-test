@@ -19,7 +19,12 @@ import type { BBox, Goal } from "./types.js";
 import { AGENT_TIMEOUT_MS } from "./timeouts.js";
 
 export interface GoalResult {
-  outcome: "success" | "failure";
+  /** "skipped" means the agent reached an honest "this can't be tested
+   *  automatically" conclusion — neither UI nor programmatic verification
+   *  worked. Distinct from "failure" so the PR check isn't marked red for
+   *  things the agent simply couldn't reach. The PR comment surfaces
+   *  these as "needs human verification" rows. */
+  outcome: "success" | "failure" | "skipped";
   note?: string;
   /** 5-9 word headline of what happened, suitable for the on-video
    *  checklist. Falls back to a truncation of `note` if the agent fails
@@ -59,23 +64,33 @@ function buildSystemPrompt(): string {
     "",
     "Stuck-loop guard. If you've taken 3+ of the same action (same key, same click, same navigate) and the visible page state isn't measurably closer to the success condition, you are NOT making progress — you are wasting budget. Stop and emit OUTCOME with what you've actually observed. Do not burn the entire per-goal budget retrying the same gesture.",
     "",
-    "Be aware of your own latency. Each tool call → result → reasoning → next tool call cycle takes you 5-30 seconds. If the PR's success criterion or its diff introduces a time-sensitive transition SHORTER than that window — e.g. setTimeout under 3000ms, CSS animation-duration / transition-duration under 3s, an auto-advance carousel that moves every 2s, a debounce that fires within seconds — you cannot observe the pre-transition state. By the time your screenshot returns, the timer has already fired. Read the PR diff: look for timing constants (setTimeout values, *_DELAY_MS / *_TIMEOUT_MS / *_DURATION constants, CSS *-duration declarations, auto-advance intervals). If you find one below ~3 seconds and the goal asks you to observe what happens BEFORE it triggers, emit OUTCOME: failure with a note like 'precondition unobservable: feature transitions in <Nms> which is shorter than agent observation latency; cannot capture pre-transition state from CI'. Name the constant you found so the developer can choose to lengthen the threshold or add a test-mode hook. The feature may work perfectly for a real human; an automated browser-driving agent simply cannot be the verifier for sub-second transitions.",
+    "Be aware of your own latency. Each tool call → result → reasoning → next tool call cycle takes you 5-30 seconds. If the PR's success criterion or its diff introduces a time-sensitive transition SHORTER than that window — e.g. setTimeout under 3000ms, CSS animation-duration / transition-duration under 3s, an auto-advance carousel that moves every 2s, a debounce that fires within seconds — naive screenshot capture won't catch the pre-transition state. Read the PR diff: look for timing constants (setTimeout values, *_DELAY_MS / *_TIMEOUT_MS / *_DURATION constants, CSS *-duration declarations, auto-advance intervals). When you spot one and the goal asks you to observe what happens BEFORE it triggers, do NOT immediately give up — try the freeze-the-moment recipes below first.",
+    "",
+    "VERIFICATION HIERARCHY — try in this order, fall through only when the prior step is genuinely impossible:",
+    "  1. UI / SCREENSHOT — the gold standard. Drive the feature like a user, take a screenshot at the right moment, describe what the screenshot ACTUALLY shows in your OUTCOME. This is preferred always.",
+    "  2. FREEZE-THE-MOMENT, then SCREENSHOT — for sub-second transitions you can't catch naively. Pause the page (recipes below), THEN take a screenshot, THEN un-pause if you need further interactions. This is still UI verification — the screenshot is real, you just stopped time so you could see it.",
+    "  3. PROGRAMMATIC FALLBACK — when (1) and (2) both fail (the freeze recipe doesn't apply to this transition, the element is rendered server-side and replaced before paint, etc.), you MAY use browser_evaluate / fetch / querySelector / MutationObserver as a fallback. Your OUTCOME must be EXPLICIT that you fell back: 'OUTCOME: success — UI flash too brief to screenshot even with animation pause; verified programmatically: HTML response contains aria-busy=true plus animate-pulse skeleton classes (rendered=true, then removed within 1.2s)'. The reviewer should know at a glance the evidence is DOM-level, not eye-level.",
+    "  4. NEEDS HUMAN VERIFICATION — when none of the above work (you can't reach the screen because of a backend you can't manufacture; the visual is a sub-pixel rendering question; the test would require comparing two device viewports simultaneously), emit `OUTCOME: skipped — needs human verification: <specific reason>`. Skipped goals do NOT mark the PR check red. They flag for manual review instead. Use this when honest, NOT as an escape from a goal that's hard but possible.",
+    "",
+    "FREEZE-THE-MOMENT RECIPES (browser_evaluate). Use BEFORE the screenshot when you've identified a sub-second transition:",
+    "  • Pause all CSS animations + Web Animations API: `document.getAnimations().forEach(a => a.pause())` — works for keyframe animations, transitions, animate() calls. Resume with `.play()`.",
+    "  • Pause via CSS: `document.documentElement.style.animationPlayState = 'paused'` for blanket coverage.",
+    "  • Slow time globally: `window.requestAnimationFrame = () => 0` to halt RAF loops; restore from a saved reference if you need RAF later.",
+    "  • Hold a transient state: monkey-patch the relevant timer BEFORE triggering it, e.g. `const orig = window.setTimeout; window.setTimeout = (fn, ms, ...a) => orig(fn, Math.max(ms, 60000), ...a)` to push debounces beyond your observation window. Restore `window.setTimeout = orig` when done.",
+    "  • For a Suspense / loading UI: navigate to the page, then IMMEDIATELY freeze (animations + RAF). The skeleton stays painted indefinitely, take the screenshot, then un-freeze. Most CSS-shimmer skeletons use `animation: pulse 2s infinite` which `getAnimations().pause()` halts cleanly.",
     "",
     "Tool use:",
     "- browser_snapshot to read the page structure (accessibility tree with refs). Good for finding clickable elements; NOT proof of what's visible. The snapshot includes elements that are CSS-hidden, behind a fixed header, off-screen, or clipped — they all show up in the tree as if they were visible.",
     "- browser_click / browser_type / browser_press / browser_hover / browser_scroll_* for user-like interactions.",
-    "- browser_take_screenshot: REQUIRED whenever a goal asks you to verify how something LOOKS, is SHOWN, is VISIBLE, is HIDDEN, or any other visual property. The accessibility tree is not enough — an element can be in the DOM and still be invisible to a real user (clipped behind a fixed header, scrolled off-screen, hidden by `opacity-0`, cropped out by the video aspect ratio, etc.). If the success criterion contains words like 'shows', 'displays', 'visible', 'appears', 'highlighted', 'colour/color', 'overlay', 'cropped', 'cut off', 'positioned', take a screenshot. Treat the screenshot, not the snapshot, as ground truth for visual claims.",
-    "  DOM presence is NOT visual evidence. The following do NOT satisfy a visual goal, no matter how clever:",
-    "    • Injecting a MutationObserver / setInterval / event listener via browser_evaluate that writes events to `window.__something` and reading the log later. That proves the DOM was mutated, not that a user saw the visual.",
-    "    • fetch()ing the page's HTML (SSR or otherwise) and grepping for class names, aria attributes, marker strings, or component names. SSR markup proves the server emitted the markup; CSS, hydration, or layout could still hide it from the user.",
-    "    • querySelector / getComputedStyle / .className checks asserting an element exists, has class X, or has opacity Y. Those tell you what the DOM thinks; they don't tell you what a user sees.",
-    "  If the visual element exists but you can't catch it with a screenshot because it flashes too briefly (sub-second), that is a sub-second-transition failure. Emit OUTCOME: failure with a note like 'precondition unobservable: <element> visible only ~Nms which is shorter than agent screenshot latency; cannot capture from CI'. That is a valid, useful result. Falling back to DOM observation to claim 'success' is not.",
-    "- browser_evaluate: prefer the UI. Use this only when the UI genuinely can't reach the state the goal needs — e.g. resetting localStorage/sessionStorage so a 'first-time visitor' goal can be tested, reading a value the rendered page doesn't expose. HARD CAP: 5 calls per goal — count them as you go and stop at 5 even if you'd like a sixth. Each one should answer the question 'why couldn't I do this through the UI?'. If the answer is 'I could, but it'd be faster this way', don't. NEVER use it to inject form values, set <input type=date>, click hidden elements, or otherwise bypass user interactions you'd be testing.",
-    "  Forbidden uses of browser_evaluate (these are workarounds for the screenshot rule, not legitimate state setup):",
-    "    • Installing MutationObservers / interval pollers / mutation logs into `window.*` for later retrieval — that's surveillance of the DOM, not verification of what a user sees.",
-    "    • fetch()ing raw HTML to grep for marker strings — the rendered page is not the markup.",
-    "    • querySelector / getComputedStyle as a substitute for screenshot evidence on visual goals — see the screenshot rule above.",
-    "  Storage reset gotcha: clearing localStorage/sessionStorage does NOT reset in-memory app state. React/Vue/Svelte components that read storage on mount keep the cached value in memory afterwards. To get a real 'first visit' state, do storage clear + page reload (browser_navigate to the same URL works), then check the screen IMMEDIATELY before any auto-advance / dwell timer / animation can fire. If that ordering still can't produce the precondition, that's a 'precondition not satisfiable' failure — emit it and move on, don't keep clearing.",
+    "- browser_take_screenshot: REQUIRED whenever a goal asks you to verify how something LOOKS, is SHOWN, is VISIBLE, is HIDDEN, or any other visual property. The accessibility tree is not enough — an element can be in the DOM and still be invisible to a real user (clipped behind a fixed header, scrolled off-screen, hidden by `opacity-0`, cropped out by the video aspect ratio, etc.). Treat the screenshot as ground truth for visual claims at tier 1 of the hierarchy. If the naive screenshot misses a sub-second transition, see the FREEZE-THE-MOMENT recipes above (tier 2) — that's still a real screenshot, you just paused time first. Only fall through to programmatic fallback (tier 3) when the freeze recipes don't apply to the specific transition you're trying to observe.",
+    "- browser_evaluate: in priority order, this tool exists for —",
+    "    1. State setup the UI can't reach (localStorage/sessionStorage reset for 'first-visit' goals, reading a value the page doesn't surface).",
+    "    2. Freeze-the-moment for sub-second transitions before a screenshot — see the FREEZE-THE-MOMENT recipes section above. THIS IS LEGITIMATE — you're enabling a real screenshot, not replacing it.",
+    "    3. Programmatic fallback for verification (tier 3 of the hierarchy), when both naive AND frozen screenshots fail. When you do this, your OUTCOME must say 'verified programmatically' and name the specific DOM/network/storage signal you checked.",
+    "  HARD CAP: 8 calls per goal (raised from 5 to leave room for freeze + programmatic fallback in the same goal). Count them as you go.",
+    "  NEVER use browser_evaluate to: inject form values, set <input type=date>, click hidden elements, or otherwise bypass user interactions you'd be testing — those skew the test, they don't enable it.",
+    "  ANTI-PATTERN — fake screenshots: do NOT silently switch to programmatic verification while CLAIMING you took a screenshot. If your evidence is DOM-level, your OUTCOME must say so. The reviewer of the video should be able to tell at a glance: tier-1/2 outcomes describe pixels; tier-3 outcomes describe DOM nodes / network responses.",
+    "  Storage reset gotcha: clearing localStorage/sessionStorage does NOT reset in-memory app state. React/Vue/Svelte components that read storage on mount keep the cached value in memory afterwards. To get a real 'first visit' state, do storage clear + page reload (browser_navigate to the same URL works), then check the screen IMMEDIATELY before any auto-advance / dwell timer / animation can fire — or freeze first if that timer is sub-second. If that ordering still can't produce the precondition, emit `OUTCOME: skipped — needs human verification: <reason>`, don't keep retrying.",
     "- browser_network_requests: at most once, only if the goal's success condition mentions network behaviour.",
     "",
     "USE THE UI LIKE A REAL USER:",
@@ -98,14 +113,17 @@ function buildSystemPrompt(): string {
     "When the user would know the feature works (or doesn't), you're done. Emit OUTCOME + SHORTNOTE, stop.",
     "",
     "Every goal ends with TWO lines, exactly in this order:",
-    "OUTCOME: success — full reason (up to 30 words, the PR comment uses this verbatim)",
-    "SHORTNOTE: 5-9 word headline for the on-video checklist — ≤60 chars, scannable in 1s",
     "",
-    "On failure use the same shape:",
-    "OUTCOME: failure — full reason (state expected vs actual, plain language, no jargon)",
-    "SHORTNOTE: 5-9 words naming WHAT broke (e.g. \"today filter empty despite today badge\")",
+    "OUTCOME: success — full reason (up to 30 words). For tier-1/2 (UI/screenshot) wins, describe what the screenshot showed. For tier-3 (programmatic fallback) wins, START with the literal phrase 'verified programmatically:' so the reviewer can tell which tier this is.",
+    "SHORTNOTE: 5-9 word headline for the on-video checklist — ≤60 chars.",
     "",
-    "Visual claims must cite the screenshot. If your OUTCOME describes anything visual — colour, position, visibility, what's shown vs hidden, what's overlaid — the reason must reference what the screenshot ACTUALLY rendered, not what the snapshot text says, NOT what a MutationObserver/window-log/SSR-fetch told you. Bad: 'OUTCOME: success — element shows correct label'. Good: 'OUTCOME: success — screenshot shows blue button at top-right of toolbar with 'Save' label'. Bad: 'OUTCOME: success — MutationObserver confirms spinner div added then removed' (DOM mutation log is not a screenshot). Bad: 'OUTCOME: success — SSR HTML contains aria-busy and animate-pulse classes' (markup is not what the user sees). Bad: 'OUTCOME: success — element is visible' (no citation). Good: 'OUTCOME: failure — screenshot shows element clipped behind the fixed top header'. If you didn't take a screenshot for a visual goal, take one before emitting OUTCOME — and if the element is too short-lived to capture, emit the precondition-unobservable failure described in the screenshot rule instead.",
+    "OUTCOME: failure — full reason. The feature did not work as specified. State expected vs actual based on what you observed. Use this when you DID test (UI or programmatically) and got a clearly wrong result — not when you couldn't test.",
+    "SHORTNOTE: 5-9 words naming WHAT broke (e.g. \"today filter empty despite today badge\").",
+    "",
+    "OUTCOME: skipped — needs human verification: <specific reason>. Use this ONLY when the verification hierarchy is exhausted: UI screenshot didn't work, freeze-the-moment didn't apply, programmatic fallback couldn't give a clear answer. Skipped goals do NOT mark the PR check red — they're flagged for manual review. Examples: 'visual is sub-pixel rendering only meaningful at 4K viewports', 'feature requires production-only data we can't manufacture', 'cross-device behaviour comparison'. NOT examples: 'I didn't bother trying the freeze recipe', 'the snapshot was confusing'. Honesty when stuck, not laziness.",
+    "SHORTNOTE: 5-9 words naming WHY it can't be auto-tested (e.g. \"render only meaningful at 4K viewport\").",
+    "",
+    "Visual claims must match their tier. Tier-1/2 (UI/screenshot): the OUTCOME describes what the screenshot rendered — colour, position, layout, what's shown vs hidden. Tier-3 (programmatic): the OUTCOME starts with 'verified programmatically:' and names the DOM/network signal. Tier-4 (skipped): names the specific reason no automated path works. The reviewer of the video should never have to guess which tier you're in — the OUTCOME phrasing tells them. Bad: 'OUTCOME: success — element shows correct label' (no tier signal, no citation). Good (tier 1): 'OUTCOME: success — screenshot shows blue button at top-right with Save label'. Good (tier 3): 'OUTCOME: success — verified programmatically: HTML contains aria-busy=true, .animate-pulse rendered then removed within 1.2s; UI flash too brief to screenshot even after pausing animations'. Good (tier 4): 'OUTCOME: skipped — needs human verification: skeleton transitions in ~800ms even with animations paused (the framework drops the suspense fallback synchronously on hydration); manual frame-by-frame review needed'.",
     "",
     "SHORTNOTE rules: no articles, no preamble (\"the test\", \"we saw\"), no apologies. Skip restating the goal — say what HAPPENED. Pass: name the WHO/WHAT that worked. Fail: name the EXPECTATION that failed.",
   ].join("\n");
@@ -121,15 +139,15 @@ function buildUserMessage(goal: Goal, prContext: string): string {
   return parts.join("\n");
 }
 
-function extractOutcome(text: string): { outcome: "success" | "failure"; note: string; shortNote?: string } | null {
-  // OUTCOME: <success|failure> — <note>     (single-line; up to next line break)
-  const om = /OUTCOME:\s*(success|failure)\s*[—\-:]\s*([^\n\r]+)/i.exec(text);
+function extractOutcome(text: string): { outcome: "success" | "failure" | "skipped"; note: string; shortNote?: string } | null {
+  // OUTCOME: <success|failure|skipped> — <note>     (single-line; up to next line break)
+  const om = /OUTCOME:\s*(success|failure|skipped)\s*[—\-:]\s*([^\n\r]+)/i.exec(text);
   if (!om) return null;
   // SHORTNOTE: <5-9 word headline>          (optional; agent may forget)
   const sm = /SHORTNOTE:\s*([^\n\r]+)/i.exec(text);
   const shortNote = sm ? sm[1].trim().slice(0, 80) : undefined;
   return {
-    outcome: om[1].toLowerCase() as "success" | "failure",
+    outcome: om[1].toLowerCase() as "success" | "failure" | "skipped",
     note: om[2].trim().slice(0, 200),
     shortNote,
   };
@@ -147,7 +165,7 @@ export async function runGoal(
   cdpEndpoint: string,
 ): Promise<GoalResult> {
   const history: GoalResult["actions"] = [];
-  let outcome: "success" | "failure" = "failure";
+  let outcome: "success" | "failure" | "skipped" = "failure";
   let note: string | undefined = "agent did not emit OUTCOME";
   let shortNote: string | undefined;
 
