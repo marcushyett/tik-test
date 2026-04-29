@@ -379,7 +379,7 @@ The action installs Node + ffmpeg + Playwright, builds tik-test, auto-detects th
 | `agent-timeout` | No | `600` (s) | Per-goal agent. Bump for slow page loads. |
 | `narration-timeout` | No | `540` (s) | Narration Claude call. Bump for 12+ tool moments. |
 
-> Plus more typed inputs for fine-tuning (`feature-finder-timeout`, `max-goals`, `min-chunk-seconds`, `max-body-scenes`, `checklist-min-items`, `checklist-max-items`, `intro-seconds`, `outro-seconds`, `outro-hold-seconds`). See [Advanced](#advanced) or `node dist/cli.js config`.
+> Plus more typed inputs for fine-tuning (`feature-finder-timeout`, `max-goals`, `min-chunk-seconds`, `max-body-scenes`, `checklist-min-items`, `checklist-max-items`, `intro-seconds`, `outro-seconds`, `outro-hold-seconds`, `render-segments`, `render-concurrency`, `video-cache-mb`, `node-max-old-space-mb`). See [Advanced](#advanced) or `node dist/cli.js config`.
 
 ¹ One of the two. OAuth recommended.
 
@@ -428,6 +428,13 @@ Use the GitHub Action; it bundles the install. Outside CI, run `npm i -g @anthro
 
 **PR comment shows the marker but the video is broken**
 Expected fallback: if any post-process step crashes, tik-test still uploads the raw recording. Check run artifacts.
+
+**`Error: Process completed with exit code 143` (kernel OOM kill)**
+Long captures + multiple parallel Chromium browsers can exhaust the standard private-repo runner's 7 GB envelope. The action ships safe defaults — `render-segments: 1`, `video-cache-mb: 256`, `node-max-old-space-mb: 4096` — that should keep the job inside it. If you still see exit 143:
+
+- Lower further: `video-cache-mb: 128` (smallest practical), `quick-and-dirty: true`.
+- Or upgrade the runner: `runs-on: ubuntu-latest-8-cores` (paid GitHub larger runner, ~32 GB / 8 vCPU). On a larger runner you can also speed the render up by raising `render-segments: 3` and `video-cache-mb: 512`.
+- A heap-OOM error from Node (instead of a silent SIGTERM) means it's V8's heap, not the kernel — bump `node-max-old-space-mb: 6144`.
 
 ---
 

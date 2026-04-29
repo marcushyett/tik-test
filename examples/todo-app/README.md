@@ -46,6 +46,10 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'pull_request' ||
       (github.event_name == 'deployment_status' && github.event.deployment_status.state == 'success')
+    # `ubuntu-latest` is the safe default. If you hit exit 143 on long
+    # captures, either set `video-cache-mb: 192` on the action or upgrade
+    # the runner to `ubuntu-latest-8-cores` and pass `render-segments: 3`
+    # for a faster render.
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
