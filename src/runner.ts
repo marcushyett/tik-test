@@ -206,6 +206,178 @@ const BROKEN_IMAGE_FALLBACK = `
 `;
 
 /**
+ * FLIGHT RECORDER. Solves the "loading spinner I can't screenshot" problem.
+ *
+ * Screenshot tool calls have 200-1500ms of round-trip latency (MCP →
+ * playwright → image encode → back). A loading spinner that appears for
+ * 200ms is gone before the screenshot lands. The agent loops trying to
+ * catch it, burning the entire goal budget.
+ *
+ * This in-page recorder runs at the page's own clock (sub-ms precision)
+ * and captures every transient state into a circular buffer:
+ *
+ *   - DOM additions/removals where the element matches a "loading-ish"
+ *     selector (.animate-pulse, .skeleton, .spinner, [aria-busy], …)
+ *   - fetch() and XMLHttpRequest start/end with URL + duration + status
+ *   - active CSS animations (via document.getAnimations())
+ *
+ * Each event has a `t` field = performance.now() at the time it fired.
+ * The agent calls window.__tikFlight.mark(label) before triggering an
+ * action, fires the action, calls .mark(label) again, then calls
+ * window.__tikFlight.between(labelA, labelB) to read every transient
+ * state captured between those two timestamps.
+ *
+ * The buffer is bounded (1000 events) so a long-running goal can't OOM.
+ *
+ * IMPORTANT: this is appended to addInitScript so it runs on EVERY
+ * navigation in EVERY frame — markers and event capture survive route
+ * changes. window.__tikFlight is re-created per page but the agent never
+ * needs to bridge across navigations because each goal's transient
+ * verifications happen inside one page.
+ */
+const FLIGHT_RECORDER_INIT = `
+(() => {
+  if (window.__tikFlight) return;
+  const BUF_MAX = 1000;
+  const buf = [];
+  const marks = Object.create(null);
+  const now = () => performance.now();
+  const push = (kind, payload) => {
+    if (buf.length >= BUF_MAX) buf.shift();
+    buf.push({ t: now(), kind, ...payload });
+  };
+  // 1. Loading-ish DOM nodes — anything matching these selectors gets
+  //    logged when added/removed. Covers Tailwind, Material, ARIA.
+  const LOADING_SEL = [
+    '.animate-pulse', '.animate-spin', '.spinner', '.loading', '.loader',
+    '.skeleton', '[aria-busy="true"]', '[role="status"]', '[role="progressbar"]',
+    '[data-state="loading"]', '[data-loading="true"]',
+  ].join(',');
+  const matches = (el) => {
+    if (!el || el.nodeType !== 1) return false;
+    try { return el.matches(LOADING_SEL) || !!el.querySelector(LOADING_SEL); } catch { return false; }
+  };
+  const describe = (el) => {
+    try {
+      const cls = (el.className && typeof el.className === 'string' ? el.className : '').slice(0, 80);
+      const role = el.getAttribute && el.getAttribute('role');
+      const busy = el.getAttribute && el.getAttribute('aria-busy');
+      return [el.tagName?.toLowerCase(), cls && '.' + cls.split(/\\s+/).slice(0, 3).join('.'), role && '[role=' + role + ']', busy && '[aria-busy=' + busy + ']'].filter(Boolean).join('');
+    } catch { return el.tagName?.toLowerCase() || ''; }
+  };
+  try {
+    new MutationObserver((muts) => {
+      for (const m of muts) {
+        for (const n of m.addedNodes) if (matches(n)) push('loading-show', { el: describe(n) });
+        for (const n of m.removedNodes) if (matches(n)) push('loading-hide', { el: describe(n) });
+        if (m.type === 'attributes' && (m.attributeName === 'aria-busy' || m.attributeName === 'data-state' || m.attributeName === 'data-loading' || m.attributeName === 'class')) {
+          if (matches(m.target)) push('loading-show', { el: describe(m.target), attr: m.attributeName });
+        }
+      }
+    }).observe(document.documentElement || document, {
+      childList: true, subtree: true, attributes: true,
+      attributeFilter: ['aria-busy', 'data-state', 'data-loading', 'class'],
+    });
+  } catch {}
+  // 2. fetch() wrapper. Captures URL, status, duration. Doesn't change
+  //    behaviour — pass-through that records both ends.
+  try {
+    const origFetch = window.fetch;
+    if (origFetch) {
+      window.fetch = function (...args) {
+        const url = (typeof args[0] === 'string' ? args[0] : args[0]?.url) || '';
+        const start = now();
+        push('fetch-start', { url: String(url).slice(0, 200) });
+        return origFetch.apply(this, args).then((resp) => {
+          push('fetch-end', { url: String(url).slice(0, 200), status: resp.status, dur: Math.round(now() - start) });
+          return resp;
+        }).catch((err) => {
+          push('fetch-error', { url: String(url).slice(0, 200), err: String(err?.message || err).slice(0, 120), dur: Math.round(now() - start) });
+          throw err;
+        });
+      };
+    }
+  } catch {}
+  // 3. XMLHttpRequest wrapper. Same idea, for the apps that don't use fetch.
+  try {
+    const X = window.XMLHttpRequest;
+    if (X) {
+      const origOpen = X.prototype.open;
+      const origSend = X.prototype.send;
+      X.prototype.open = function (method, url) {
+        this.__tikUrl = String(url).slice(0, 200);
+        return origOpen.apply(this, arguments);
+      };
+      X.prototype.send = function () {
+        const start = now();
+        const url = this.__tikUrl || '';
+        push('xhr-start', { url });
+        this.addEventListener('loadend', () => {
+          push('xhr-end', { url, status: this.status, dur: Math.round(now() - start) });
+        });
+        return origSend.apply(this, arguments);
+      };
+    }
+  } catch {}
+  // 4. Public API on window. The agent uses these via browser_evaluate.
+  window.__tikFlight = {
+    mark(label) {
+      const t = now();
+      marks[String(label)] = t;
+      push('mark', { label: String(label) });
+      return t;
+    },
+    between(labelA, labelB) {
+      const a = typeof labelA === 'number' ? labelA : marks[String(labelA)];
+      const b = typeof labelB === 'number' ? labelB : marks[String(labelB)] ?? now();
+      if (a == null) return { error: 'mark not found: ' + labelA };
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      const events = buf.filter((e) => e.t >= lo - 50 && e.t <= hi + 50).map((e) => ({ ...e, dt: Math.round(e.t - lo) }));
+      // Summarise for readability — the agent gets the structured list AND
+      // a one-line summary so it doesn't have to parse 200 events.
+      const counts = {};
+      const loadingShown = new Set();
+      let firstLoading = null, lastLoading = null;
+      let netStarts = 0, netEnds = 0;
+      for (const e of events) {
+        counts[e.kind] = (counts[e.kind] || 0) + 1;
+        if (e.kind === 'loading-show') {
+          loadingShown.add(e.el);
+          if (firstLoading == null) firstLoading = e.dt;
+        }
+        if (e.kind === 'loading-hide') lastLoading = e.dt;
+        if (e.kind === 'fetch-start' || e.kind === 'xhr-start') netStarts++;
+        if (e.kind === 'fetch-end' || e.kind === 'xhr-end') netEnds++;
+      }
+      const summary = {
+        windowMs: Math.round(hi - lo),
+        eventCount: events.length,
+        loadingFlash: loadingShown.size > 0
+          ? { elements: [...loadingShown].slice(0, 5), firstAtMs: firstLoading, lastAtMs: lastLoading, durationMs: lastLoading != null && firstLoading != null ? lastLoading - firstLoading : null }
+          : null,
+        network: { starts: netStarts, ends: netEnds },
+        kinds: counts,
+      };
+      return { summary, events: events.slice(0, 60) };
+    },
+    snapshot() {
+      // Synchronous current state — what's loading RIGHT NOW. Cheap to
+      // call at any moment without needing a marker pair.
+      const els = Array.from(document.querySelectorAll(LOADING_SEL)).slice(0, 10).map(describe);
+      const animations = (document.getAnimations ? document.getAnimations() : []).slice(0, 10).map((a) => ({
+        playState: a.playState,
+        duration: a.effect?.getTiming?.()?.duration,
+      }));
+      return { now: now(), loadingNow: els, animations };
+    },
+    raw(limit = 200) { return buf.slice(-limit); },
+    clear() { buf.length = 0; for (const k in marks) delete marks[k]; },
+  };
+})();
+`;
+
+/**
  * Pure RECORDER — no painted cursor, no ripples, no DOM mutation. Just
  * forwards mouse + click + keystroke events out via the
  * context-exposed `__tikRecord` callback so Remotion can render a
@@ -392,6 +564,10 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   });
   await context.addInitScript(INTERACTION_RECORDER_INIT);
   await context.addInitScript(BROKEN_IMAGE_FALLBACK);
+  // Flight recorder must register BEFORE the page's own scripts so its
+  // fetch/XHR wrappers see every request. addInitScript runs before all
+  // page scripts on every navigation, which is exactly what we need.
+  await context.addInitScript(FLIGHT_RECORDER_INIT);
   const page = await context.newPage();
 
   const events: StepEvent[] = [];
@@ -559,26 +735,25 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
         result = { outcome: "failure", note: (e as Error).message.split("\n")[0], actions: [], bbox: undefined };
       }
       const endMs = Math.max(startMs + 50, Math.round(performance.now() - recordingStart));
-      // Convert each tool-call's wall-clock `startedAt` into an active
-      // window in raw-video timeline terms. Span 2.5s per call so the
-      // viewer can actually see what happened; the trim planner keeps
-      // non-active agent-thinking gaps between them bounded.
+      // Convert each tool-call's wall-clock `startedAt` into a single
+      // POINT in the raw-video timeline. The editor's content-aware trim
+      // planner expands these into anchors with KEEP_BEFORE/KEEP_AFTER
+      // padding around each point, then merges overlapping anchors. We
+      // emit start==end+1 instead of a fixed 2.5-2.8s window because the
+      // editor now classifies tool kinds (high/low/skip) and the
+      // window's effective length depends on that class — a fixed
+      // window here was the dominant source of 400s videos.
       for (let ai = 0; ai < result.actions.length; ai++) {
         const a = result.actions[ai];
         if (!a.startedAt) continue;
-        const windowStart = startMs + (a.startedAt - goalStartedAtWall);
-        const next = result.actions[ai + 1];
-        const nextStart = next?.startedAt ? startMs + (next.startedAt - goalStartedAtWall) : windowStart + 2500;
-        const windowEnd = Math.min(nextStart, windowStart + 2800);
-        if (windowEnd > windowStart) {
-          toolWindows.push({
-            startMs: Math.max(0, windowStart),
-            endMs: windowEnd,
-            kind: a.kind,
-            input: a.value || a.target,
-            result: a.result,
-          });
-        }
+        const windowStart = Math.max(0, startMs + (a.startedAt - goalStartedAtWall));
+        toolWindows.push({
+          startMs: windowStart,
+          endMs: windowStart + 1, // single-point anchor; editor expands per kind
+          kind: a.kind,
+          input: a.value || a.target,
+          result: a.result,
+        });
       }
       let screenshotPath: string | undefined;
       try {
@@ -625,11 +800,14 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       } else {
         logLine(chalk.red("✗"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
       }
-      // Small dwell between goals so the video has a visible pause between beats.
-      await page.waitForTimeout(800);
+      // Tiny dwell between goals — just enough that consecutive goals
+      // don't fuse into one anchor cluster. The editor's KEEP_AFTER
+      // padding already covers post-goal "hold on the result"; making
+      // this larger just bloats raw video for the compressor to crush.
+      await page.waitForTimeout(250);
     }
     // Tail dwell for editor to hold on the final goal's result.
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(600);
   } finally {
     // Close page first to flush video
     await page.close();

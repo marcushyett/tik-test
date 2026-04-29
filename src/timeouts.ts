@@ -120,6 +120,76 @@ export const KNOBS: Knob[] = [
     riskLower: "<0.5s = same dozens-of-segments problem the default fixes; ffmpeg encode goes from minutes to tens of minutes",
     riskHigher: ">3s = legitimately distinct beats fuse (click→wait→click reads as one beat); narration loses pacing",
   },
+
+  // ── Content-aware trim ────────────────────────────────────────────────
+  // The trim planner builds active windows around ANCHORS — clicks,
+  // keystrokes, high-class tool calls (click/type/navigate/screenshot),
+  // and ffmpeg-detected scenechanges. The window around each anchor is
+  // [anchor - KEEP_BEFORE, anchor + KEEP_AFTER]. Outside those windows
+  // the raw video is idle — we compress it variably (longer idles get
+  // crushed harder, capped at MAX_IDLE_TRIMMED_S of trimmed output time
+  // per gap). The result is content-aware: dense interaction stretches
+  // play at 1×, dead air gets blurred past in <1s.
+  {
+    key: "TIK_KEEP_BEFORE_MS",
+    actionInput: "keep-before-ms",
+    default: 350,
+    kind: "int",
+    unit: "ms",
+    description: "Raw-video time to keep at 1× immediately BEFORE each anchor (click, keystroke, high-class tool, scenechange). Catches the cursor approaching a button before the click lands.",
+    riskLower: "<200ms = clicks feel rushed; cursor appears already at the target",
+    riskHigher: ">600ms = pre-click dwell adds up across many clicks, video bloats",
+  },
+  {
+    key: "TIK_KEEP_AFTER_MS",
+    actionInput: "keep-after-ms",
+    default: 900,
+    kind: "int",
+    unit: "ms",
+    description: "Raw-video time to keep at 1× immediately AFTER each anchor. Covers the page reacting to the click — UI transitions, dialogs opening, results rendering.",
+    riskLower: "<500ms = post-click results barely visible; viewer misses what changed",
+    riskHigher: ">1500ms = inflates video; agent-thinking time the new compressor would normally crush gets kept at 1×",
+  },
+  {
+    key: "TIK_MAX_IDLE_TRIMMED_S",
+    actionInput: "max-idle-trimmed-seconds",
+    default: 0.6,
+    kind: "float",
+    unit: "seconds",
+    description: "Hard cap on TRIMMED output time per idle gap. A 30s gap with no anchors gets crushed to ≤ this many seconds of fast-forward. Think of it as 'no single dead-air stretch can hold the viewer's attention longer than this'.",
+    riskLower: "<0.3s = idle gaps become near-instant cuts; transitions feel jarring",
+    riskHigher: ">1.5s = long agent-thinking stretches survive at moderate speed and dominate the runtime",
+  },
+  {
+    key: "TIK_IDLE_MIN_SPEED",
+    actionInput: "idle-min-speed",
+    default: 4,
+    kind: "float",
+    unit: "items",
+    description: "Minimum playback speed for idle gaps. Short idles get this; longer ones speed up further (auto-tuned to fit MAX_IDLE_TRIMMED_S).",
+    riskLower: "<3 = short idles barely compress; many small gaps add up",
+    riskHigher: ">8 = cursor appears to teleport between actions; loses orientation",
+  },
+  {
+    key: "TIK_IDLE_MAX_SPEED",
+    actionInput: "idle-max-speed",
+    default: 30,
+    kind: "float",
+    unit: "items",
+    description: "Maximum playback speed for any idle gap. Caps the auto-tuner so a freakishly long stall doesn't try to compress at 200×.",
+    riskLower: "<10 = pathological 60s+ stalls can't be crushed enough; video stays long",
+    riskHigher: ">60 = ffmpeg's frame-stride decimator can drop too many frames; cursor flicker",
+  },
+  {
+    key: "TIK_SCENECHANGE_THRESHOLD",
+    actionInput: "scenechange-threshold",
+    default: 0.10,
+    kind: "float",
+    unit: "items",
+    description: "ffmpeg scene-change sensitivity (0–1). Lower = more anchors detected. We use scenechanges as anchors so async UI updates (skeleton → content, dialog opens, route changes) survive compression even if the agent didn't interact at that moment.",
+    riskLower: "<0.05 = false positives from JPEG noise — anchors everywhere, compression kicks in less",
+    riskHigher: ">0.25 = misses subtle UI changes (toast appearing, badge updating)",
+  },
   {
     key: "TIK_MAX_BODY_SCENES",
     actionInput: "max-body-scenes",
@@ -266,6 +336,12 @@ export const NARRATION_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_NARRATION_
 export const FEATURE_FINDER_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_FEATURE_FINDER_TIMEOUT_MS")!);
 export const MIN_CHUNK_S = resolveKnob(KNOBS_BY_KEY.get("TIK_MIN_CHUNK_S")!);
 export const TRIM_MERGE_S = resolveKnob(KNOBS_BY_KEY.get("TIK_TRIM_MERGE_S")!);
+export const KEEP_BEFORE_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_KEEP_BEFORE_MS")!);
+export const KEEP_AFTER_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_KEEP_AFTER_MS")!);
+export const MAX_IDLE_TRIMMED_S = resolveKnob(KNOBS_BY_KEY.get("TIK_MAX_IDLE_TRIMMED_S")!);
+export const IDLE_MIN_SPEED = resolveKnob(KNOBS_BY_KEY.get("TIK_IDLE_MIN_SPEED")!);
+export const IDLE_MAX_SPEED = resolveKnob(KNOBS_BY_KEY.get("TIK_IDLE_MAX_SPEED")!);
+export const SCENECHANGE_THRESHOLD = resolveKnob(KNOBS_BY_KEY.get("TIK_SCENECHANGE_THRESHOLD")!);
 export const MAX_BODY_SCENES = resolveKnob(KNOBS_BY_KEY.get("TIK_MAX_BODY_SCENES")!);
 export const CHECKLIST_MIN_ITEMS = resolveKnob(KNOBS_BY_KEY.get("TIK_CHECKLIST_MIN_ITEMS")!);
 export const CHECKLIST_MAX_ITEMS = resolveKnob(KNOBS_BY_KEY.get("TIK_CHECKLIST_MAX_ITEMS")!);

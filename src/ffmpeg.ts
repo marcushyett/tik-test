@@ -57,6 +57,46 @@ export function runFfmpeg(args: string[]): Promise<FfmpegResult> {
   });
 }
 
+/**
+ * Detect frames where the visual content changed significantly. Used by the
+ * editor's content-aware trim planner: every scenechange becomes an anchor
+ * around which we keep the raw video at 1×, while the gaps between anchors
+ * get aggressively compressed. This catches transitions our interaction
+ * stream misses — async data loading in, route changes, dialogs opening,
+ * skeleton-to-content swaps.
+ *
+ * Implementation: ffmpeg's `select='gt(scene,T)',showinfo` filter writes one
+ * info line per frame whose scene-difference score exceeds the threshold.
+ * We parse `pts_time:` from those lines. Failure mode is benign — on any
+ * parse error we return [] and the editor falls back to interaction +
+ * tool-anchor-only mode (still fine, just less precise).
+ */
+export function detectScenechanges(file: string, threshold = 0.10): Promise<number[]> {
+  return new Promise((resolve) => {
+    const child = spawn("ffmpeg", [
+      "-hide_banner",
+      "-i", file,
+      "-filter:v", `select='gt(scene,${threshold})',showinfo`,
+      "-f", "null",
+      "-",
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (b) => (stderr += b.toString()));
+    child.on("error", () => resolve([]));
+    child.on("close", () => {
+      const times: number[] = [];
+      const re = /pts_time:([0-9.]+)/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(stderr)) !== null) {
+        const t = parseFloat(m[1]);
+        if (Number.isFinite(t)) times.push(t);
+      }
+      times.sort((a, b) => a - b);
+      resolve(times);
+    });
+  });
+}
+
 export function ffprobeDuration(file: string): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn("ffprobe", [

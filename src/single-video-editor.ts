@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
-import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
+import { runFfmpeg, ffprobeDuration, detectScenechanges } from "./ffmpeg.js";
 import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.js";
 import { generateTimedNarration, type NarrationScene } from "./timed-narration.js";
 import { generateChecklist } from "./checklist.js";
@@ -14,6 +14,8 @@ import {
   MIN_CHUNK_S, MAX_BODY_SCENES, TRIM_MERGE_S,
   INTRO_TARGET_S, OUTRO_TARGET_S, OUTRO_HOLD_S,
   RENDER_SEGMENTS, OFFTHREAD_VIDEO_CACHE_MB,
+  KEEP_BEFORE_MS, KEEP_AFTER_MS, MAX_IDLE_TRIMMED_S,
+  IDLE_MIN_SPEED, IDLE_MAX_SPEED, SCENECHANGE_THRESHOLD,
 } from "./timeouts.js";
 import type { RunArtifacts } from "./types.js";
 
@@ -153,6 +155,48 @@ function classifyTool(kind: string): "silent" | "visible" | "skip" {
   }
 }
 
+/**
+ * Trim-plan anchor classification — distinct from classifyTool, which
+ * controls the body scene list / badge overlays.
+ *
+ * "high" — actual user-visible interactions or verifications. The cursor
+ *          moves, something gets clicked or typed, the page renders a
+ *          result. We anchor the 1× window around these points so the
+ *          viewer SEES what changed.
+ * "low"  — agent-thinking tools where the page is static. browser_snapshot
+ *          (DOM read), browser_evaluate (JS read), browser_wait_for
+ *          (literally idle), browser_network_requests (in-memory). These
+ *          DO NOT anchor a 1× window — the visual evidence is the badge
+ *          overlay during the moment, not the unchanging page underneath.
+ *          Anchoring them was the dominant source of 400s videos: every
+ *          snapshot kept ~3s of static page at full speed.
+ * "skip" — non-browser plumbing tools. Never an anchor.
+ */
+function anchorClass(kind: string): "high" | "low" | "skip" {
+  switch (kind) {
+    case "browser_click":
+    case "browser_type":
+    case "browser_fill_form":
+    case "browser_press_key":
+    case "browser_hover":
+    case "browser_scroll":
+    case "browser_navigate":
+    case "browser_navigate_back":
+    case "browser_select_option":
+    case "browser_take_screenshot":
+      return "high";
+    case "browser_snapshot":
+    case "browser_evaluate":
+    case "browser_wait_for":
+    case "browser_network_requests":
+    case "browser_console_messages":
+    case "browser_tabs":
+      return "low";
+    default:
+      return "skip";
+  }
+}
+
 async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
@@ -209,25 +253,70 @@ interface TrimSegment {
 
 interface ActiveWindow { start: number; end: number }
 
+/**
+ * Content-aware trim plan. Inputs are ACTIVE WINDOWS — pre-built around
+ * anchor points (clicks, keystrokes, high-class tool calls, ffmpeg
+ * scenechanges) by the caller. Each anchor brings KEEP_BEFORE_MS of lead-in
+ * and KEEP_AFTER_MS of follow-through. We:
+ *
+ *   1. Merge overlapping windows (TRIM_MERGE_S tolerance).
+ *   2. Keep merged active stretches at 1× — these contain real visual
+ *      change, the viewer needs to see them.
+ *   3. Idle gaps between active stretches get COMPRESSED VARIABLY:
+ *      the longer the gap, the harder we crush, capped so no single
+ *      idle stretch consumes more than MAX_IDLE_TRIMMED_S of trimmed
+ *      output. A 30s loading-spinner stall comes out as 0.6s of
+ *      blur instead of 6s of fast-forward.
+ *
+ * No "stratified sampling" — the active windows are kept LOSSLESSLY
+ * (every frame at 1×). What gets compressed is provably-static dead air
+ * between anchors.
+ */
 function buildTrimPlan(
   rawDurS: number,
   windows: ActiveWindow[],
-  idleThresholdS = 1.0,
-  idleSpeed = 5.0,
 ): TrimSegment[] {
-  if (windows.length === 0) return [{ rawStartS: 0, rawEndS: rawDurS, speed: 1.0, trimmedStartS: 0, trimmedEndS: rawDurS }];
   const segments: TrimSegment[] = [];
-  const active: ActiveWindow[] = windows.map((w) => ({
-    start: Math.max(0, w.start),
-    end: Math.min(rawDurS, w.end),
-  }));
-  active.sort((a, b) => a.start - b.start);
-  // Merge tolerance debounces the segment cuts: tools that fire within
-  // TRIM_MERGE_S of each other (e.g. browser_click → browser_snapshot ~200ms
-  // later) collapse into a single active window, eliminating the cut + tiny
-  // idle-gap segment between them. Big lever on render time — the master
-  // ffmpeg pass scales linearly with segment count, and cutting from 73 to
-  // ~25 segments cuts the master encode roughly in half.
+
+  const compressIdle = (idleStart: number, idleEnd: number, trimmedCursor: number): TrimSegment => {
+    const idleDur = Math.max(0, idleEnd - idleStart);
+    // Tiny gaps (< 0.4s) aren't worth a cut; pass through at 1× so
+    // ffmpeg doesn't fragment into hundreds of segments.
+    if (idleDur < 0.4) {
+      return {
+        rawStartS: idleStart, rawEndS: idleEnd, speed: 1.0,
+        trimmedStartS: trimmedCursor, trimmedEndS: trimmedCursor + idleDur,
+      };
+    }
+    // Variable speed: compress to ≤ MAX_IDLE_TRIMMED_S of trimmed time,
+    // bounded by [IDLE_MIN_SPEED, IDLE_MAX_SPEED]. A 60s stall gets
+    // crushed as hard as 60/MAX_IDLE_TRIMMED_S = 100× (clamped to MAX).
+    const targetSpeed = Math.max(IDLE_MIN_SPEED, idleDur / MAX_IDLE_TRIMMED_S);
+    const speed = Math.min(IDLE_MAX_SPEED, targetSpeed);
+    const trimmedDur = Math.max(0.05, idleDur / speed);
+    return {
+      rawStartS: idleStart, rawEndS: idleEnd, speed,
+      trimmedStartS: trimmedCursor, trimmedEndS: trimmedCursor + trimmedDur,
+    };
+  };
+
+  // Empty case: no anchors at all — likely an aborted run with nothing
+  // to highlight. Crush the whole thing into one fast-forward block
+  // bounded by MAX_IDLE_TRIMMED_S so we don't ship a 60s blank.
+  if (windows.length === 0) {
+    const seg = compressIdle(0, rawDurS, 0);
+    return [seg];
+  }
+
+  const active: ActiveWindow[] = windows
+    .map((w) => ({ start: Math.max(0, w.start), end: Math.min(rawDurS, w.end) }))
+    .filter((w) => w.end > w.start)
+    .sort((a, b) => a.start - b.start);
+
+  // Merge windows that overlap or sit within TRIM_MERGE_S of each other
+  // — collapses anchor clusters (click → snapshot 200ms later) into a
+  // single segment. Drops segment count significantly, which speeds up
+  // both the per-segment encode loop and the final concat.
   const merged: typeof active = [];
   for (const w of active) {
     const last = merged[merged.length - 1];
@@ -240,63 +329,23 @@ function buildTrimPlan(
 
   let cursor = 0;
   let trimmedCursor = 0;
-  let isFirstIdle = true;
   for (const w of merged) {
-    const idleBefore = w.start - cursor;
-    if (idleBefore > idleThresholdS) {
-      const cap = isFirstIdle ? 1.2 : 0.6;
-      const idleTrimmedDurS = Math.min(idleBefore / idleSpeed, cap);
-      const speed = idleBefore / Math.max(0.01, idleTrimmedDurS);
-      segments.push({
-        rawStartS: cursor,
-        rawEndS: w.start,
-        speed,
-        trimmedStartS: trimmedCursor,
-        trimmedEndS: trimmedCursor + idleTrimmedDurS,
-      });
-      trimmedCursor += idleTrimmedDurS;
-    } else if (idleBefore > 0) {
-      segments.push({
-        rawStartS: cursor,
-        rawEndS: w.start,
-        speed: 1.0,
-        trimmedStartS: trimmedCursor,
-        trimmedEndS: trimmedCursor + idleBefore,
-      });
-      trimmedCursor += idleBefore;
+    if (w.start > cursor) {
+      const idleSeg = compressIdle(cursor, w.start, trimmedCursor);
+      segments.push(idleSeg);
+      trimmedCursor = idleSeg.trimmedEndS;
     }
-    const activeDurS = w.end - w.start;
+    const activeDur = w.end - w.start;
     segments.push({
-      rawStartS: w.start,
-      rawEndS: w.end,
-      speed: 1.0,
-      trimmedStartS: trimmedCursor,
-      trimmedEndS: trimmedCursor + activeDurS,
+      rawStartS: w.start, rawEndS: w.end, speed: 1.0,
+      trimmedStartS: trimmedCursor, trimmedEndS: trimmedCursor + activeDur,
     });
-    trimmedCursor += activeDurS;
+    trimmedCursor += activeDur;
     cursor = w.end;
-    isFirstIdle = false;
   }
   if (cursor < rawDurS) {
-    const tailDur = rawDurS - cursor;
-    if (tailDur > idleThresholdS) {
-      const trimmedTail = Math.min(0.4, tailDur / idleSpeed);
-      segments.push({
-        rawStartS: cursor,
-        rawEndS: rawDurS,
-        speed: tailDur / Math.max(0.01, trimmedTail),
-        trimmedStartS: trimmedCursor,
-        trimmedEndS: trimmedCursor + trimmedTail,
-      });
-    } else {
-      segments.push({
-        rawStartS: cursor,
-        rawEndS: rawDurS,
-        speed: 1.0,
-        trimmedStartS: trimmedCursor,
-        trimmedEndS: trimmedCursor + tailDur,
-      });
-    }
+    const tailSeg = compressIdle(cursor, rawDurS, trimmedCursor);
+    segments.push(tailSeg);
   }
   return segments;
 }
@@ -424,42 +473,84 @@ export async function editSingleVideo({
   const ttsBackend: TTSBackend = resolveBackend(voice, artifacts.plan.name);
   console.log(chalk.dim(`  voice-over: ${describeBackend(ttsBackend)}`));
 
-  // ── 2. Compute raw active windows from event + tool times. NO narration
-  //      yet — narration is generated in pass 2 once we know the final
-  //      master timeline.
-  const BORING_KINDS = new Set(["script", "wait", "navigate"]);
-  const visibleEvents = artifacts.events.filter((e) => !BORING_KINDS.has(e.kind));
-  const hasToolWindows = !!(artifacts.toolWindows && artifacts.toolWindows.length > 0);
-  const rawWindows: ActiveWindow[] = [];
-  for (const ev of visibleEvents) {
-    if (hasToolWindows && ev.kind === "intent") continue;
-    rawWindows.push({
-      start: Math.max(0, ev.startMs / 1000 - 0.1),
-      end: Math.min(rawDurS, ev.endMs / 1000 + 0.25),
-    });
-  }
-  if (artifacts.toolWindows && artifacts.toolWindows.length > 0) {
-    let trimmedSkipCount = 0;
-    for (const tw of artifacts.toolWindows) {
-      // Skip the "skip" class (browser_snapshot, ToolSearch, Read, Glob,
-      // Bash) — these are agent-thinking moments where the page sits
-      // motionless. Adding them to rawWindows tells the trim planner
-      // they're "active" and worth keeping, which produces visible
-      // pauses in the final video. Drop them so the trim planner
-      // collapses those stretches into idle gaps and removes them.
-      if (classifyTool(tw.kind) === "skip") { trimmedSkipCount++; continue; }
-      const s = Math.max(0, Math.min(rawDurS, tw.startMs / 1000));
-      const e = Math.max(s + 0.2, Math.min(rawDurS, tw.endMs / 1000));
-      rawWindows.push({ start: s, end: e });
+  // ── 2. Compute raw ANCHORS from three sources:
+  //      a) Mouse + keystroke interactions — gold-standard "user did
+  //         something" signal, captured at 30Hz inside the page itself.
+  //      b) HIGH-class tool calls (browser_click/type/navigate/etc) —
+  //         the agent's actual interactions. LOW-class tools (snapshot,
+  //         evaluate, wait_for) DO NOT anchor 1× windows; the page is
+  //         static during those, so anchoring them just kept dead air.
+  //      c) ffmpeg-detected scenechanges — catches async UI updates that
+  //         neither the agent nor a click triggered: skeleton → content
+  //         swaps, dialogs opening, route transitions, badges flashing in.
+  //
+  //      Every anchor brings KEEP_BEFORE_MS of lead-in and KEEP_AFTER_MS
+  //      of follow-through; the editor merges overlaps, keeps active
+  //      stretches at 1×, and crushes the gaps. Nothing visually
+  //      interesting is lost — we just compress provably-static dead air.
+  type Anchor = { tRaw: number; src: string };
+  const anchors: Anchor[] = [];
+  if (artifacts.interactions?.length) {
+    for (const it of artifacts.interactions) {
+      if (it.kind === "click" || it.kind === "key") {
+        anchors.push({ tRaw: it.ts / 1000, src: it.kind });
+      }
     }
-    if (trimmedSkipCount) console.log(chalk.dim(`  trimmed ${trimmedSkipCount} agent-thinking tool windows (snapshot/read/etc)`));
   }
+  if (artifacts.toolWindows?.length) {
+    for (const tw of artifacts.toolWindows) {
+      if (anchorClass(tw.kind) !== "high") continue;
+      anchors.push({ tRaw: tw.startMs / 1000, src: tw.kind });
+    }
+  }
+  // ffmpeg scenechange pass — independent of the agent's tool stream, so
+  // it catches things the agent was passive for (a skeleton → content
+  // transition the page made on its own). Failure is benign; we
+  // continue with interaction + tool anchors only.
+  console.log(chalk.dim(`  detecting scenechanges (threshold=${SCENECHANGE_THRESHOLD})…`));
+  const sceneChanges = await detectScenechanges(stagedRaw, SCENECHANGE_THRESHOLD).catch(() => [] as number[]);
+  for (const t of sceneChanges) anchors.push({ tRaw: t, src: "scenechange" });
+  anchors.sort((a, b) => a.tRaw - b.tRaw);
+
+  // Fallback: zero anchors (no interactions, no high tools, no scenechanges)
+  // — this is unusual (probably an aborted goal) but we need to anchor
+  // something so the run shows the page rather than pure fast-forward.
+  // Use the goal intent events as last-resort anchors.
+  if (anchors.length === 0) {
+    for (const ev of artifacts.events) {
+      if (ev.kind === "intent") anchors.push({ tRaw: ev.startMs / 1000, src: "intent-fallback" });
+    }
+  }
+
+  const keepBeforeS = KEEP_BEFORE_MS / 1000;
+  const keepAfterS = KEEP_AFTER_MS / 1000;
+  const rawWindows: ActiveWindow[] = anchors.map((a) => ({
+    start: Math.max(0, a.tRaw - keepBeforeS),
+    end: Math.min(rawDurS, a.tRaw + keepAfterS),
+  }));
+
+  const anchorBreakdown: Record<string, number> = {};
+  for (const a of anchors) anchorBreakdown[a.src] = (anchorBreakdown[a.src] ?? 0) + 1;
+  const breakdownStr = Object.entries(anchorBreakdown).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(" ");
+  console.log(chalk.dim(`  anchors: ${anchors.length} (${breakdownStr || "(none)"})`));
 
   // ── 3. Build trim plan + render master. After this we know `masterDurS`.
   const plan = buildTrimPlan(rawDurS, rawWindows);
   const masterMp4Rel = "master.mp4";
   const masterMp4 = path.join(publicDir, masterMp4Rel);
-  console.log(chalk.dim(`  trimming idle stretches (plan has ${plan.length} segments)…`));
+  // Stats so the operator can see what the compressor did.
+  let idleRaw = 0, idleTrimmed = 0, activeKept = 0, maxIdleSpeed = 1;
+  for (const seg of plan) {
+    const rawDur = seg.rawEndS - seg.rawStartS;
+    const trimDur = seg.trimmedEndS - seg.trimmedStartS;
+    if (seg.speed > 1.01) {
+      idleRaw += rawDur; idleTrimmed += trimDur;
+      if (seg.speed > maxIdleSpeed) maxIdleSpeed = seg.speed;
+    } else {
+      activeKept += rawDur;
+    }
+  }
+  console.log(chalk.dim(`  trim plan: ${plan.length} segments · ${activeKept.toFixed(1)}s active @ 1× kept · ${idleRaw.toFixed(1)}s idle → ${idleTrimmed.toFixed(1)}s (max ${maxIdleSpeed.toFixed(1)}×)`));
   await renderTrimmedMaster(stagedRaw, masterMp4, plan);
   const masterDurS = await ffprobeDuration(masterMp4);
   console.log(chalk.dim(`  master: ${masterDurS.toFixed(1)}s (from ${rawDurS.toFixed(1)}s raw)`));
