@@ -73,6 +73,11 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Resolve the PR's HEAD so the working tree (and any pre-tik-test
+          # build/install steps) operate on the PR's code, not main's.
+          # Matters for workflow_dispatch (default ref = workflow branch).
+          ref: ${{ github.event.pull_request.head.sha || (github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', github.event.inputs.pr_number)) || '' }}
 
       - name: Wait for Vercel Preview deployment
         id: vercel

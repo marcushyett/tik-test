@@ -49,6 +49,16 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_dispatch defaults to checking out the workflow's branch
+          # (usually main) — but we need the PR's HEAD on disk so the bundled
+          # taskpad's `python3 -m http.server` (spawned via tiktest.md's
+          # start: directive) serves the PR's index.html, not main's. The
+          # expression covers all three triggers: pull_request uses the PR
+          # head sha directly, workflow_dispatch resolves the typed pr_number
+          # to refs/pull/N/head, and deployment_status falls through to
+          # checkout's default (which already equals the deployment SHA).
+          ref: ${{ github.event.pull_request.head.sha || (github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', github.event.inputs.pr_number)) || '' }}
 
       - uses: ./
         with:

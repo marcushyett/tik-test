@@ -73,6 +73,13 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Resolve the PR's HEAD so `npm ci` + the spawned dev server both
+          # operate on the PR's code, not the workflow branch's. Without
+          # this, workflow_dispatch (which defaults to the dispatched
+          # branch — usually main) would silently serve the wrong build,
+          # and the agent would burn its budget hunting for missing UI.
+          ref: ${{ github.event.pull_request.head.sha || (github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', github.event.inputs.pr_number)) || '' }}
 
       # Optional: install dependencies BEFORE tik-test so the start command
       # boots faster (otherwise tik-test installs them on first `npm run dev`,

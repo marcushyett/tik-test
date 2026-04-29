@@ -41,6 +41,23 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
   if (opts.skipClone) {
     workDir = process.cwd();
     console.log(chalk.dim(`  using current directory: ${workDir}`));
+    // Defense in depth: --skip-clone trusts the caller (usually a GitHub Actions
+    // workflow) to have already checked out the PR's HEAD. If the workflow was
+    // dispatched against a different ref (e.g. workflow_dispatch defaulting to
+    // main), we'd silently serve the wrong index.html and the agent would burn
+    // its budget hunting for missing UI. Refuse with an actionable error.
+    const cwdSha = await getCwdSha(workDir);
+    if (cwdSha && meta.headSha && cwdSha !== meta.headSha) {
+      throw new Error(
+        `--skip-clone is set, but the working tree at ${workDir} is at ${cwdSha.slice(0, 7)} ` +
+        `while PR #${ref.number}'s head is ${meta.headSha.slice(0, 7)}.\n\n` +
+        `Fix: set actions/checkout's 'ref:' input so the PR's HEAD lands on disk:\n\n` +
+        `    - uses: actions/checkout@v4\n` +
+        `      with:\n` +
+        `        ref: \${{ github.event.pull_request.head.sha || (github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', github.event.inputs.pr_number)) || '' }}\n\n` +
+        `Or drop --skip-clone to let tik-test clone the PR fresh.`
+      );
+    }
   } else {
     const tmp = await mkdtemp(path.join(os.tmpdir(), `tik-test-pr-${ref.number}-`));
     workDir = tmp;
@@ -284,6 +301,7 @@ interface PRMeta {
   title: string;
   body: string;
   headRef: string;
+  headSha: string;
   headRepo: string;
   previewUrl?: string;
   /** Human-authored PR comments joined as plain text, already filtered to
@@ -295,7 +313,7 @@ async function fetchPRMeta(ref: PRRef): Promise<PRMeta> {
   const raw = await ghOrThrow([
     "pr", "view", String(ref.number),
     "--repo", `${ref.owner}/${ref.repo}`,
-    "--json", "title,body,headRefName,headRepositoryOwner,headRepository,comments",
+    "--json", "title,body,headRefName,headRefOid,headRepositoryOwner,headRepository,comments",
   ]);
   const data = JSON.parse(raw);
   const headRepo = `${data.headRepositoryOwner?.login ?? ref.owner}/${data.headRepository?.name ?? ref.repo}`;
@@ -321,10 +339,23 @@ async function fetchPRMeta(ref: PRRef): Promise<PRMeta> {
     title: data.title ?? "",
     body: data.body ?? "",
     headRef: data.headRefName ?? "",
+    headSha: data.headRefOid ?? "",
     headRepo,
     previewUrl,
     comments: commentsText,
   };
+}
+
+/** Resolve the SHA at HEAD in `cwd`. Returns null if cwd isn't a git repo or
+ *  rev-parse fails — caller should treat that as "skip the SHA check". */
+async function getCwdSha(cwd: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn("git", ["rev-parse", "HEAD"], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout?.on("data", (d) => { out += d.toString(); });
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => resolve(code === 0 ? out.trim() : null));
+  });
 }
 
 /**

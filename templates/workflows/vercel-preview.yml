@@ -80,6 +80,12 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Resolve the PR's HEAD so any prebuild steps and the on-disk
+          # tiktest.md the action reads come from the PR, not the workflow
+          # branch. Matters for workflow_dispatch, which defaults to the
+          # dispatched branch (usually main).
+          ref: ${{ github.event.pull_request.head.sha || (github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', github.event.inputs.pr_number)) || '' }}
 
       - name: Wait for Vercel Preview deployment
         id: vercel

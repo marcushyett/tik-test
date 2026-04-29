@@ -114,6 +114,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Resolve the PR's HEAD so migrations, seeds, and the spawned app
+          # all run against the PR's code. Without this, workflow_dispatch
+          # defaults to the dispatched branch (usually main) and you'd boot
+          # the wrong app.
+          ref: ${{ github.event.pull_request.head.sha || (github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', github.event.inputs.pr_number)) || '' }}
 
       - uses: actions/setup-node@v4
         with:
