@@ -33,16 +33,26 @@ Set up tik-test (https://github.com/marcushyett/tik-test — 45s video reviews o
 6. Open a PR so the workflow self-tests on the change you just made.
 ````
 
-**Install the Claude Code plugin** — records a walkthrough of whatever you just shipped, locally. Open Claude Code in your project, paste:
+**Install the Claude Code plugin** — records a walkthrough of whatever you just shipped, locally.
+
+Slash commands have to be typed by you (Claude can't invoke them from inside a prompt). Open Claude Code in your project and run these three yourself, one at a time:
+
+```
+/plugin marketplace add marcushyett/tik-test
+/plugin install tiktest@tiktest
+/reload-plugins
+```
+
+Then paste this prompt so Claude finishes the wiring:
 
 ````
-Install the tik-test Claude Code plugin and set it up for this project:
-1. Run /plugin marketplace add marcushyett/tik-test
-2. Run /plugin install tiktest@tiktest
-3. Run /reload-plugins
-4. Verify ffmpeg, playwright chromium, and `npm i -g tik-test` are installed — fix what's missing for my OS.
-5. Run /tiktest:setup to scaffold tiktest.md for this repo, asking me for anything you can't infer.
-6. Tell me how to invoke /tiktest:run (full video) and /tiktest:quick (checklist only) after I ship a feature.
+The tik-test Claude Code plugin is now installed. Finish setting it up for this project:
+1. Verify the plugin's runtime prereqs are present and fix what's missing for my OS:
+   - `ffmpeg` on PATH (`brew install ffmpeg` on macOS, `sudo apt install ffmpeg` on Linux)
+   - Playwright Chromium (`npx playwright install chromium`)
+   - `tik-test` CLI globally (`npm i -g tik-test`)
+2. If a `tiktest.md` already exists at repo root, summarise it and ask me whether to keep, expand, or replace it before doing anything destructive. Otherwise run `/tiktest:setup` and ask me for anything you can't infer (project name, dev-server start command, login/auth flow, key user paths to record).
+3. Tell me how to invoke `/tiktest:run` (full video, MP4 to Desktop) and `/tiktest:quick` (checklist only, no video) when I ship a feature, including the optional URL / focus-hint argument forms.
 ````
 
 ---
