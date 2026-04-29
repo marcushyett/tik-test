@@ -8,9 +8,20 @@ const PLAN_PROMPT = `You are generating a GOAL-BASED test plan for a web app. An
 
 **THE KEY OBJECTIVE**: show off the new feature working, OR surface that it's broken. That's it. Your plan either gives the reviewer confidence the feature ships, or shows them why it shouldn't. Anything that doesn't serve that is dead weight — cut it.
 
+**FIRST: decide if this PR has ANY chance of affecting user-facing behaviour.** Read the PR title, description, comments, and diff. The bar is low — anything that could plausibly affect what a user sees or does on the app should run a regression pass on the affected UI. Specifically:
+- A backend endpoint, query, or data-shape change → run a regression on a UI surface that consumes it (e.g. the screen that lists those records, the form that submits to that endpoint).
+- A shared util / config / build setting that the app imports → run a smoke pass on a representative UI surface.
+- A pure-docs change (README/CHANGELOG/.md), lockfile-only update with no app code, license / .gitignore / editor config / CI workflow YAML edit, or an unrelated subdirectory of a monorepo this app doesn't import from → genuine no-op. SKIP.
+
+When (and ONLY when) the change is a genuine no-op, return: \`{ "noOp": true, "noOpReason": "<short reason, e.g. 'only README + lockfile changed'>" }\` — the other fields can be omitted. Default to running a plan if there's any plausible UI impact; do NOT skip just because the diff doesn't touch \`*.tsx\`. Backend changes that could break the UI they power are exactly the case we want regression tests for.
+
 Output ONLY a single JSON object (no prose, no markdown fences):
 
 {
+  "noOp": boolean,               // true when the change cannot affect user-facing behaviour (see above)
+  "noOpReason": string,          // when noOp=true, a short reason that names the change shape
+
+  // The fields below are required when noOp=false; omit them when noOp=true.
   "name": string,
   "summary": string,
   "startUrl": string,            // MUST equal Context's Target URL exactly — preview root, no sub-path
@@ -85,6 +96,20 @@ export async function generatePlan(cfg: Config): Promise<TestPlan> {
 }
 
 function normalize(plan: TestPlan, cfg: Config): TestPlan {
+  // No-op verdict: plan generator decided the diff has no chance of
+  // affecting user-facing behaviour. Trust the LLM's call here — pr.ts
+  // skips cleanly with a "skipped" comment + neutral check-run instead
+  // of inventing a goal against an unrelated change.
+  if (plan.noOp) {
+    return {
+      name: plan.name || cfg.name || "tik-test (skipped — no-op)",
+      summary: plan.summary || "",
+      startUrl: plan.startUrl || cfg.url,
+      viewport: plan.viewport || cfg.viewport || { width: 1280, height: 800 },
+      noOp: true,
+      noOpReason: plan.noOpReason?.trim() || "no user-facing impact",
+    };
+  }
   const normalized: TestPlan = {
     name: plan.name || cfg.name || "Feature review",
     summary: plan.summary || "",

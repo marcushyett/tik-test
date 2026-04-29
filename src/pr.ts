@@ -25,7 +25,6 @@ export interface PROptions {
   requirePass?: boolean;     // exit non-zero if any step failed (CI gating)
   review?: "none" | "approve-on-pass" | "request-changes-on-fail" | "always"; // post a formal PR review
   strictConfig?: boolean;    // refuse the legacy CLAUDE.md / bare README fallbacks; require tiktest.md
-  skipNoUi?: boolean;        // exit cleanly with a "no UI surface" comment when the diff has no UI files
 }
 
 export async function runForPR(prInput: string, opts: PROptions): Promise<void> {
@@ -145,31 +144,6 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
     }
   }
 
-  // No-UI-surface skip (Issue #5 in the consumer setup-failure report).
-  // CI-only PRs (workflow + tiktest.md) have nothing for the agent to
-  // exercise; running a review against them produces a fabricated goal
-  // and a meaningless red CI check. Detect this case from the diff and
-  // bail cleanly with a comment so the workflow PR doesn't turn red.
-  if (opts.skipNoUi && cfg.diff) {
-    const files = extractFilesFromDiff(cfg.diff);
-    const uiFiles = files.filter(isUiSurface);
-    if (files.length > 0 && uiFiles.length === 0) {
-      const preview = files.slice(0, 4).join(", ") + (files.length > 4 ? `, …+${files.length - 4} more` : "");
-      console.log(chalk.yellow(`  no UI surface in this diff (${files.length} files: ${preview}) — skipping review`));
-      if (!opts.skipComment) {
-        await postSkipComment(ref, [
-          `<!-- tik-test-skip:no-ui:v1 -->`,
-          `### tik-test skipped — no UI surface in diff`,
-          ``,
-          `This PR touches ${files.length} file${files.length === 1 ? "" : "s"}, none of which look like a user-facing surface (no \`app/\`, \`src/\`, \`pages/\`, \`components/\`, or \`.html\`/\`.tsx\`/\`.css\`/etc.). Skipping to keep the review meaningful.`,
-          ``,
-          `To force a review anyway, trigger the workflow manually via Actions → tik-test review → Run workflow, or pass the \`tik-test-force\` PR label (TODO).`,
-        ].join("\n"));
-      }
-      return;
-    }
-  }
-
   // If URL still missing, bail with guidance.
   if (!cfg.url) {
     throw new Error(
@@ -202,6 +176,36 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
   try {
     console.log(chalk.bold("\n1/3  generating test plan"));
     const plan = await generatePlan(cfg);
+
+    // The plan generator decides on every run whether the diff has any
+    // chance of affecting user-facing behaviour. When it returns
+    // `noOp: true`, the change is a genuine no-op (pure docs, lockfile-
+    // only, etc) and there's nothing for the agent to drive — skip
+    // cleanly. The skip is VISIBLE: a dedicated comment is upserted on
+    // the PR and a separate `tik-test` check-run is created with
+    // `conclusion: skipped` so reviewers can tell at a glance the run
+    // was deliberately skipped, not silently passed.
+    if (plan.noOp) {
+      const reason = plan.noOpReason || "no user-facing impact";
+      console.log(chalk.yellow(`  plan generator declared no-op: ${reason} — skipping review cleanly`));
+      if (!opts.skipComment) {
+        await postSkipComment(ref, [
+          `<!-- tik-test-skip:no-op:v1 -->`,
+          `### tik-test skipped — ${reason}`,
+          ``,
+          `The plan generator looked at this PR's full base...HEAD diff and concluded the change has no chance of affecting user-facing behaviour. No video, no checklist, no formal review.`,
+          ``,
+          `If you think tik-test should have run anyway:`,
+          `- Trigger it manually via **Actions → tik-test review → Run workflow** with this PR number.`,
+          `- Or add a "what to test" note to the PR description that names the surface to exercise.`,
+          ``,
+          `_Run at ${new Date().toISOString()}._`,
+        ].join("\n"));
+        await postSkippedCheckRun(ref, meta.headSha, reason).catch(() => {});
+      }
+      return;
+    }
+
     // Belt-and-suspenders: force startUrl back to the configured preview root
     // even if Claude appended a sub-path. The plan prompt forbids sub-path
     // startUrls, but we enforce it at runtime too so a drifted prompt can't
@@ -223,6 +227,7 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
       comments: cfg.comments,
       prTitle: meta.title,
       prBody: meta.body,
+      expectedSignInButton: cfg.expectedSignInButton,
     });
     const failed = artifacts.events.filter((e) => e.outcome === "failure").length;
     console.log(chalk.green(`     ✓ ${artifacts.events.length - failed}/${artifacts.events.length} passed`));
@@ -707,6 +712,14 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
     ? buildChecklistMarkdown(data.checklist)
     : "";
 
+  // Run timestamp surfaced in the rendered body (in addition to the
+  // `createdAt` field inside the marker payload) so reviewers can see at
+  // a glance whether the comment is stale, without inspecting the HTML
+  // metadata block. GitHub does NOT update `comments.created_at` /
+  // `comments.updated_at` consistently across upserts on PR comments, so
+  // showing the run time here is the most reliable cue.
+  const runStamp = new Date().toISOString();
+
   const body = [
     marker,
     ``,
@@ -722,7 +735,7 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
     ``,
     checklistMd,
     `---`,
-    `Generated by [tik-test](https://github.com/marcushyett/tik-test) — automated AI test review. Re-run with \`tik-test pr ${ref.number}\`.`,
+    `Generated by [tik-test](https://github.com/marcushyett/tik-test) at \`${runStamp}\` — automated AI test review.`,
   ].filter(Boolean).join("\n");
 
   await ghOrThrow([
@@ -771,6 +784,7 @@ async function postPRChecklistComment(
     ? buildChecklistMarkdown(data.checklist)
     : "_No per-check breakdown available — checklist synthesis returned empty._\n";
 
+  const runStamp = new Date().toISOString();
   const body = [
     `### tik-test review — ${status} (checks only)`,
     ``,
@@ -778,7 +792,7 @@ async function postPRChecklistComment(
     ``,
     checklistMd,
     `---`,
-    `Generated by [tik-test](https://github.com/marcushyett/tik-test) in **\`no-video\`** mode — same planning + agent run as a video review, just without the MP4. Re-run with \`tik-test pr ${ref.number}\` for the full reel.`,
+    `Generated by [tik-test](https://github.com/marcushyett/tik-test) at \`${runStamp}\` in **\`no-video\`** mode — same planning + agent run as a video review, just without the MP4.`,
   ].join("\n");
 
   await ghOrThrow([
@@ -833,31 +847,80 @@ async function maybePostFormalReview(
   else console.log(chalk.yellow(`     ! couldn't post review (missing pull-requests:write perm?)`));
 }
 
-// ── No-UI-surface skip helpers ────────────────────────────────────
-// A diff that touches only `.github/`, `*.md`, lockfiles, etc. has
-// nothing for the agent to drive. Detect that from the diff's `diff
-// --git a/<path>` headers (no extra API call needed) and bail before
-// the plan call so the workflow PR doesn't waste tokens on a
-// fabricated review.
+// ── Skip helpers ─────────────────────────────────────────────────
+// Whether the diff is a no-op is decided by the LLM during plan
+// generation (see PLAN_PROMPT in src/plan.ts). When it returns
+// `noOp: true`, runForPR() upserts a single comment carrying the
+// `tik-test-skip:no-op:v1` marker and creates a separate `tik-test`
+// check-run with conclusion=skipped so the PR shows an explicit
+// "skipped" status instead of a misleading "passed" green tick.
 
-/** A path counts as "UI surface" if it's under a conventional UI dir
- *  OR has a UI file extension. Both cases are independently strong
- *  signals — `.tsx` outside `src/` (e.g. in `examples/`) still counts. */
-function isUiSurface(file: string): boolean {
-  return UI_PATH_RE.test(file) || UI_EXT_RE.test(file);
-}
-const UI_PATH_RE = /(?:^|\/)(?:app|src|pages|components|views|routes|stories|examples)\//;
-const UI_EXT_RE = /\.(?:html?|tsx?|jsx?|vue|svelte|css|scss|sass|less|astro|mdx|svg)$/i;
-
-function extractFilesFromDiff(diff: string): string[] {
-  return Array.from(diff.matchAll(/^diff --git a\/(\S+)/gm), (m) => m[1]);
+/** Find the most recent comment carrying our skip marker so a follow-up
+ *  run upserts in place rather than stacking duplicate skip notices. */
+async function findSkipCommentId(ref: PRRef): Promise<number | null> {
+  const { code, stdout } = await gh([
+    "api", `repos/${ref.owner}/${ref.repo}/issues/${ref.number}/comments`,
+    "--paginate",
+    "--jq", `[.[] | select(.body | contains("<!-- tik-test-skip:no-op:v1"))] | last | .id // empty`,
+  ]);
+  if (code !== 0 || !stdout) return null;
+  const id = Number(stdout.trim());
+  return Number.isFinite(id) && id > 0 ? id : null;
 }
 
 async function postSkipComment(ref: PRRef, body: string): Promise<void> {
+  // Upsert: edit the prior skip comment in place when one exists, so the
+  // PR's user-facing comment reflects the LATEST run (not whatever a
+  // failed earlier run left behind). Falls back to a fresh comment when
+  // we can't locate one.
+  const existingId = await findSkipCommentId(ref).catch(() => null);
+  if (existingId) {
+    const r = await gh([
+      "api", "-X", "PATCH",
+      `repos/${ref.owner}/${ref.repo}/issues/comments/${existingId}`,
+      "--input", "-",
+    ], { input: JSON.stringify({ body }) });
+    if (r.code === 0) {
+      console.log(chalk.green(`     ✓ updated skip comment ${existingId} on PR #${ref.number}`));
+      return;
+    }
+    console.log(chalk.yellow(`     ! couldn't update skip comment ${existingId} (${r.stderr.split("\n")[0]}) — posting a new one`));
+  }
   await ghOrThrow([
     "pr", "comment", String(ref.number),
     "--repo", `${ref.owner}/${ref.repo}`,
     "--body-file", "-",
   ], { input: body });
-  console.log(chalk.green(`     ✓ posted no-UI-surface skip comment on PR #${ref.number}`));
+  console.log(chalk.green(`     ✓ posted skip comment on PR #${ref.number}`));
+}
+
+/** Create a separate `tik-test` check-run with `conclusion: skipped` on
+ *  the PR's head SHA. The workflow's own check-run still ends green
+ *  (the action exited 0), but this dedicated check makes the skip
+ *  visible at a glance in the PR's checks list — fixing the
+ *  "looks-like-it-passed" issue from the consumer feedback. Best-effort:
+ *  failures are logged and swallowed, so a permission shortfall doesn't
+ *  break an otherwise-clean skip. */
+async function postSkippedCheckRun(ref: PRRef, headSha: string, reason: string): Promise<void> {
+  if (!headSha) return;
+  const payload = {
+    name: "tik-test",
+    head_sha: headSha,
+    status: "completed" as const,
+    conclusion: "skipped" as const,
+    output: {
+      title: "tik-test skipped",
+      summary: reason,
+    },
+  };
+  const r = await gh([
+    "api", "-X", "POST",
+    `repos/${ref.owner}/${ref.repo}/check-runs`,
+    "--input", "-",
+  ], { input: JSON.stringify(payload) });
+  if (r.code === 0) {
+    console.log(chalk.green(`     ✓ posted skipped check-run on ${headSha.slice(0, 7)}`));
+  } else {
+    console.log(chalk.yellow(`     ! couldn't post skipped check-run (${r.stderr.split("\n")[0]})`));
+  }
 }

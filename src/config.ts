@@ -119,6 +119,12 @@ export async function loadConfig(configPath: string, urlOverride?: string): Prom
   const startMatch = START_DIRECTIVE_RE.exec(blob);
   const setup = startMatch ? `start: ${startMatch[1].trim()}` : undefined;
 
+  // Optional sign-in button hint: when the landing page has multiple
+  // sign-in options (Google, email, SSO), the runner uses this label to
+  // produce an actionable diagnostic on a failed login — naming the
+  // expected button and listing the visible buttons it actually found.
+  const expectedSignInButton = (data["signin-button"] || data["sign-in-button"] || data["login-button"] || "").trim() || undefined;
+
   return {
     url,
     name: data.name,
@@ -131,6 +137,7 @@ export async function loadConfig(configPath: string, urlOverride?: string): Prom
     projectContext: blob || undefined,
     plan,
     music: data.music,
+    expectedSignInButton,
   };
 }
 
