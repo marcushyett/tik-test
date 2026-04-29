@@ -69,6 +69,10 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
       )
+    # Long captures can OOM the standard 7 GB private-repo runner (exit
+    # 143). The action ships safe defaults (1 segment, 256 MB video cache),
+    # but a paid larger runner like `ubuntu-latest-8-cores` (~32 GB RAM)
+    # plus `render-segments: 3` halves render time on big videos.
     runs-on: ubuntu-latest
     # 45 min headroom for slow first-time installs (Playwright Chromium pull,
     # Remotion Chrome Headless Shell pull) on cold runners. Tighten to 25 if

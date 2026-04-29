@@ -80,6 +80,14 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
       )
+    # `ubuntu-latest` works for short captures, but long Playwright runs
+    # can exhaust the 7 GB envelope on the free private-repo runner and
+    # come back as exit 143 (OOM). If you see that, either:
+    #   • bump the action inputs `render-segments: 1` + `video-cache-mb: 192`
+    #     (these are already the safe defaults baked into the action), OR
+    #   • upgrade the runner: `runs-on: ubuntu-latest-8-cores` (paid GitHub
+    #     larger runner, ~32 GB RAM) and crank `render-segments: 3` for a
+    #     ~2× faster render.
     runs-on: ubuntu-latest
     # 45 min headroom for slow Vercel preview waits + cold runner installs.
     # Tighten to 25 if your previews consistently land in <2 min.

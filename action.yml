@@ -141,6 +141,41 @@ inputs:
     required: false
     default: '10'
 
+  # ── Render memory / parallelism ───────────────────────────────────────
+  # GitHub-hosted runners have limited RAM (≈7 GB on private-repo standard
+  # runners, 16 GB on the 4-core public-repo default). The defaults below
+  # are tuned to stay inside the 7 GB envelope on a long capture so the job
+  # doesn't get OOM-killed (exit code 143). Bump them on larger runners.
+  render-segments:
+    description: |
+      Number of parallel Chromium browsers used by Remotion to render the
+      video. Each segment opens a separate browser and decodes the master
+      capture in full, so memory grows roughly linearly with this number.
+      Default 1 (sequential) — safe on standard GitHub-hosted runners. Set
+      2–4 on a runner with ≥16 GB RAM for a faster render.
+    required: false
+    default: '1'
+  render-concurrency:
+    description: |
+      Concurrent Chromium tabs *per* segment. Empty (default) = auto-pick
+      based on CPU count. Lower if you see OOM kills on long captures.
+    required: false
+    default: ''
+  video-cache-mb:
+    description: |
+      Per-segment offthread video cache size, in MB. Larger = faster reads
+      from the master capture but more resident RAM. Default 256 (was 512
+      pre-v1.x, which OOM'd on long captures). Bump to 512+ on big runners.
+    required: false
+    default: '256'
+  node-max-old-space-mb:
+    description: |
+      Node.js heap cap (MB) for the tik-test process. Surfaces as a clean
+      JS heap-OOM error instead of a silent SIGTERM from the kernel OOM
+      killer. Default 4096. Set to 0 to leave Node's default in place.
+    required: false
+    default: '4096'
+
   # ── Intro / outro durations (seconds) ─────────────────────────────────
   intro-seconds:
     description: 'Title-card window. Default 4.5.'
@@ -316,6 +351,12 @@ runs:
         TIK_INTRO_TARGET_S: ${{ inputs.intro-seconds }}
         TIK_OUTRO_TARGET_S: ${{ inputs.outro-seconds }}
         TIK_OUTRO_HOLD_S: ${{ inputs.outro-hold-seconds }}
+        # Render memory / parallelism knobs — see the inputs above for the
+        # rationale and safe-default explanation.
+        TIK_RENDER_SEGMENTS: ${{ inputs.render-segments }}
+        TIK_RENDER_CONCURRENCY: ${{ inputs.render-concurrency }}
+        TIK_OFFTHREAD_VIDEO_CACHE_MB: ${{ inputs.video-cache-mb }}
+        NODE_MAX_OLD_SPACE_MB: ${{ inputs.node-max-old-space-mb }}
       run: |
         ARGS=( pr "$PR_NUMBER" --skip-clone --asset-repo "$ASSET_REPO" --review "$REVIEW_MODE" )
         [[ "$REQUIRE_PASS" == "true" ]] && ARGS+=( --require-pass )
@@ -325,4 +366,9 @@ runs:
         [[ "$SKIP_NO_UI" == "true" ]] && ARGS+=( --skip-no-ui )
         [[ -n "$PREVIEW_URL" ]] && ARGS+=( --url "$PREVIEW_URL" )
         if [[ -n "$WORKING_DIR" ]]; then cd "$WORKING_DIR"; fi
+        # Surface a clean JS heap OOM instead of a silent SIGTERM (exit 143)
+        # when Node's heap is the bottleneck. Skipped when the input is 0.
+        if [[ -n "$NODE_MAX_OLD_SPACE_MB" && "$NODE_MAX_OLD_SPACE_MB" != "0" ]]; then
+          export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=$NODE_MAX_OLD_SPACE_MB"
+        fi
         node "$ACTION_PATH/dist/cli.js" "${ARGS[@]}"

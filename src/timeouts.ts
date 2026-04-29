@@ -30,7 +30,7 @@ export interface Knob {
   /** Whether the value is integer-only (`int`) or accepts floats (`float`). */
   kind: "int" | "float";
   /** Display unit. Used in `tik-test config` output and error messages. */
-  unit: "ms" | "seconds" | "items";
+  unit: "ms" | "seconds" | "items" | "MB";
   /** One-line summary — what this knob caps. */
   description: string;
   /** What goes wrong if you set it lower than default. */
@@ -143,6 +143,30 @@ export const KNOBS: Knob[] = [
     riskHigher: ">12 overflows the safe band — items get clipped on mobile",
   },
 
+  // ── Render memory / parallelism ───────────────────────────────────────
+  // Defaults are tuned for a 7 GB private-repo GitHub-hosted runner so the
+  // job doesn't get OOM-killed (exit 143). Bump on larger runners.
+  {
+    key: "TIK_RENDER_SEGMENTS",
+    actionInput: "render-segments",
+    default: 1,
+    kind: "int",
+    unit: "items",
+    description: "Parallel Chromium browsers used by Remotion to render the video. Each opens a separate browser and decodes the master capture in full.",
+    riskLower: "1 = sequential render; safe everywhere but slower than parallel on big runners",
+    riskHigher: ">1 multiplies resident RAM by N — exit 143 (OOM kill) on the standard 7 GB runner",
+  },
+  {
+    key: "TIK_OFFTHREAD_VIDEO_CACHE_MB",
+    actionInput: "video-cache-mb",
+    default: 256,
+    kind: "int",
+    unit: "MB",
+    description: "Per-segment offthread video cache. Larger = faster reads from the master capture but more resident RAM.",
+    riskLower: "<128 = repeated re-decodes, render slows ~20-40%",
+    riskHigher: ">512 on a 7 GB runner with multiple segments → exit 143 (OOM)",
+  },
+
   // ── Intro / outro durations ───────────────────────────────────────────
   {
     key: "TIK_INTRO_TARGET_S",
@@ -237,3 +261,5 @@ export const CHECKLIST_MAX_ITEMS = resolveKnob(KNOBS_BY_KEY.get("TIK_CHECKLIST_M
 export const INTRO_TARGET_S = resolveKnob(KNOBS_BY_KEY.get("TIK_INTRO_TARGET_S")!);
 export const OUTRO_TARGET_S = resolveKnob(KNOBS_BY_KEY.get("TIK_OUTRO_TARGET_S")!);
 export const OUTRO_HOLD_S = resolveKnob(KNOBS_BY_KEY.get("TIK_OUTRO_HOLD_S")!);
+export const RENDER_SEGMENTS = resolveKnob(KNOBS_BY_KEY.get("TIK_RENDER_SEGMENTS")!);
+export const OFFTHREAD_VIDEO_CACHE_MB = resolveKnob(KNOBS_BY_KEY.get("TIK_OFFTHREAD_VIDEO_CACHE_MB")!);

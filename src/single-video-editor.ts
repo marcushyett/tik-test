@@ -13,6 +13,7 @@ import { generateChecklist } from "./checklist.js";
 import {
   MIN_CHUNK_S, MAX_BODY_SCENES,
   INTRO_TARGET_S, OUTRO_TARGET_S, OUTRO_HOLD_S,
+  RENDER_SEGMENTS, OFFTHREAD_VIDEO_CACHE_MB,
 } from "./timeouts.js";
 import type { RunArtifacts } from "./types.js";
 
@@ -680,7 +681,7 @@ export async function editSingleVideo({
   });
 
   const totalFrames = composition.durationInFrames;
-  const segmentsCfg = Math.max(1, Math.min(4, Number(process.env.TIK_RENDER_SEGMENTS) || 3));
+  const segmentsCfg = Math.max(1, Math.min(4, RENDER_SEGMENTS));
   const segments = totalFrames < 240 ? 1 : segmentsCfg;
   const perSegConcurrency = Math.max(2, Math.min(
     Number(process.env.TIK_RENDER_CONCURRENCY) || 8,
@@ -721,7 +722,11 @@ export async function editSingleVideo({
     concurrency: perSegConcurrency,
     jpegQuality: quick ? 80 : 88,
     chromiumOptions: { gl: glBackend },
-    offthreadVideoCacheSizeInBytes: 512 * 1024 * 1024,
+    // Per-segment cache. Was 512 MB hard-coded, but with N parallel
+    // segments × big captures it pushed standard CI runners (≈7 GB) over
+    // the OOM line and got SIGTERM'd (exit 143). Tunable via env now;
+    // action.yml ships a 256 MB default for CI safety.
+    offthreadVideoCacheSizeInBytes: Math.max(64, OFFTHREAD_VIDEO_CACHE_MB) * 1024 * 1024,
     videoBitrate,
     audioBitrate,
     hardwareAcceleration: "if-possible" as const,
