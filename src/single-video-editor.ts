@@ -359,7 +359,6 @@ async function renderTrimmedMaster(rawMp4: string, outMp4: string, plan: TrimSeg
         "-crf", "20",
         "-r", String(FPS),
         "-pix_fmt", "yuv420p",
-        "-vsync", "vfr",
         partPath,
       ]);
       partPaths[i] = partPath;
