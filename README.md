@@ -1,7 +1,7 @@
 
 # tiktest [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Automated TikTok-style video review of every PR.**
+**automated tiktok-style video review of every pr.**
 
 the more I shipped stuff with claude the more I realised; in the long term the most value I can add as a human is testing - finding the stuff other humans would struggle with...
 
