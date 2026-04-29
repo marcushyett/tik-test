@@ -24,6 +24,36 @@
 
 ---
 
+## Try it in under 3 minutes
+
+Copy one of these prompts into [Claude Code](https://docs.claude.com/en/docs/claude-code/setup). Claude does the wiring.
+
+**Wire it into a GitHub repo** — `cd` into your repo, open Claude Code, paste:
+
+````
+Set up tik-test (https://github.com/marcushyett/tik-test — 45s video reviews on every PR) on this repo:
+1. Read the project README, especially the "GitHub Action" section and templates/workflows/.
+2. Pick the right workflow template (local-dev / vercel-preview / staging-with-services) by inspecting this repo's package.json, framework configs, and deploy setup. Ask me if it's ambiguous.
+3. Create .github/workflows/tik-test.yml from that template, adapted for this project (build command, port, etc).
+4. Draft a tiktest.md at repo root: short app description, login (ask me for creds), risky surfaces.
+5. List the GitHub Secrets I need to add (CLAUDE_CODE_OAUTH_TOKEN required; OPENAI_API_KEY + VERCEL_AUTOMATION_BYPASS_SECRET optional) with one-line instructions on getting each.
+6. Open a PR so the workflow self-tests on the change you just made.
+````
+
+**Install the Claude Code plugin** — records a walkthrough of whatever you just shipped, locally. Open Claude Code in your project, paste:
+
+````
+Install the tik-test Claude Code plugin and set it up for this project:
+1. Run /plugin marketplace add marcushyett/tik-test
+2. Run /plugin install tiktest@tiktest
+3. Run /reload-plugins
+4. Verify ffmpeg, playwright chromium, and `npm i -g tik-test` are installed — fix what's missing for my OS.
+5. Run /tiktest:setup to scaffold tiktest.md for this repo, asking me for anything you can't infer.
+6. Tell me how to invoke /tiktest:run (full video) and /tiktest:quick (checklist only) after I ship a feature.
+````
+
+---
+
 ## The problem
 
 AI ships **20+ PRs a day** that mostly work. Where it fails is taste: awkward flows, off-brand copy, the counter-intuitive ways real users click. Catching that means dropping what you're doing, opening the PR, exercising it, then switching back. **Twenty context switches a day.**
