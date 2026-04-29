@@ -72,7 +72,7 @@ function Landing() {
           </h1>
 
           <p className="fade-up [animation-delay:120ms] mt-6 max-w-md text-balance text-base leading-relaxed text-muted-foreground">
-            Pick a repo. Swipe through the 45-second narrated videos that the open-source <Link href={REPO_URL} target="_blank" rel="noopener noreferrer" className="font-medium text-foreground underline decoration-primary/40 underline-offset-4 hover:decoration-primary">tik-test</Link> agent records on every open PR. Tap a pill, drop a note, approve or request changes — the app posts a real GitHub review on your behalf. Zero backend; your token lives in a session cookie and nowhere else.
+            Swipe through 45s video reviews of every open PR. Tap to approve.
           </p>
 
           <form
@@ -89,54 +89,31 @@ function Landing() {
             </Button>
           </form>
           <p className="fade-up [animation-delay:260ms] mt-4 font-mono text-[11px] uppercase tracking-[0.14em] text-muted-foreground/80">
-            requests the <span className="text-foreground">repo</span> scope · posts reviews as you
+            posts reviews as you · <span className="text-foreground">repo</span> scope
           </p>
         </div>
 
         {/* Feature strip — understated, monospaced micro-type. */}
         <div className="fade-up [animation-delay:320ms] mt-16 grid w-full max-w-3xl grid-cols-1 gap-px overflow-hidden rounded-2xl border border-border bg-border text-[13px] sm:grid-cols-2 lg:grid-cols-4">
-          <FeatureCell title="TikTok-native nav" body="↑/↓/j/k, space, esc. Autoplay then decide." />
-          <FeatureCell title="GitHub-native review" body="Approve / Request Changes via real Reviews API." />
-          <FeatureCell title="No database" body="Just GitHub + your access token. Nothing stored." />
-          <FeatureCell title="Open source" body="MIT-licensed. Self-host, fork, or send a PR." />
+          <FeatureCell title="Swipe nav" body="↑/↓ · j/k · space" />
+          <FeatureCell title="Real reviews" body="Posts to GitHub Reviews API" />
+          <FeatureCell title="No backend" body="Token in a cookie. That's it." />
+          <FeatureCell title="Open source" body="MIT. Fork it." />
         </div>
       </section>
 
-      <footer className="border-t border-border/60 px-6 py-8 sm:px-8">
-        <div className="mx-auto flex w-full max-w-3xl flex-col items-center justify-between gap-4 text-xs text-muted-foreground sm:flex-row">
-          <div className="flex items-center gap-3">
-            <PlayCircle className="h-4 w-4 text-primary" />
-            <span className="font-mono uppercase tracking-[0.14em]">
-              tik-test · open source · MIT
-            </span>
-          </div>
-          <div className="flex items-center gap-4">
-            <Link
-              href={REPO_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 hover:text-foreground"
-            >
-              <Github className="h-3.5 w-3.5" />
-              marcushyett/tik-test
-            </Link>
-            <Link
-              href={`${REPO_URL}/blob/main/LICENSE`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-foreground"
-            >
-              License
-            </Link>
-            <Link
-              href={`${REPO_URL}#readme`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="hover:text-foreground"
-            >
-              Docs
-            </Link>
-          </div>
+      <footer className="border-t border-border/60 px-6 py-6 sm:px-8">
+        <div className="mx-auto flex w-full max-w-3xl items-center justify-between text-xs text-muted-foreground">
+          <span className="font-mono uppercase tracking-[0.14em]">open source · MIT</span>
+          <Link
+            href={REPO_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 hover:text-foreground"
+          >
+            <Github className="h-3.5 w-3.5" />
+            marcushyett/tik-test
+          </Link>
         </div>
       </footer>
       <Script src="https://buttons.github.io/buttons.js" strategy="afterInteractive" />
