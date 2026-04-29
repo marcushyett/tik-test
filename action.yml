@@ -130,6 +130,10 @@ inputs:
     description: 'Hard ceiling on body scenes after coalescing. Default 12. Above ~14 risks narration timeout (also bump narration-timeout).'
     required: false
     default: '12'
+  trim-merge-seconds:
+    description: 'Tolerance for collapsing adjacent active windows in the trim planner. Tools that fire within this many seconds of each other (e.g. browser_click → browser_snapshot) merge into one segment. Big lever on render time. Default 1.5. Below 0.5 = same too-many-segments problem the default fixes; above 3 = distinct beats fuse and pacing suffers.'
+    required: false
+    default: '1.5'
 
   # ── Outro checklist sizing ────────────────────────────────────────────
   checklist-min-items:
@@ -342,6 +346,7 @@ runs:
         # Non-timeout knobs pass through as-is (already in their target unit).
         TIK_MAX_GOALS: ${{ inputs.max-goals }}
         TIK_MIN_CHUNK_S: ${{ inputs.min-chunk-seconds }}
+        TIK_TRIM_MERGE_S: ${{ inputs.trim-merge-seconds }}
         # quick-and-dirty preset overrides max-body-scenes (6) and forces the
         # render scale down to 0.5×. Otherwise the user's explicit input wins.
         TIK_MAX_BODY_SCENES: ${{ inputs.quick-and-dirty == 'true' && '6' || inputs.max-body-scenes }}

@@ -111,6 +111,16 @@ export const KNOBS: Knob[] = [
     riskHigher: ">6s = scenes feel sluggish, captions repeat themselves on screen",
   },
   {
+    key: "TIK_TRIM_MERGE_S",
+    actionInput: "trim-merge-seconds",
+    default: 1.5,
+    kind: "float",
+    unit: "seconds",
+    description: "Tolerance for collapsing adjacent active windows in the trim planner. Tools that fire within this many seconds of each other (e.g. browser_click → browser_snapshot) merge into one segment, dropping the cuts between them. Big lever on render time — the master ffmpeg pass scales with segment count.",
+    riskLower: "<0.5s = same dozens-of-segments problem the default fixes; ffmpeg encode goes from minutes to tens of minutes",
+    riskHigher: ">3s = legitimately distinct beats fuse (click→wait→click reads as one beat); narration loses pacing",
+  },
+  {
     key: "TIK_MAX_BODY_SCENES",
     actionInput: "max-body-scenes",
     default: 12,
@@ -255,6 +265,7 @@ export const AGENT_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_AGENT_TIMEOUT_
 export const NARRATION_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_NARRATION_TIMEOUT_MS")!);
 export const FEATURE_FINDER_TIMEOUT_MS = resolveKnob(KNOBS_BY_KEY.get("TIK_FEATURE_FINDER_TIMEOUT_MS")!);
 export const MIN_CHUNK_S = resolveKnob(KNOBS_BY_KEY.get("TIK_MIN_CHUNK_S")!);
+export const TRIM_MERGE_S = resolveKnob(KNOBS_BY_KEY.get("TIK_TRIM_MERGE_S")!);
 export const MAX_BODY_SCENES = resolveKnob(KNOBS_BY_KEY.get("TIK_MAX_BODY_SCENES")!);
 export const CHECKLIST_MIN_ITEMS = resolveKnob(KNOBS_BY_KEY.get("TIK_CHECKLIST_MIN_ITEMS")!);
 export const CHECKLIST_MAX_ITEMS = resolveKnob(KNOBS_BY_KEY.get("TIK_CHECKLIST_MAX_ITEMS")!);

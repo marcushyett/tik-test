@@ -11,7 +11,7 @@ import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.j
 import { generateTimedNarration, type NarrationScene } from "./timed-narration.js";
 import { generateChecklist } from "./checklist.js";
 import {
-  MIN_CHUNK_S, MAX_BODY_SCENES,
+  MIN_CHUNK_S, MAX_BODY_SCENES, TRIM_MERGE_S,
   INTRO_TARGET_S, OUTRO_TARGET_S, OUTRO_HOLD_S,
   RENDER_SEGMENTS, OFFTHREAD_VIDEO_CACHE_MB,
 } from "./timeouts.js";
@@ -222,11 +222,20 @@ function buildTrimPlan(
     end: Math.min(rawDurS, w.end),
   }));
   active.sort((a, b) => a.start - b.start);
+  // Merge tolerance debounces the segment cuts: tools that fire within
+  // TRIM_MERGE_S of each other (e.g. browser_click → browser_snapshot ~200ms
+  // later) collapse into a single active window, eliminating the cut + tiny
+  // idle-gap segment between them. Big lever on render time — the master
+  // ffmpeg pass scales linearly with segment count, and cutting from 73 to
+  // ~25 segments cuts the master encode roughly in half.
   const merged: typeof active = [];
   for (const w of active) {
     const last = merged[merged.length - 1];
-    if (last && w.start <= last.end + 0.05) last.end = Math.max(last.end, w.end);
+    if (last && w.start <= last.end + TRIM_MERGE_S) last.end = Math.max(last.end, w.end);
     else merged.push({ ...w });
+  }
+  if (active.length > merged.length) {
+    console.log(chalk.dim(`  merged ${active.length} active windows → ${merged.length} (TIK_TRIM_MERGE_S=${TRIM_MERGE_S}s)`));
   }
 
   let cursor = 0;
@@ -322,7 +331,12 @@ async function renderTrimmedMaster(rawMp4: string, outMp4: string, plan: TrimSeg
     "-filter_complex", filter,
     "-map", "[out]",
     "-c:v", "libx264",
-    "-preset", "veryfast",
+    // ultrafast for the master trim pass: this is an intermediate
+    // cleaned up after Remotion composes the final video, so we
+    // don't pay the bandwidth cost of a slightly larger file but DO
+    // get ~30% faster encoding. The final user-visible render is
+    // Remotion's own pipeline, not this ffmpeg pass.
+    "-preset", "ultrafast",
     "-crf", "20",
     "-r", String(FPS),
     "-pix_fmt", "yuv420p",
