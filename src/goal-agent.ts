@@ -38,10 +38,13 @@ export interface GoalResult {
   actions: Array<{ kind: string; target?: string; value?: string; result?: string; ok: boolean; error?: string; startedAt?: number }>;
 }
 
-// Generous safety ceilings — not budgets the agent works inside. The agent
-// should test as fast and thoroughly as possible; the editor trims the raw
-// video down to the highlight reel. These only catch runaway sessions.
-const MAX_TURNS_PER_GOAL = 80;
+// Safety ceiling — not a budget the agent works inside. With the
+// flight recorder, content-aware video compression, and aggressive
+// bug-finding guidance, a healthy goal lands well under this. Hitting
+// 40 is a strong "stuck loop" signal — kill the run rather than let it
+// drag the rest of the suite. Was 80 (overly generous; agents that
+// looped on transient UI burned the entire ceiling).
+const MAX_TURNS_PER_GOAL = 40;
 // Per-goal CLI runtime ceiling. Configurable via TIK_AGENT_TIMEOUT_MS env
 // (or `agent-timeout` action input). Default 10 min. See src/timeouts.ts.
 const CLAUDE_TIMEOUT_MS = AGENT_TIMEOUT_MS;
