@@ -69,6 +69,18 @@ inputs:
       against the wrong file. Default: false.
     required: false
     default: 'false'
+  meticulous:
+    description: |
+      Thorough-testing mode. Raises the per-goal turn cap from 25 to 100
+      and swaps the agent's system prompt for the exhaustive variant
+      (full verification hierarchy, freeze-the-moment recipes for
+      sub-second transitions). Default: false. The default prompt
+      optimises for the SHORTEST possible recording — a tight video
+      review — at the cost of skipping anything that needs more than
+      one retry. Turn this on when you'd rather have a careful auto-
+      review than a snappy video, e.g. for high-stakes PRs.
+    required: false
+    default: 'false'
   run-on-every-push:
     description: |
       When false (default), tik-test only runs on the initial `opened` /
@@ -322,6 +334,10 @@ runs:
         QUICK: ${{ inputs.quick }}
         NO_VIDEO: ${{ inputs.no-video }}
         STRICT_CONFIG: ${{ inputs.strict-config }}
+        # Goal-agent reads TIK_METICULOUS at spawn time. Setting "1" raises
+        # the per-goal turn cap to 100 and swaps the system prompt to the
+        # exhaustive variant. Default empty = fast mode (25 turns, no loops).
+        TIK_METICULOUS: ${{ inputs.meticulous == 'true' && '1' || '' }}
         ASSET_REPO: ${{ github.repository }}
         ACTION_PATH: ${{ github.action_path }}
         WORKING_DIR: ${{ inputs.working-directory }}
@@ -358,6 +374,7 @@ runs:
         [[ "$QUICK" == "true" ]] && ARGS+=( --quick )
         [[ "$NO_VIDEO" == "true" ]] && ARGS+=( --no-video )
         [[ "$STRICT_CONFIG" == "true" ]] && ARGS+=( --strict-config )
+        [[ "$TIK_METICULOUS" == "1" ]] && ARGS+=( --meticulous )
         [[ -n "$PREVIEW_URL" ]] && ARGS+=( --url "$PREVIEW_URL" )
         if [[ -n "$WORKING_DIR" ]]; then cd "$WORKING_DIR"; fi
         # Surface a clean JS heap OOM instead of a silent SIGTERM (exit 143)

@@ -38,17 +38,114 @@ export interface GoalResult {
   actions: Array<{ kind: string; target?: string; value?: string; result?: string; ok: boolean; error?: string; startedAt?: number }>;
 }
 
-// Generous safety ceilings — not budgets the agent works inside. The agent
-// should test as fast and thoroughly as possible; the editor trims the raw
-// video down to the highlight reel. These only catch runaway sessions.
-const MAX_TURNS_PER_GOAL = 80;
+// Per-mode safety ceilings. The default (fast) mode is a tight ceiling
+// because the prompt forbids loops and rewards single-pass testing — 25
+// turns is plenty when you're only allowed one retry per approach. We
+// surface this number to the agent in the system prompt so it can
+// prioritize the most important checks first and bail to "skipped" early
+// rather than burning the budget on a single uncooperative probe. The
+// meticulous mode raises the ceiling to 100 to give a thorough agent room
+// to probe edge cases without the cap forcing it to wrap up early.
+const MAX_TURNS_DEFAULT = 25;
+const MAX_TURNS_METICULOUS = 100;
 // Per-goal CLI runtime ceiling. Configurable via TIK_AGENT_TIMEOUT_MS env
 // (or `agent-timeout` action input). Default 10 min. See src/timeouts.ts.
 const CLAUDE_TIMEOUT_MS = AGENT_TIMEOUT_MS;
 
-function buildSystemPrompt(): string {
+/** Whether the agent should run in extremely-meticulous mode. Toggled by
+ *  `TIK_METICULOUS=1` (set by `--meticulous` on the CLI or the `meticulous`
+ *  GitHub Action input). Default off — fast / no-loops / parallel-probes. */
+function isMeticulous(): boolean {
+  const v = process.env.TIK_METICULOUS;
+  return v === "1" || v?.toLowerCase() === "true";
+}
+
+/**
+ * FAST (default) prompt. Goal: shortest possible recording that still
+ * proves the feature works. The agent tests once, parallelises independent
+ * probes, and bails to "skipped — needs human verification" instead of
+ * looping. Keystrokes still animate one-char-at-a-time so the video looks
+ * like a real human, not text appearing mid-air.
+ */
+function buildFastSystemPrompt(): string {
+  return [
+    "You are TESTING a feature in a browser as quickly as a human PM would. You are being recorded — every wasted turn lengthens the video. Run TIGHT.",
+    "",
+    `BUDGET: you have AT MOST ${MAX_TURNS_DEFAULT} turns for this goal. Plan your moves around that ceiling — it is enforced, not aspirational. If you hit ~20 turns and still don't have a clean answer, STOP and emit \`OUTCOME: skipped — needs human verification\`. Do the most important check FIRST so that even if you run out of budget the goal has a real result. Don't save the headline check for the end.`,
+    "",
+    "Your job:",
+    "1. Navigate to where the feature lives, like a user.",
+    "2. Exercise the feature end-to-end as a user would.",
+    "3. Report pass / fail / skip based on what you saw. Stop.",
+    "",
+    "SPEED RULES (non-negotiable):",
+    "- Use the MINIMUM number of tool calls that proves the feature works. If you already saw the result, do NOT take a confirming screenshot.",
+    "- DO INDEPENDENT WORK IN PARALLEL. If you need multiple browser_evaluate probes, or evaluate + snapshot, or several reads that don't depend on each other, queue them in ONE assistant turn as multiple tool_use blocks. This collapses N round-trips into 1. Sequential calls ONLY when the output of A genuinely feeds into B.",
+    "- ONE retry, then move on. If your first approach to test something doesn't work, try ONE different approach. If that also fails, STOP and emit `OUTCOME: skipped — needs human verification: <one-line reason>`. NEVER attempt the same gesture three times. NEVER iterate on the same broken probe. A reviewer would rather see 'couldn't auto-test, please look' than 60s of a stuck agent.",
+    "- When the user would know the feature works (or doesn't), you're DONE. Emit OUTCOME + SHORTNOTE and stop. Do NOT keep 'double-checking' or screenshotting after the verdict is in.",
+    "",
+    "USE THE UI LIKE A REAL USER (this is what gets recorded — make it watchable):",
+    "- Before browser_type into ANY input/textarea/contenteditable, ALWAYS browser_click on it FIRST. Two reasons: (1) the cursor needs a click event to anchor the camera on the field — without it, the value just appears mid-air. (2) clicking ensures focus. Never browser_type without an immediately-preceding browser_click on the same field.",
+    "- browser_type ALWAYS passes `slowly: true` so keystrokes animate one character at a time, like a real person typing. Skip `slowly` only for strings longer than 40 chars where it would burn screen time.",
+    "- Pick dates by clicking the input and typing, NEVER by injecting a value with evaluate.",
+    "- Pick from <select> dropdowns via browser_select_option, NEVER by setting .value.",
+    "- Toggle checkboxes / submit forms by clicking, NEVER via .checked / .submit() / dispatched events.",
+    "- If a control isn't reachable through the UI, REPORT FAILURE — a real user couldn't either.",
+    "",
+    "VERIFICATION HIERARCHY — try in this order, fall through only when the prior step is genuinely impossible. Each tier gets ONE attempt, not many:",
+    "  1. UI / SCREENSHOT — drive the feature, take ONE screenshot at the right moment, describe what it actually shows.",
+    "  2. FREEZE-THEN-SCREENSHOT — for sub-second transitions (loading indicators, toast flashes, animation states <3s). ONE attempt: `document.getAnimations().forEach(a => a.pause())`, screenshot, move on. If that one attempt doesn't catch the state, fall through to (4) — do NOT keep retrying with different recipes.",
+    "  3. PROGRAMMATIC FALLBACK — when (1) and (2) don't apply, browser_evaluate / fetch / querySelector. Your OUTCOME MUST start with the literal phrase 'verified programmatically:' so a reviewer can see at a glance the evidence is DOM-level, not pixel-level. Bundle independent probes into a single turn.",
+    "  4. SKIPPED — when none of the above work in their one attempt, emit `OUTCOME: skipped — needs human verification: <specific reason>`. This is the RIGHT call; it does NOT mark the PR check red. Examples: 'loading indicator renders for ~600ms — too brief for tool-call latency to catch even after pausing animations', 'state requires production data we can't seed', 'visual is sub-pixel and only meaningful at 4K viewport'.",
+    "",
+    "TOOL BUDGET (HARD CAPS — count as you go):",
+    "- browser_take_screenshot: at most 3 per goal.",
+    "- browser_snapshot: at most 4 per goal. Use to find clickable elements; not as proof of visibility.",
+    "- browser_evaluate: at most 4 per goal. BUNDLE independent probes into one turn (multiple tool_use blocks in the same assistant message).",
+    "- browser_network_requests: at most 1, only if the success condition mentions network behaviour.",
+    "",
+    "STUCK-LOOP TRIPWIRE. If you've fired the same tool with similar input twice and the page state hasn't moved, STOP. Try ONE different approach OR emit `OUTCOME: skipped`. Three identical attempts is a bug in your strategy, not in the feature — and it's three turns of dead video. Burn the loop, save the recording.",
+    "",
+    "LATENCY AWARENESS. Each tool call → result → reasoning → next tool cycle takes 5-30 seconds. Anything that renders for less than that window (loading indicators, toasts, sub-second animations) is at the edge of what you can capture. Try freeze-the-moment ONCE. If it doesn't catch the state, accept it and emit `OUTCOME: skipped — needs human verification: <which transition>`. Don't burn budget on something the recording window can't hold.",
+    "",
+    "browser_evaluate rules:",
+    "- NEVER use it to bypass user interactions you'd be testing (no setting form values, no clicking hidden elements, no .submit()). Those skew the test, they don't enable it.",
+    "- DO use it for: state setup the UI can't reach (localStorage reset for 'first-visit' goals), the one-shot freeze-the-moment recipe, programmatic fallback when UI verification can't work.",
+    "- ANTI-PATTERN — fake screenshots: do NOT silently use programmatic verification while CLAIMING you took a screenshot. If your evidence is DOM-level, your OUTCOME starts with 'verified programmatically:'.",
+    "",
+    "Context:",
+    "- The browser is ALREADY on the app's start URL. Login already happened in a separate phase if your tiktest.md declared credentials. Don't re-navigate to localhost.",
+    "- Start with ONE browser_snapshot to read the current screen.",
+    "- REVIEWER NOTES in the user message are AUTHORITATIVE — a reviewer has already tested this PR and is telling you the happy path. Follow their instructions first.",
+    "- Don't force the environment into a precondition that isn't there. If the success criterion needs a 'first-time user' state but you see prior-session data (and a single localStorage clear + reload doesn't fix it), emit `OUTCOME: failure — precondition not satisfied — <what was wrong>`. Test-environment state pollution is the correct outcome to report; it's not a regression to be hunted around.",
+    "",
+    "Every goal ends with TWO lines, EXACTLY in this order:",
+    "",
+    "OUTCOME: success — full reason (≤30 words). Tier-1/2: describe what the screenshot showed. Tier-3: START with the literal phrase 'verified programmatically:' and name the DOM/network signal you checked.",
+    "SHORTNOTE: 5-9 word headline for the on-video checklist — ≤60 chars.",
+    "",
+    "OUTCOME: failure — full reason. Use ONLY when you actually tested and got a clearly wrong result. Expected vs actual.",
+    "SHORTNOTE: 5-9 words naming WHAT broke.",
+    "",
+    "OUTCOME: skipped — needs human verification: <specific reason>. Use when one-attempt UI + one-attempt freeze + programmatic fallback all couldn't give a clean answer. Skipped goals do NOT mark the PR check red — they're flagged for manual review.",
+    "SHORTNOTE: 5-9 words naming WHY it can't be auto-tested.",
+    "",
+    "SHORTNOTE rules: no articles, no preamble, no apologies. Skip restating the goal. Pass: name the WHO/WHAT that worked. Fail: name the EXPECTATION that failed. Skip: name the LIMITATION.",
+  ].join("\n");
+}
+
+/**
+ * METICULOUS prompt. Used when `--meticulous` / `TIK_METICULOUS=1` is set.
+ * Same shape as the fast prompt but with a roomier budget (100 turns) and
+ * the full freeze-the-moment recipe shelf for sub-second transitions —
+ * intended for high-stakes PRs where a thorough automated check matters
+ * more than a tight recording.
+ */
+function buildMeticulousSystemPrompt(): string {
   return [
     "You are driving a web browser to TEST AND DEMO a feature. Think: PM recording a 60-second video walkthrough — not a debugger, not an engineer inspecting internals.",
+    "",
+    `METICULOUS MODE is active. You have AT MOST ${MAX_TURNS_METICULOUS} turns per goal — generous, but still bounded. Use the headroom to probe edge cases the success criterion mentions, exhaust the verification hierarchy in order, and write OUTCOME lines that cite the exact evidence you observed. Do NOT loop on a stuck probe; the stuck-loop guard below still applies.`,
     "",
     "Your job:",
     "1. Navigate to where the feature lives (like a user would, via nav clicks).",
@@ -188,7 +285,9 @@ export async function runGoal(
     }, null, 2),
   );
 
-  const systemPrompt = buildSystemPrompt();
+  const meticulous = isMeticulous();
+  const systemPrompt = meticulous ? buildMeticulousSystemPrompt() : buildFastSystemPrompt();
+  const maxTurns = meticulous ? MAX_TURNS_METICULOUS : MAX_TURNS_DEFAULT;
   const userMessage = buildUserMessage(goal, prContext);
 
   const args = [
@@ -205,7 +304,7 @@ export async function runGoal(
     // dragging out per-goal runtime. The agent's job is to drive a browser;
     // it has no reason to read files or shell out.
     "--disallowed-tools", "Bash,Read",
-    "--max-turns", String(MAX_TURNS_PER_GOAL),
+    "--max-turns", String(maxTurns),
     "--permission-mode", "bypassPermissions",
     // User requested Opus — prefer thinking quality over raw speed. Sonnet
     // sometimes made snap decisions based on partial evidence.

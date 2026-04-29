@@ -33,8 +33,10 @@ program
   .option("--quick", "low-resolution draft render for quicker iteration")
   .option("--no-video", "skip render — emit only checklist + events.json (faster, no MP4)")
   .option("--vercel-bypass <secret>", "Vercel Protection Bypass secret (also: VERCEL_AUTOMATION_BYPASS_SECRET env)")
+  .option("--meticulous", "thorough mode: 100 turns per goal, exhaustive verification hierarchy. Default off (25 turns, fast/parallel/no-loops)")
   .option("--open", "start the viewer after the run completes")
   .action(async (opts) => {
+    if (opts.meticulous) process.env.TIK_METICULOUS = "1";
     const cfg = await loadConfig(opts.config, opts.url);
     if (opts.music) cfg.music = opts.music;
     const runId = `run-${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-")}`;
@@ -120,8 +122,10 @@ program
   .option("--require-pass", "exit non-zero if any test step failed (for CI gating)")
   .option("--review <mode>", "post a formal PR review: none | approve-on-pass | request-changes-on-fail | always", "request-changes-on-fail")
   .option("--strict-config", "refuse silent fallback to CLAUDE.md / bare README — require an explicit tiktest.md")
+  .option("--meticulous", "thorough mode: 100 turns per goal, exhaustive verification hierarchy. Default off (25 turns, fast/parallel/no-loops)")
   .action(async (pr, opts) => {
     const voice = opts.voice === false ? null : (opts.voice as string);
+    if (opts.meticulous) process.env.TIK_METICULOUS = "1";
     await runForPR(pr, {
       outDir: opts.outDir,
       voice,
@@ -136,6 +140,7 @@ program
       requirePass: !!opts.requirePass,
       review: opts.review,
       strictConfig: !!opts.strictConfig || process.env.TIK_STRICT_CONFIG === "1",
+      meticulous: !!opts.meticulous,
     });
   });
 

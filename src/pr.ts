@@ -25,11 +25,23 @@ export interface PROptions {
   requirePass?: boolean;     // exit non-zero if any step failed (CI gating)
   review?: "none" | "approve-on-pass" | "request-changes-on-fail" | "always"; // post a formal PR review
   strictConfig?: boolean;    // refuse the legacy CLAUDE.md / bare README fallbacks; require tiktest.md
+  /** Thorough-testing mode. Raises the per-goal turn cap to 100 and swaps
+   *  in the exhaustive system prompt. Default off — the fast prompt aims
+   *  for the shortest possible recording (25 turns, no loops, parallel
+   *  probes). Set this when you'd rather have a careful auto-review than
+   *  a snappy video. */
+  meticulous?: boolean;
 }
 
 export async function runForPR(prInput: string, opts: PROptions): Promise<void> {
+  // Mirror the option onto the env var the goal-agent reads at spawn time.
+  // Belt-and-suspenders: the CLI also sets this before calling us; doing it
+  // here too means programmatic callers (plugin, tests) get the same wiring
+  // without having to set the env var by hand.
+  if (opts.meticulous) process.env.TIK_METICULOUS = "1";
   const ref = await resolveRef(prInput);
   console.log(chalk.bold(`\n▸ tik-test pr  ${chalk.cyan(`${ref.owner}/${ref.repo}#${ref.number}`)}`));
+  if (opts.meticulous) console.log(chalk.dim("  meticulous mode: 100 turns per goal, exhaustive verification hierarchy"));
 
   // Fetch PR metadata — we need the head repo/branch, author, and previews.
   const meta = await fetchPRMeta(ref);

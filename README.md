@@ -160,6 +160,28 @@ tik-test was built for **small, focused PRs that touch one user-facing slice at 
 
 Defaults reflect how I review PRs: small slices, fast feedback, video-first. Run `node dist/cli.js config` to retune.
 
+### Fast mode vs meticulous mode
+
+Two ways the agent can drive the browser. Default is **fast**; `--meticulous` (CLI) or `meticulous: true` (Action) flips it to thorough.
+
+| | Fast (default) | Meticulous |
+|---|---|---|
+| Per-goal turn cap | **25** | **100** |
+| Goal | Shortest possible recording that still proves the feature works | Exhaustive automated check; recording length secondary |
+| Loops | Forbidden — one approach, one retry, then `OUTCOME: skipped` | Stuck-loop guard still applies, but more headroom for legitimate retries |
+| Independent probes | Bundled into ONE assistant turn (parallel `tool_use` blocks) | Same — but the budget allows more sequential probing if needed |
+| Sub-second UI (loading indicators, toasts) | One freeze-the-moment attempt; if it doesn't catch the state, skip | Full freeze recipe shelf available, multiple attempts if warranted |
+| `browser_evaluate` cap | 4 | 8 |
+| `browser_take_screenshot` cap | 3 | uncapped |
+| Typing | `slowly: true` (one character at a time, like a human) | Same |
+| Click before type | Required | Required |
+
+**Fast mode** is the right default because the whole point of tik-test is producing a TIGHT, watchable PR-review video. Every wasted turn is a longer video. The agent prioritises the most important check first, retries once if it fails, and emits `OUTCOME: skipped — needs human verification: <reason>` instead of looping. **Skipped goals do NOT mark the PR check red** — they're flagged for the human reviewer to look at. This is by design: a clear "I couldn't auto-test this, please verify" beats 60s of a stuck agent every time.
+
+**Meticulous mode** is for high-stakes PRs where you'd accept a longer video in exchange for a more careful auto-review — e.g. a payment flow, an auth rework, a migration that touches many surfaces. Turn cap goes to 100; the agent gets the full freeze-the-moment recipe shelf and is willing to chase sub-second transitions through multiple recipes.
+
+Switch on per-PR with `--meticulous` (CLI) or set `meticulous: true` on the GitHub Action input.
+
 ---
 
 ## In the wild
@@ -256,6 +278,7 @@ Useful flags:
 | `--review <mode>` | `none` · `approve-on-pass` · `request-changes-on-fail` (default) · `always` |
 | `--vercel-bypass <secret>` | Bypass header + cookie |
 | `--no-voice` | Silent video |
+| `--meticulous` | Thorough mode: 100 turns/goal, full verification hierarchy. Default off — see [Fast mode vs meticulous mode](#fast-mode-vs-meticulous-mode). |
 
 ### 3. Claude Code plugin
 
@@ -408,6 +431,7 @@ The action installs Node + ffmpeg + Playwright, builds tik-test, auto-detects th
 | `require-pass` | No | `true` | Non-zero exit on any failed goal. |
 | `quick` | No | `true` | Draft 540×960 render. |
 | `quick-and-dirty` | No | `false` | Drops to 0.5× render (540×960) **and** caps body scenes at 6. Faster, lower-quality output — use when speed beats fidelity. |
+| `meticulous` | No | `false` | Thorough-testing mode. Raises the per-goal turn cap from **25 → 100** and swaps the agent prompt for the exhaustive variant (full verification hierarchy + freeze-the-moment recipes). Default off — the fast prompt optimises for the SHORTEST possible recording and bails to "needs human verification" instead of looping. Turn this on for high-stakes PRs where a careful auto-review matters more than a snappy video. See [Fast mode vs meticulous mode](#fast-mode-vs-meticulous-mode). |
 | `no-video` | No | `false` | Skip render + upload entirely. Same plan + agent + checklist; posts a text-only checks-only PR comment instead of an MP4. **~5× faster** — pairs well with `run-on-every-push: true`. The checks-only comment deliberately omits the `tik-test-video:v1` marker so the reviewer web app does not pick it up as a feed entry. |
 | `run-on-every-push` | No | `false` | Re-review on every commit pushed to a PR (the `synchronize` event). Off by default to keep Claude usage under control. |
 | `working-directory` | No | repo root | Subdirectory containing `tiktest.md`. Useful for monorepos. |
