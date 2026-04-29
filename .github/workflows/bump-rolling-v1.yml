@@ -1,0 +1,49 @@
+#
+# When a v1.x.y release tag is pushed, move the rolling `v1` tag to the
+# same commit so consumers pinned to `marcushyett/tik-test@v1` pick up
+# the release on their next workflow run.
+#
+# Skips prerelease tags (e.g. `v1.3.0-rc.1`) — only stable v1.x.y
+# tags promote v1.
+#
+# Tag protection note: this push uses the workflow's GITHUB_TOKEN. If
+# you have a tag-protection rule on `v1`, add an allowlist entry for
+# the GitHub Actions app (Settings → Tags → tag protection rules), or
+# swap GITHUB_TOKEN for a PAT with tag-write permission below.
+#
+name: bump rolling v1 tag
+
+on:
+  push:
+    tags: ['v1.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip prereleases
+        id: gate
+        run: |
+          if [[ "${{ github.ref_name }}" =~ ^v1\.[0-9]+\.[0-9]+$ ]]; then
+            echo "promote=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping ${{ github.ref_name }} — not a stable v1.x.y tag."
+            echo "promote=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.gate.outputs.promote == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - if: steps.gate.outputs.promote == 'true'
+        name: Move v1 to ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa v1 ${{ github.sha }} -m "v1 — rolling latest (${{ github.ref_name }})"
+          git push origin v1 --force
