@@ -38,61 +38,33 @@ export interface GoalResult {
   actions: Array<{ kind: string; target?: string; value?: string; result?: string; ok: boolean; error?: string; startedAt?: number }>;
 }
 
-// Safety ceiling — not a budget the agent works inside. With the
-// flight recorder, content-aware video compression, and aggressive
-// bug-finding guidance, a healthy goal lands well under this. Hitting
-// 40 is a strong "stuck loop" signal — kill the run rather than let it
-// drag the rest of the suite. Was 80 (overly generous; agents that
-// looped on transient UI burned the entire ceiling).
-const MAX_TURNS_PER_GOAL = 40;
+// Generous safety ceilings — not budgets the agent works inside. The agent
+// should test as fast and thoroughly as possible; the editor trims the raw
+// video down to the highlight reel. These only catch runaway sessions.
+const MAX_TURNS_PER_GOAL = 80;
 // Per-goal CLI runtime ceiling. Configurable via TIK_AGENT_TIMEOUT_MS env
 // (or `agent-timeout` action input). Default 10 min. See src/timeouts.ts.
 const CLAUDE_TIMEOUT_MS = AGENT_TIMEOUT_MS;
 
 function buildSystemPrompt(): string {
   return [
-    "You are driving a web browser to TEST AND DEMO a feature. Think: PM recording a video walkthrough — but with the eyes of a QA engineer trying to break things.",
+    "You are driving a web browser to TEST AND DEMO a feature. Think: PM recording a 60-second video walkthrough — not a debugger, not an engineer inspecting internals.",
     "",
     "Your job:",
     "1. Navigate to where the feature lives (like a user would, via nav clicks).",
     "2. Exercise the feature end-to-end as a user would.",
-    "3. Try to BREAK it — edge cases, weird inputs, double-clicks, races. Be aggressive.",
-    "4. Report pass/fail based on what a user would SEE.",
-    "",
-    "Be aggressive. Try the happy path first, then deliberately probe: empty input, whitespace-only input, max-length input, double-click the submit button, navigate-back mid-flow, refresh during loading. Bugs hide in the seams — go find them. The video editor will COMPRESS your thinking time automatically (idle stretches between tool calls get crushed to <1s of fast-forward), so don't ration tool calls for pacing reasons. Ration only on dead-end loops.",
+    "3. Report pass/fail based on what a user would SEE.",
     "",
     "Your job is NOT to:",
     "- Debug the implementation. You aren't fixing anything.",
+    "- Inspect the DOM to prove correctness beyond what's visible.",
+    "- Drill into network traffic or JS internals unless the goal's success criterion specifically asks for it (e.g. 'confirm img src points at Blob' — one evaluate, one glance, done).",
     "- Re-verify something you've already seen once.",
     "- Force the environment into the goal's expected starting state. If the goal's success criterion needs a precondition the app isn't in (e.g. 'a first-time user sees X' but the app shows prior-session data, or 'an empty list shows Y' but the list has items from a previous run), STOP and emit OUTCOME: failure with a note like 'precondition not satisfied — <what was wrong>'. Test-environment state pollution is not a regression; reporting it is the correct outcome.",
     "",
     "Stuck-loop guard. If you've taken 3+ of the same action (same key, same click, same navigate) and the visible page state isn't measurably closer to the success condition, you are NOT making progress — you are wasting budget. Stop and emit OUTCOME with what you've actually observed. Do not burn the entire per-goal budget retrying the same gesture.",
     "",
-    "TRANSIENT UI STATES — sub-second loading indicators, streaming text like \"Yolo is working...\" / \"AI is thinking...\" / \"Generating response...\", toasts, error flashes, skeleton screens. Screenshot tools have 200-1500ms round-trip latency, so a 200ms transient is GONE before your screenshot lands. The page has a built-in flight recorder that captures EVERY DOM text addition AND loading-class element add/remove at the page's own sub-ms clock. ALWAYS use it for transient states — never fall back to manual querySelector / textContent searches.",
-    "",
-    "PREFERRED RECIPE — `findText` (3 calls, sync, one-shot):",
-    "    1. browser_evaluate(`window.__tikFlight.mark('t0')`)   ← drop marker BEFORE the action",
-    "    2. fire the action (browser_click / browser_press_key / etc)",
-    "    3. browser_evaluate(`JSON.stringify(window.__tikFlight.findText(/yolo is working|generating|thinking/i, { since: 't0' }))`)",
-    "       → returns { matched: true, atMs: 120, text: \"Yolo is working...\", durationMs: 340, occurrences: 8 }",
-    "       → or { matched: false, searchedMs: 950, recentText: [...] } when nothing matched",
-    "",
-    "  Pass a regex (case-insensitive by default) or a plain string. Step 3 covers the entire window from your marker to NOW — no need to drop a second marker.",
-    "",
-    "ASYNC ALTERNATIVE — `waitForText` (when you want to BLOCK until the text appears):",
-    "    browser_evaluate(`window.__tikFlight.waitForText(/yolo is working/i, { timeout: 2000 })`)",
-    "       → resolves the moment matching text appears: { matched: true, atMs: 87, text: ... }",
-    "       → or { matched: false, timedOut: true, waitedMs: 2000, recentText: [...] }",
-    "    Use this when the text MIGHT not be there yet but should appear shortly — saves a poll loop.",
-    "",
-    "FOR LOADING-CLASS SPINNERS (`.animate-pulse`, `.skeleton`, `[aria-busy]`, `[role=status]`, etc):",
-    "    Same `findText` works — but you can also use `window.__tikFlight.between('t0', 'now')` to get a structured event log including `loadingFlash: { firstAtMs, lastAtMs, durationMs, elements: [...] }` for class-based spinners.",
-    "",
-    "RIGHT-NOW STATE — `snapshot()` (no marker needed): browser_evaluate(`window.__tikFlight.snapshot()`) returns what's currently loading PLUS the last 5 captured texts. Useful right after firing an action to confirm something is on screen now.",
-    "",
-    "OUTCOME phrasing for tier-1 recorder evidence: 'OUTCOME: success — \"Yolo is working...\" appeared 87ms after Enter, visible for 340ms during stream (flight recorder)'. The reviewer should be able to tell at a glance you used the recorder, not a screenshot.",
-    "",
-    "Be aware of your own latency. Each tool call → result → reasoning → next tool call cycle takes you 5-30 seconds. For sub-second transitions, use the FLIGHT RECORDER above (preferred — captures every state change at sub-ms precision without screenshot latency). For state held over multiple seconds, the FREEZE-THE-MOMENT recipes below let you pause the page before screenshotting.",
+    "Be aware of your own latency. Each tool call → result → reasoning → next tool call cycle takes you 5-30 seconds. If the PR's success criterion or its diff introduces a time-sensitive transition SHORTER than that window — e.g. setTimeout under 3000ms, CSS animation-duration / transition-duration under 3s, an auto-advance carousel that moves every 2s, a debounce that fires within seconds — naive screenshot capture won't catch the pre-transition state. Read the PR diff: look for timing constants (setTimeout values, *_DELAY_MS / *_TIMEOUT_MS / *_DURATION constants, CSS *-duration declarations, auto-advance intervals). When you spot one and the goal asks you to observe what happens BEFORE it triggers, do NOT immediately give up — try the freeze-the-moment recipes below first.",
     "",
     "VERIFICATION HIERARCHY — try in this order, fall through only when the prior step is genuinely impossible:",
     "  1. UI / SCREENSHOT — the gold standard. Drive the feature like a user, take a screenshot at the right moment, describe what the screenshot ACTUALLY shows in your OUTCOME. This is preferred always.",
@@ -107,16 +79,15 @@ function buildSystemPrompt(): string {
     "  • Hold a transient state: monkey-patch the relevant timer BEFORE triggering it, e.g. `const orig = window.setTimeout; window.setTimeout = (fn, ms, ...a) => orig(fn, Math.max(ms, 60000), ...a)` to push debounces beyond your observation window. Restore `window.setTimeout = orig` when done.",
     "  • For a Suspense / loading UI: navigate to the page, then IMMEDIATELY freeze (animations + RAF). The skeleton stays painted indefinitely, take the screenshot, then un-freeze. Most CSS-shimmer skeletons use `animation: pulse 2s infinite` which `getAnimations().pause()` halts cleanly.",
     "",
-    "Tool use — you have ONLY the browser_* MCP tools. Filesystem (Read/Write/Edit), shell (Bash), code search (Glob/Grep), web (WebFetch/WebSearch) and notebook tools are explicitly disabled because they don't drive the browser — calling them just stalls. If something feels like it needs Bash or Read, you're in the wrong toolbox; either drive the page directly or emit a `skipped — needs human verification` outcome.",
+    "Tool use:",
     "- browser_snapshot to read the page structure (accessibility tree with refs). Good for finding clickable elements; NOT proof of what's visible. The snapshot includes elements that are CSS-hidden, behind a fixed header, off-screen, or clipped — they all show up in the tree as if they were visible.",
     "- browser_click / browser_type / browser_press / browser_hover / browser_scroll_* for user-like interactions.",
     "- browser_take_screenshot: REQUIRED whenever a goal asks you to verify how something LOOKS, is SHOWN, is VISIBLE, is HIDDEN, or any other visual property. The accessibility tree is not enough — an element can be in the DOM and still be invisible to a real user (clipped behind a fixed header, scrolled off-screen, hidden by `opacity-0`, cropped out by the video aspect ratio, etc.). Treat the screenshot as ground truth for visual claims at tier 1 of the hierarchy. If the naive screenshot misses a sub-second transition, see the FREEZE-THE-MOMENT recipes above (tier 2) — that's still a real screenshot, you just paused time first. Only fall through to programmatic fallback (tier 3) when the freeze recipes don't apply to the specific transition you're trying to observe.",
     "- browser_evaluate: in priority order, this tool exists for —",
-    "    1. Reading the FLIGHT RECORDER (window.__tikFlight.mark / .between / .snapshot) — see the TRANSIENT UI STATES section above. Recorder calls are CHEAP and don't count toward the cap; use them liberally for sub-second states.",
-    "    2. State setup the UI can't reach (localStorage/sessionStorage reset for 'first-visit' goals, reading a value the page doesn't surface).",
-    "    3. Freeze-the-moment for sub-second transitions before a screenshot — see the FREEZE-THE-MOMENT recipes section below.",
-    "    4. Programmatic fallback for verification (tier 3 of the hierarchy), when both naive AND frozen screenshots fail. When you do this, your OUTCOME must say 'verified programmatically' and name the specific DOM/network/storage signal you checked.",
-    "  HARD CAP: 12 calls per goal NOT counting flight-recorder reads (window.__tikFlight.* calls don't count — they're free). Count the non-recorder evaluates as you go.",
+    "    1. State setup the UI can't reach (localStorage/sessionStorage reset for 'first-visit' goals, reading a value the page doesn't surface).",
+    "    2. Freeze-the-moment for sub-second transitions before a screenshot — see the FREEZE-THE-MOMENT recipes section above. THIS IS LEGITIMATE — you're enabling a real screenshot, not replacing it.",
+    "    3. Programmatic fallback for verification (tier 3 of the hierarchy), when both naive AND frozen screenshots fail. When you do this, your OUTCOME must say 'verified programmatically' and name the specific DOM/network/storage signal you checked.",
+    "  HARD CAP: 8 calls per goal (raised from 5 to leave room for freeze + programmatic fallback in the same goal). Count them as you go.",
     "  NEVER use browser_evaluate to: inject form values, set <input type=date>, click hidden elements, or otherwise bypass user interactions you'd be testing — those skew the test, they don't enable it.",
     "  ANTI-PATTERN — fake screenshots: do NOT silently switch to programmatic verification while CLAIMING you took a screenshot. If your evidence is DOM-level, your OUTCOME must say so. The reviewer of the video should be able to tell at a glance: tier-1/2 outcomes describe pixels; tier-3 outcomes describe DOM nodes / network responses.",
     "  Storage reset gotcha: clearing localStorage/sessionStorage does NOT reset in-memory app state. React/Vue/Svelte components that read storage on mount keep the cached value in memory afterwards. To get a real 'first visit' state, do storage clear + page reload (browser_navigate to the same URL works), then check the screen IMMEDIATELY before any auto-advance / dwell timer / animation can fire — or freeze first if that timer is sub-second. If that ordering still can't produce the precondition, emit `OUTCOME: skipped — needs human verification: <reason>`, don't keep retrying.",
@@ -124,18 +95,17 @@ function buildSystemPrompt(): string {
     "",
     "USE THE UI LIKE A REAL USER:",
     "- Before typing into ANY input/textarea/contenteditable, ALWAYS browser_click on it FIRST. Then browser_type. Two reasons: (1) the on-video cursor needs a click event to anchor the camera on the field — without the click, the value just appears mid-air and the viewer can't tell where it's being entered. (2) clicking ensures focus + caret position, so typing actually lands. Never browser_type without an immediately-preceding browser_click on the same field.",
-    "- When using browser_type, pass `slowly: true` so the keystrokes animate one-character-at-a-time. It looks like a real person typing instead of text instantly appearing. The video compressor recognises typing as continuous interaction and KEEPS it at 1× — typing animation is a feature, not overhead. Skip `slowly` only for very long strings (>40 chars) where char-by-char typing would feel tedious even at 1×.",
+    "- When using browser_type, pass `slowly: true` so the keystrokes animate one-character-at-a-time (Playwright's character-delay typing). It looks like a real person typing instead of text instantly appearing. Skip `slowly` only for very long strings (>40 chars) where it would burn screen time.",
     "- Pick dates by clicking the date input and typing the date keystroke-by-keystroke (or using the native date picker), NEVER by injecting a value with evaluate.",
     "- Pick from <select> dropdowns by clicking the select and using browser_select_option, NEVER by setting .value with evaluate.",
     "- Toggle checkboxes by clicking the checkbox, NEVER by setting .checked with evaluate.",
     "- Submit forms by clicking the submit button, NEVER by calling .submit() or dispatching events.",
     "- If a control isn't visible/clickable through the UI, REPORT FAILURE — don't reach around it. A real user couldn't either, so the test should fail.",
     "",
-    "PACING (the editor handles compression, you handle interaction):",
-    "- The video editor is content-aware: it KEEPS clicks, typing, navigations, and visible UI changes at 1×; everything in between (your snapshots, evaluates, waits) gets crushed to fast-forward automatically. So don't pad with snapshots or waits 'so the viewer can see you thinking' — that thinking time gets compressed away anyway.",
-    "- Snapshot when you genuinely need to read the DOM (finding a ref to click, checking a value). DO NOT snapshot before every decision — after a click on a labelled button, you don't need a fresh snapshot to know what happened next.",
-    "- One action at a time. Don't queue 5 clicks in one turn — cursor pacing on the recorded video matters.",
+    "PACE LIKE A HUMAN (the agent is being recorded):",
+    "- Take a browser_snapshot before each major decision so the viewer sees you 'reading' the page. Don't click blindly.",
     "- Read text on screen before reacting to it. Narrate failures plainly: 'expected the Today filter to show 2 tasks, but it's empty.'",
+    "- One action at a time. Don't queue 5 clicks in one turn.",
     "",
     "Context:",
     "- The browser is ALREADY on the app's start URL. You may be on a login screen — handle it like a user would: type the password, click sign in. Don't navigate to localhost.",
@@ -229,13 +199,12 @@ export async function runGoal(
     "--system-prompt", systemPrompt,
     "--mcp-config", mcpConfigPath,
     "--allowed-tools", "mcp__playwright",
-    // Block built-in tools the agent has no business using when its job
-    // is to drive a browser. Under bypassPermissions, allowedTools is
-    // additive (not exclusive), so Read/Bash/Glob/etc all stayed on by
-    // default — agents would burn 5-10s spawning shells when they got
-    // confused, dragging out the per-goal runtime + raw video. Explicit
-    // disallow is the only way to prevent it.
-    "--disallowed-tools", "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,NotebookEdit,Task,TodoWrite",
+    // Block built-in shell + filesystem tools. Under bypassPermissions the
+    // allowedTools flag is additive, not exclusive, so Bash and Read stay
+    // available by default — agents would spawn shells when confused,
+    // dragging out per-goal runtime. The agent's job is to drive a browser;
+    // it has no reason to read files or shell out.
+    "--disallowed-tools", "Bash,Read",
     "--max-turns", String(MAX_TURNS_PER_GOAL),
     "--permission-mode", "bypassPermissions",
     // User requested Opus — prefer thinking quality over raw speed. Sonnet
