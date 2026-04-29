@@ -132,4 +132,6 @@ jobs:
           # If yours don't, this is harmless empty-string passthrough.
           vercel-bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           pr-number: ${{ github.event.inputs.pr_number }}
+          # Skip cleanly on workflow-only / docs-only PRs (no UI surface).
+          skip-no-ui: true
           preview-url: ${{ steps.vercel.outputs.url || github.event.inputs.preview_url }}

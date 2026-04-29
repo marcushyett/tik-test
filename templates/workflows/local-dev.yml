@@ -99,5 +99,9 @@ jobs:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           pr-number: ${{ github.event.inputs.pr_number }}
+          # Skip cleanly on workflow-only / docs-only PRs (no UI surface
+          # in the diff). Stops the workflow-bootstrap PR from producing
+          # a fabricated red review.
+          skip-no-ui: true
           # Uncomment if your tiktest.md lives in a subdirectory of the repo:
           # working-directory: apps/web
