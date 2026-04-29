@@ -7,7 +7,7 @@ the more I shipped stuff with claude the more I realised; in the long term the m
 
 ...but testing is boring. so I tried to make it less boring - or at least take way less of my time.
 
-<p align="center">
+<p align="left">
   <a href="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4">
     <img src="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.gif" alt="tik-test demo: 9:16 narrated video review of a PR" width="320" />
   </a>
