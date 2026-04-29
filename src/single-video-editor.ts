@@ -314,36 +314,71 @@ function rawToTrimmed(rawS: number, plan: TrimSegment[]): number {
 }
 
 async function renderTrimmedMaster(rawMp4: string, outMp4: string, plan: TrimSegment[]): Promise<void> {
-  const videoParts: string[] = [];
-  const concatInputs: string[] = [];
-  for (let i = 0; i < plan.length; i++) {
-    const s = plan[i];
-    const trimDur = s.rawEndS - s.rawStartS;
-    if (trimDur <= 0.001) continue;
-    videoParts.push(
-      `[0:v]trim=start=${s.rawStartS.toFixed(3)}:duration=${trimDur.toFixed(3)},setpts=${(1 / s.speed).toFixed(4)}*(PTS-STARTPTS)[v${i}]`,
-    );
-    concatInputs.push(`[v${i}]`);
+  // Per-segment encode → concat-demuxer copy. The previous approach built one
+  // big filter_complex with N parallel trim/setpts substreams feeding concat;
+  // ffmpeg buffered every substream in lockstep, and on long captures with
+  // 25+ segments that pushed the 7 GB runner over the OOM line (exit 143).
+  // Encoding each segment in its own process bounds memory to ~one segment's
+  // worth and lets us use input-side -ss to skip decoding the rest of the
+  // file. The final concat is a stream copy so we don't pay the encode twice.
+  const partsDir = path.join(path.dirname(outMp4), `trim-parts-${process.pid}`);
+  await mkdir(partsDir, { recursive: true });
+  try {
+    const segments = plan.filter((s) => s.rawEndS - s.rawStartS > 0.001);
+    const partPaths: string[] = new Array(segments.length);
+    // Bounded concurrency keeps total memory predictable on small runners
+    // even when there are many segments. 2 is enough to overlap I/O with
+    // CPU on the master encode without doubling resident RAM.
+    const concurrency = Math.max(1, Math.min(2, segments.length));
+    await runWithConcurrency(segments, concurrency, async (s, i) => {
+      const partPath = path.join(partsDir, `part-${String(i).padStart(3, "0")}.mp4`);
+      const trimDur = s.rawEndS - s.rawStartS;
+      const filterParts: string[] = [];
+      // For high-speed idle segments, drop frames BEFORE setpts via select
+      // so ffmpeg doesn't burn CPU/RAM decoding frames the output framerate
+      // would throw away. With idle gaps ranging 5x–100x speed, this is the
+      // difference between decoding ~720 frames or ~14 for a 30s gap. Stride
+      // is capped so we always keep at least a few frames per segment for
+      // motion continuity in moderate speedups.
+      if (s.speed > 2.0) {
+        const stride = Math.max(1, Math.min(Math.floor(s.speed), Math.floor(trimDur * FPS / 2) || 1));
+        filterParts.push(`select='not(mod(n\\,${stride}))'`);
+      }
+      filterParts.push(`setpts=${(1 / s.speed).toFixed(4)}*(PTS-STARTPTS)`);
+      // -ss before -i is the fast (keyframe) seek; stagedRaw is encoded with
+      // a 1-second GOP (-g 24 -keyint_min 24) so the seek lands within at
+      // most one frame of the requested timestamp.
+      await runFfmpeg([
+        "-ss", s.rawStartS.toFixed(3),
+        "-i", rawMp4,
+        "-t", trimDur.toFixed(3),
+        "-filter:v", filterParts.join(","),
+        "-an",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "20",
+        "-r", String(FPS),
+        "-pix_fmt", "yuv420p",
+        "-vsync", "vfr",
+        partPath,
+      ]);
+      partPaths[i] = partPath;
+    });
+
+    const listPath = path.join(partsDir, "concat.txt");
+    const listContent = partPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n");
+    await writeFile(listPath, listContent);
+    await runFfmpeg([
+      "-f", "concat",
+      "-safe", "0",
+      "-i", listPath,
+      "-c", "copy",
+      "-movflags", "+faststart",
+      outMp4,
+    ]);
+  } finally {
+    await rm(partsDir, { recursive: true, force: true }).catch(() => {});
   }
-  const filter = `${videoParts.join(";")};${concatInputs.join("")}concat=n=${concatInputs.length}:v=1:a=0[out]`;
-  await runFfmpeg([
-    "-i", rawMp4,
-    "-filter_complex", filter,
-    "-map", "[out]",
-    "-c:v", "libx264",
-    // ultrafast for the master trim pass: this is an intermediate
-    // cleaned up after Remotion composes the final video, so we
-    // don't pay the bandwidth cost of a slightly larger file but DO
-    // get ~30% faster encoding. The final user-visible render is
-    // Remotion's own pipeline, not this ffmpeg pass.
-    "-preset", "ultrafast",
-    "-crf", "20",
-    "-r", String(FPS),
-    "-pix_fmt", "yuv420p",
-    "-movflags", "+faststart",
-    "-an",
-    outMp4,
-  ]);
 }
 
 export interface SingleVideoEditResult {
@@ -370,12 +405,17 @@ export async function editSingleVideo({
   const publicDir = path.join(runDir, "public");
   await mkdir(publicDir, { recursive: true });
 
-  // ── 1. Stage raw → MP4 for consistent frame rate.
+  // ── 1. Stage raw → MP4 for consistent frame rate. Force a 1-second GOP
+  //      (-g/-keyint_min = FPS) so the per-segment trim pass below can use
+  //      input-side -ss for fast keyframe seek and still land within one
+  //      frame of the requested cut points.
   const stagedRaw = path.join(runDir, "raw.mp4");
   await runFfmpeg([
     "-i", artifacts.rawVideoPath,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-    "-r", String(FPS), "-pix_fmt", "yuv420p", "-an",
+    "-r", String(FPS), "-pix_fmt", "yuv420p",
+    "-g", String(FPS), "-keyint_min", String(FPS), "-sc_threshold", "0",
+    "-an",
     stagedRaw,
   ]);
   const rawDurS = await ffprobeDuration(stagedRaw);
