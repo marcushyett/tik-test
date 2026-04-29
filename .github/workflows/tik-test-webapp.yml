@@ -72,11 +72,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      # Two-checkout pattern (self-test only) — see tik-test-taskpad.yml
+      # for the rationale. tooling/ supplies the latest action.yml +
+      # video pipeline; pr-content/ supplies the PR's tiktest.md and
+      # web/scripts/sign-bypass-url.mjs (referenced below).
       - uses: actions/checkout@v4
         with:
-          # Resolve the PR's HEAD so the working tree (and any pre-tik-test
-          # build/install steps) operate on the PR's code, not main's.
-          # Matters for workflow_dispatch (default ref = workflow branch).
+          path: tooling
+
+      - uses: actions/checkout@v4
+        with:
+          path: pr-content
           ref: ${{ github.event.pull_request.head.sha || (github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', github.event.inputs.pr_number)) || '' }}
 
       - name: Wait for Vercel Preview deployment
@@ -133,17 +139,17 @@ jobs:
             exit 1
           fi
           REDIRECT="/r/${{ github.repository }}"
-          URL=$(node web/scripts/sign-bypass-url.mjs --base "$BASE_URL" --redirect "$REDIRECT")
+          URL=$(node pr-content/web/scripts/sign-bypass-url.mjs --base "$BASE_URL" --redirect "$REDIRECT")
           # Mask in logs even though logs are private — defence in depth.
           echo "::add-mask::$URL"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "Signed bypass URL against: $BASE_URL"
 
-      - uses: ./
+      - uses: ./tooling
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           pr-number: ${{ github.event.inputs.pr_number }}
-          working-directory: web
+          working-directory: pr-content/web
           preview-url: ${{ steps.sign.outputs.url }}
           vercel-bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}

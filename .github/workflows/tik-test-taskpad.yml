@@ -48,27 +48,35 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
+      # Two-checkout pattern (self-test only).
+      # ──────────────────────────────────────
+      # `tooling/`     = main's HEAD — latest action.yml + src/ +
+      #                  Remotion compositor (pan-zoom, voice, click-
+      #                  before-type, etc.).
+      # `pr-content/`  = the PR's HEAD — the index.html we're reviewing.
+      #
+      # Without the split, `uses: ./` runs whatever action source
+      # happens to be on the PR branch. PRs forked before recent video
+      # features landed render with stale tooling. Consumer templates
+      # don't need this split because `uses: marcushyett/tik-test@v1`
+      # pins the action independently of the user's checkout.
       - uses: actions/checkout@v4
         with:
-          # workflow_dispatch defaults to checking out the workflow's branch
-          # (usually main) — but we need the PR's HEAD on disk so the bundled
-          # taskpad's `python3 -m http.server` (spawned via tiktest.md's
-          # start: directive) serves the PR's index.html, not main's. The
-          # expression covers all three triggers: pull_request uses the PR
-          # head sha directly, workflow_dispatch resolves the typed pr_number
-          # to refs/pull/N/head, and deployment_status falls through to
-          # checkout's default (which already equals the deployment SHA).
+          path: tooling
+
+      - uses: actions/checkout@v4
+        with:
+          path: pr-content
           ref: ${{ github.event.pull_request.head.sha || (github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/head', github.event.inputs.pr_number)) || '' }}
 
-      - uses: ./
+      - uses: ./tooling
         with:
           claude-code-oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           pr-number: ${{ github.event.inputs.pr_number }}
-          # The bundled Taskpad lives in examples/todo-app/, not at the repo
-          # root, and has its own claude.md / index.html that we want the CLI
-          # to discover.
-          working-directory: examples/todo-app
+          # tiktest.md, claude.md, and index.html all come from the PR
+          # checkout — that's what the running browser will see.
+          working-directory: pr-content/examples/todo-app
           # This repo has Vercel connected for the unrelated `web/` app, so PR
           # comments include a vercel.app preview URL the CLI would otherwise
           # auto-detect. Pin the target to the bundled Taskpad demo instead.
