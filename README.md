@@ -1,5 +1,5 @@
 
-# tiktest
+# tiktest [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 **Automated TikTok-style video review of every PR.**
 
@@ -14,12 +14,6 @@ the more I shipped stuff with claude the more I realised; in the long term the m
   <br />
   <a href="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4"><strong>Play with sound</strong></a> to hear narration and watch normal speed
 </p>
-
-<div align="center">
-
-[![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-
-</div>
 
 ---
 
