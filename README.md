@@ -1,8 +1,16 @@
 <div align="center">
 
-# tik-test
+# tiktest
 
-**A 45-second TikTok-style video review on every PR. Review 20 AI PRs in under 15 minutes.**
+**Automated TikTok-style video review of every PR.**
+
+the more I shipped stuff with claude the more I realised; in the long term the most value I can add as a human is testing - finding the stuff other humans would struggle with.
+
+...but testing is boring. 
+
+so I tried to make it less boring - or at least take way less of my time.
+
+tiktest drops a short narrated videos on every PR: claude drives the actual app via playwright, narrates what it's doing, calls out bugs. you can just skim 5 PRs between meetings and give the agent the feedback it needs to make it good enough for our users.
 
 </div>
 
@@ -11,20 +19,18 @@
     <img src="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.gif" alt="tik-test demo: 9:16 narrated video review of a PR" width="320" />
   </a>
   <br />
-  <a href="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4"><strong>Play with sound</strong></a> for narration plus the outro AI-checks list.
+  <a href="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4"><strong>Play with sound</strong></a> to hear narration and watch normal speed
 </p>
 
 <div align="center">
 
 [![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-blue.svg)](package.json)
-[![Runs on macOS + Linux](https://img.shields.io/badge/runs_on-macOS%20%7C%20Linux-black)](#install)
 
 </div>
 
 ---
 
-## Try it in under 3 minutes
+## Get it running in a few mins
 
 Copy one of these prompts into [Claude Code](https://docs.claude.com/en/docs/claude-code/setup). Claude does the wiring.
 
