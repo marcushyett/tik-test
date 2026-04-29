@@ -70,14 +70,20 @@ permissions:
 
 jobs:
   review:
+    # Owners gate — by default ANY collaborator can trigger paid runs.
+    # To restrict, set repo Settings → Variables → TIKTEST_OWNERS to a
+    # JSON array of usernames, e.g. '["alice","bob"]'. Fork PRs are
+    # always blocked because their secrets aren't shared with forks.
     if: |
-      contains(fromJSON(vars.TIKTEST_OWNERS || format('["{0}"]', github.repository_owner)), github.actor) &&
+      (vars.TIKTEST_OWNERS == '' || contains(fromJSON(vars.TIKTEST_OWNERS), github.actor)) &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 45 min headroom for slow Vercel preview waits + cold runner installs.
+    # Tighten to 25 if your previews consistently land in <2 min.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:

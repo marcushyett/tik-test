@@ -24,6 +24,8 @@ export interface PROptions {
   noVideo?: boolean;         // skip render + upload — post a text-only checklist comment instead
   requirePass?: boolean;     // exit non-zero if any step failed (CI gating)
   review?: "none" | "approve-on-pass" | "request-changes-on-fail" | "always"; // post a formal PR review
+  strictConfig?: boolean;    // refuse the legacy CLAUDE.md / bare README fallbacks; require tiktest.md
+  skipNoUi?: boolean;        // exit cleanly with a "no UI surface" comment when the diff has no UI files
 }
 
 export async function runForPR(prInput: string, opts: PROptions): Promise<void> {
@@ -73,15 +75,37 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
   }
 
   // Locate config: tiktest.md at root preferred; legacy fallbacks below.
-  const configPath = await findConfig(workDir);
-  if (!configPath) {
+  // Print the resolution reason so consumers can spot a wrong-file footgun
+  // (Issue #4 in the consumer setup-failure report — silent fallback to
+  // CLAUDE.md when their tiktest.md was at root but workDir was a subdir).
+  const resolved = await resolveConfigPath(workDir);
+  if (!resolved) {
     throw new Error(
       `Could not find tiktest.md (or fallback config) in ${workDir}. ` +
       `Add a tiktest.md to your repo root with the preview URL, login, and what the app does. ` +
       `See https://github.com/marcushyett/tik-test for the format.`,
     );
   }
-  console.log(chalk.dim(`  config: ${path.relative(workDir, configPath)}`));
+  const configPath = resolved.path;
+  const relPath = path.relative(workDir, configPath);
+  if (resolved.source === "dedicated") {
+    console.log(chalk.dim(`  config: ${relPath} (preferred)`));
+  } else {
+    const reason = resolved.source === "readme-section"
+      ? `no tiktest.md in ${workDir}; using README.md ## TikTest section`
+      : resolved.source === "legacy-claude"
+      ? `no tiktest.md in ${workDir}; falling back to ${relPath}`
+      : `no tiktest.md or ## TikTest README section in ${workDir}; falling back to bare ${relPath}`;
+    console.log(chalk.yellow(`  config: ${relPath} (${reason})`));
+    if (opts.strictConfig) {
+      throw new Error(
+        `--strict-config is set and tik-test fell back to ${relPath}. ` +
+        `Add a tiktest.md at ${workDir} (or set working-directory to where it lives) ` +
+        `to make config resolution explicit.`,
+      );
+    }
+    console.log(chalk.dim(`  → pass --strict-config (or set TIK_STRICT_CONFIG=1) to refuse fallback`));
+  }
 
   const cfg = await loadConfig(configPath, opts.urlOverride ?? meta.previewUrl);
   // PR body + title become the PR-specific testing notes. tiktest.md is
@@ -118,6 +142,31 @@ export async function runForPR(prInput: string, opts: PROptions): Promise<void> 
       if (diff) cfg.diff = diff;
     } catch (e) {
       console.log(chalk.yellow(`  couldn't fetch PR diff (${(e as Error).message.split("\n")[0]}) — planning from PR body only`));
+    }
+  }
+
+  // No-UI-surface skip (Issue #5 in the consumer setup-failure report).
+  // CI-only PRs (workflow + tiktest.md) have nothing for the agent to
+  // exercise; running a review against them produces a fabricated goal
+  // and a meaningless red CI check. Detect this case from the diff and
+  // bail cleanly with a comment so the workflow PR doesn't turn red.
+  if (opts.skipNoUi && cfg.diff) {
+    const files = extractFilesFromDiff(cfg.diff);
+    const uiFiles = files.filter(isUiSurface);
+    if (files.length > 0 && uiFiles.length === 0) {
+      const preview = files.slice(0, 4).join(", ") + (files.length > 4 ? `, …+${files.length - 4} more` : "");
+      console.log(chalk.yellow(`  no UI surface in this diff (${files.length} files: ${preview}) — skipping review`));
+      if (!opts.skipComment) {
+        await postSkipComment(ref, [
+          `<!-- tik-test-skip:no-ui:v1 -->`,
+          `### tik-test skipped — no UI surface in diff`,
+          ``,
+          `This PR touches ${files.length} file${files.length === 1 ? "" : "s"}, none of which look like a user-facing surface (no \`app/\`, \`src/\`, \`pages/\`, \`components/\`, or \`.html\`/\`.tsx\`/\`.css\`/etc.). Skipping to keep the review meaningful.`,
+          ``,
+          `To force a review anyway, trigger the workflow manually via Actions → tik-test review → Run workflow, or pass the \`tik-test-force\` PR label (TODO).`,
+        ].join("\n"));
+      }
+      return;
     }
   }
 
@@ -421,30 +470,50 @@ function extractPreviewUrlFromComments(comments: Array<{ body?: string }>): stri
  */
 const TESTING_HEADING_RE = /^##\s+(tik[- ]?test\b|testing\b|how\s+to\s+test\b|test\s+(?:setup|environment|instructions)\b).*$/im;
 
-async function findConfig(workDir: string): Promise<string | null> {
-  // 1. Dedicated tiktest.md
+/** Source the resolved config file came from, for logging + strict-mode
+ *  enforcement. `dedicated` (tiktest.md) is the only one that should
+ *  show up silently; the others are loud warnings or hard errors. */
+export type ConfigSource = "dedicated" | "readme-section" | "legacy-claude" | "bare-readme";
+
+export interface ResolvedConfig {
+  path: string;
+  source: ConfigSource;
+}
+
+/** Walks the discovery chain and returns the resolved config + the
+ *  reason we picked it. Exported so `tik-test doctor` can show the same
+ *  resolution without spawning a full PR run. */
+export async function resolveConfigPath(workDir: string): Promise<ResolvedConfig | null> {
+  // 1. Dedicated tiktest.md (preferred — never surprises).
   for (const rel of ["tiktest.md", "TIKTEST.md", "tik-test.md", "TikTest.md"]) {
     const full = path.join(workDir, rel);
     try {
       const s = await stat(full);
-      if (s.isFile()) return full;
+      if (s.isFile()) return { path: full, source: "dedicated" };
     } catch {}
   }
-  // 2. README.md with a recognised testing section
+  // 2. README.md with a recognised testing section.
   const readmes = ["README.md", "readme.md", "Readme.md"];
   for (const rel of readmes) {
     const full = path.join(workDir, rel);
     try {
       const raw = await readFile(full, "utf8");
-      if (TESTING_HEADING_RE.test(raw)) return full;
+      if (TESTING_HEADING_RE.test(raw)) return { path: full, source: "readme-section" };
     } catch {}
   }
-  // 3. Legacy: claude.md / CLAUDE.md / .claude/claude.md, then bare README.md
-  for (const rel of ["claude.md", "CLAUDE.md", ".claude/claude.md", ...readmes]) {
+  // 3. Legacy fallbacks. These are footguns — print loudly when used.
+  for (const rel of ["claude.md", "CLAUDE.md", ".claude/claude.md"]) {
     const full = path.join(workDir, rel);
     try {
       const s = await stat(full);
-      if (s.isFile()) return full;
+      if (s.isFile()) return { path: full, source: "legacy-claude" };
+    } catch {}
+  }
+  for (const rel of readmes) {
+    const full = path.join(workDir, rel);
+    try {
+      const s = await stat(full);
+      if (s.isFile()) return { path: full, source: "bare-readme" };
     } catch {}
   }
   return null;
@@ -762,4 +831,33 @@ async function maybePostFormalReview(
   ]);
   if (code === 0) console.log(chalk.green(`     ✓ review ${reviewEvent} posted`));
   else console.log(chalk.yellow(`     ! couldn't post review (missing pull-requests:write perm?)`));
+}
+
+// ── No-UI-surface skip helpers ────────────────────────────────────
+// A diff that touches only `.github/`, `*.md`, lockfiles, etc. has
+// nothing for the agent to drive. Detect that from the diff's `diff
+// --git a/<path>` headers (no extra API call needed) and bail before
+// the plan call so the workflow PR doesn't waste tokens on a
+// fabricated review.
+
+/** A path counts as "UI surface" if it's under a conventional UI dir
+ *  OR has a UI file extension. Both cases are independently strong
+ *  signals — `.tsx` outside `src/` (e.g. in `examples/`) still counts. */
+function isUiSurface(file: string): boolean {
+  return UI_PATH_RE.test(file) || UI_EXT_RE.test(file);
+}
+const UI_PATH_RE = /(?:^|\/)(?:app|src|pages|components|views|routes|stories|examples)\//;
+const UI_EXT_RE = /\.(?:html?|tsx?|jsx?|vue|svelte|css|scss|sass|less|astro|mdx|svg)$/i;
+
+function extractFilesFromDiff(diff: string): string[] {
+  return Array.from(diff.matchAll(/^diff --git a\/(\S+)/gm), (m) => m[1]);
+}
+
+async function postSkipComment(ref: PRRef, body: string): Promise<void> {
+  await ghOrThrow([
+    "pr", "comment", String(ref.number),
+    "--repo", `${ref.owner}/${ref.repo}`,
+    "--body-file", "-",
+  ], { input: body });
+  console.log(chalk.green(`     ✓ posted no-UI-surface skip comment on PR #${ref.number}`));
 }

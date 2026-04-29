@@ -61,6 +61,23 @@ inputs:
       cheap per-commit feedback. Default: false.
     required: false
     default: 'false'
+  strict-config:
+    description: |
+      Refuse silent fallback to CLAUDE.md / bare README when no tiktest.md
+      is present. Recommended for production setups so a missing or
+      mis-located tiktest.md fails fast rather than silently planning
+      against the wrong file. Default: false.
+    required: false
+    default: 'false'
+  skip-no-ui:
+    description: |
+      When the PR diff contains no UI surface (no `app/`, `src/`,
+      `pages/`, `components/`, or `.html`/`.tsx`/`.css`/etc. files),
+      skip the review and post a "no UI changed" comment. Stops
+      workflow-only / docs-only PRs from producing a fabricated red
+      review. Default: false.
+    required: false
+    default: 'false'
   run-on-every-push:
     description: |
       When false (default), tik-test only runs on the initial `opened` /
@@ -274,6 +291,8 @@ runs:
         REQUIRE_PASS: ${{ inputs.require-pass }}
         QUICK: ${{ inputs.quick }}
         NO_VIDEO: ${{ inputs.no-video }}
+        STRICT_CONFIG: ${{ inputs.strict-config }}
+        SKIP_NO_UI: ${{ inputs.skip-no-ui }}
         ASSET_REPO: ${{ github.repository }}
         ACTION_PATH: ${{ github.action_path }}
         WORKING_DIR: ${{ inputs.working-directory }}
@@ -302,6 +321,8 @@ runs:
         [[ "$REQUIRE_PASS" == "true" ]] && ARGS+=( --require-pass )
         [[ "$QUICK" == "true" ]] && ARGS+=( --quick )
         [[ "$NO_VIDEO" == "true" ]] && ARGS+=( --no-video )
+        [[ "$STRICT_CONFIG" == "true" ]] && ARGS+=( --strict-config )
+        [[ "$SKIP_NO_UI" == "true" ]] && ARGS+=( --skip-no-ui )
         [[ -n "$PREVIEW_URL" ]] && ARGS+=( --url "$PREVIEW_URL" )
         if [[ -n "$WORKING_DIR" ]]; then cd "$WORKING_DIR"; fi
         node "$ACTION_PATH/dist/cli.js" "${ARGS[@]}"

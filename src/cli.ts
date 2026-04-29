@@ -11,6 +11,7 @@ import { editSingleVideo } from "./single-video-editor.js";
 import { generateChecklist } from "./checklist.js";
 import { startViewer } from "./viewer.js";
 import { runForPR } from "./pr.js";
+import { runDoctor, printDoctorReport } from "./doctor.js";
 import { KNOBS, resolveKnob } from "./timeouts.js";
 
 const program = new Command();
@@ -118,6 +119,8 @@ program
   .option("--no-video", "skip render + upload — post a text-only checklist comment instead (faster, much cheaper)")
   .option("--require-pass", "exit non-zero if any test step failed (for CI gating)")
   .option("--review <mode>", "post a formal PR review: none | approve-on-pass | request-changes-on-fail | always", "request-changes-on-fail")
+  .option("--strict-config", "refuse silent fallback to CLAUDE.md / bare README — require an explicit tiktest.md")
+  .option("--skip-no-ui", "exit cleanly with a 'no UI surface' comment when the diff has no UI files")
   .action(async (pr, opts) => {
     const voice = opts.voice === false ? null : (opts.voice as string);
     await runForPR(pr, {
@@ -133,6 +136,8 @@ program
       noVideo: opts.video === false,
       requirePass: !!opts.requirePass,
       review: opts.review,
+      strictConfig: !!opts.strictConfig || process.env.TIK_STRICT_CONFIG === "1",
+      skipNoUi: !!opts.skipNoUi || process.env.TIK_SKIP_NO_UI === "1",
     });
   });
 
@@ -184,6 +189,21 @@ program
     }
     console.log(chalk.dim("Defaults are tuned for a typical PR (1-3 goals, 30-60s recording, 8-12 narration scenes)."));
     console.log(chalk.dim("Bump only after you've seen the corresponding default fail in your run."));
+  });
+
+program
+  .command("doctor")
+  .description("Diagnose tik-test setup: config file, preview URL, claude CLI auth, workflow file, secrets")
+  .option("-d, --dir <dir>", "directory to check", process.cwd())
+  .option("--json", "emit machine-readable JSON instead of the human report")
+  .action(async (opts) => {
+    const report = await runDoctor({ cwd: path.resolve(opts.dir) });
+    if (opts.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      printDoctorReport(report);
+    }
+    if (report.summary.error > 0) process.exit(1);
   });
 
 /** Pretty-print the LLM-synthesised checklist (no-video mode). Falls back

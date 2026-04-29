@@ -65,14 +65,20 @@ permissions:
 
 jobs:
   review:
+    # Owners gate — by default ANY collaborator can trigger paid runs.
+    # To restrict, set repo Settings → Variables → TIKTEST_OWNERS to a
+    # JSON array of usernames, e.g. '["alice","bob"]'. Fork PRs are
+    # always blocked because their secrets aren't shared with forks.
     if: |
-      contains(fromJSON(vars.TIKTEST_OWNERS || format('["{0}"]', github.repository_owner)), github.actor) &&
+      (vars.TIKTEST_OWNERS == '' || contains(fromJSON(vars.TIKTEST_OWNERS), github.actor)) &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 30      # extra 5 min over the default — DB boot eats into the budget
+    # 45 min headroom — DB boot, migrations, and seed eat into the budget
+    # before tik-test even starts.
+    timeout-minutes: 45
 
     # Service containers — these run alongside the job container on the
     # same Docker network, reachable by service name (`postgres`, `redis`).
