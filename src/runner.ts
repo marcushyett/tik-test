@@ -206,51 +206,74 @@ const BROKEN_IMAGE_FALLBACK = `
 `;
 
 /**
- * FLIGHT RECORDER. Solves the "loading spinner I can't screenshot" problem.
+ * FLIGHT RECORDER. Solves the "loading spinner / streaming indicator I
+ * can't screenshot" problem.
  *
  * Screenshot tool calls have 200-1500ms of round-trip latency (MCP →
- * playwright → image encode → back). A loading spinner that appears for
- * 200ms is gone before the screenshot lands. The agent loops trying to
- * catch it, burning the entire goal budget.
+ * playwright → image encode → back). A status indicator that appears
+ * for 200ms is gone before the screenshot lands. The agent loops trying
+ * to catch it, burning the entire goal budget.
  *
  * This in-page recorder runs at the page's own clock (sub-ms precision)
- * and captures every transient state into a circular buffer:
+ * and captures every transient state into TWO bounded buffers:
  *
- *   - DOM additions/removals where the element matches a "loading-ish"
- *     selector (.animate-pulse, .skeleton, .spinner, [aria-busy], …)
- *   - fetch() and XMLHttpRequest start/end with URL + duration + status
- *   - active CSS animations (via document.getAnimations())
+ *   1. EVENT BUFFER (`buf`): loading-class DOM nodes added/removed,
+ *      ARIA-status regions changing, fetch + XHR start/end with URL +
+ *      status + duration, agent markers.
+ *   2. TEXT BUFFER (`textBuf`): every text addition/change anywhere in
+ *      the DOM, deduped + bounded. This is what catches plain-text
+ *      indicators like "Yolo is working...", "AI is thinking...",
+ *      "Generating response..." that aren't tagged with a loading class.
  *
- * Each event has a `t` field = performance.now() at the time it fired.
- * The agent calls window.__tikFlight.mark(label) before triggering an
- * action, fires the action, calls .mark(label) again, then calls
- * window.__tikFlight.between(labelA, labelB) to read every transient
- * state captured between those two timestamps.
+ * Each event/text entry has `t = performance.now()`. Public API on
+ * `window.__tikFlight`:
  *
- * The buffer is bounded (1000 events) so a long-running goal can't OOM.
+ *   mark(label)                — drop a timestamp marker
+ *   findText(regex, opts)      — ONE-CALL "did matching text appear since
+ *                                marker?" — returns { matched, atMs,
+ *                                durationMs, text }. The preferred API.
+ *   waitForText(regex, opts)   — async wait until matching text appears
+ *                                or timeout; never poll-loop in agent
+ *                                tool calls again.
+ *   between(labelA, labelB)    — full event window for deeper investigation
+ *   snapshot()                 — what's loading RIGHT NOW (no marker needed)
+ *   raw(limit), clear()        — debugging
  *
- * IMPORTANT: this is appended to addInitScript so it runs on EVERY
- * navigation in EVERY frame — markers and event capture survive route
- * changes. window.__tikFlight is re-created per page but the agent never
- * needs to bridge across navigations because each goal's transient
- * verifications happen inside one page.
+ * IMPORTANT: appended via addInitScript so it runs on every navigation
+ * in every frame. window.__tikFlight is re-created per page; agent
+ * verifications happen inside one page so this is fine.
  */
 const FLIGHT_RECORDER_INIT = `
 (() => {
   if (window.__tikFlight) return;
   const BUF_MAX = 1000;
+  const TEXT_BUF_MAX = 800;
   const buf = [];
+  const textBuf = [];
   const marks = Object.create(null);
   const now = () => performance.now();
   const push = (kind, payload) => {
     if (buf.length >= BUF_MAX) buf.shift();
     buf.push({ t: now(), kind, ...payload });
   };
-  // 1. Loading-ish DOM nodes — anything matching these selectors gets
-  //    logged when added/removed. Covers Tailwind, Material, ARIA.
+  const pushText = (text, source) => {
+    const trimmed = String(text || '').replace(/\\s+/g, ' ').trim();
+    if (!trimmed || trimmed.length < 2 || trimmed.length > 240) return;
+    // Dedupe against the most recent entry — streaming text appends a
+    // char at a time, we don't need 800 entries for "Yolo is workin",
+    // "Yolo is working", "Yolo is working.", "Yolo is working..", …
+    const last = textBuf[textBuf.length - 1];
+    if (last && last.text === trimmed) return;
+    if (textBuf.length >= TEXT_BUF_MAX) textBuf.shift();
+    textBuf.push({ t: now(), text: trimmed.slice(0, 200), src: source });
+  };
+  // Loading-ish DOM nodes — class-based AND ARIA-based signals. Covers
+  // Tailwind / Material spinners, ARIA-status regions (live regions
+  // that announce "loading..."), framework-specific data attributes.
   const LOADING_SEL = [
     '.animate-pulse', '.animate-spin', '.spinner', '.loading', '.loader',
     '.skeleton', '[aria-busy="true"]', '[role="status"]', '[role="progressbar"]',
+    '[role="log"]', '[aria-live="polite"]', '[aria-live="assertive"]',
     '[data-state="loading"]', '[data-loading="true"]',
   ].join(',');
   const matches = (el) => {
@@ -265,22 +288,64 @@ const FLIGHT_RECORDER_INIT = `
       return [el.tagName?.toLowerCase(), cls && '.' + cls.split(/\\s+/).slice(0, 3).join('.'), role && '[role=' + role + ']', busy && '[aria-busy=' + busy + ']'].filter(Boolean).join('');
     } catch { return el.tagName?.toLowerCase() || ''; }
   };
+  // Pending text-watcher subscriptions — one per active waitForText().
+  const watchers = [];
+  const notifyWatchers = (entry) => {
+    for (let i = watchers.length - 1; i >= 0; i--) {
+      const w = watchers[i];
+      if (w.regex.test(entry.text)) {
+        watchers.splice(i, 1);
+        clearTimeout(w.timer);
+        w.resolve({ matched: true, atMs: Math.round(entry.t - w.start), text: entry.text });
+      }
+    }
+  };
   try {
     new MutationObserver((muts) => {
       for (const m of muts) {
-        for (const n of m.addedNodes) if (matches(n)) push('loading-show', { el: describe(n) });
-        for (const n of m.removedNodes) if (matches(n)) push('loading-hide', { el: describe(n) });
-        if (m.type === 'attributes' && (m.attributeName === 'aria-busy' || m.attributeName === 'data-state' || m.attributeName === 'data-loading' || m.attributeName === 'class')) {
+        // Loading-class DOM node tracking
+        for (const n of m.addedNodes) {
+          if (matches(n)) push('loading-show', { el: describe(n) });
+          // ALSO walk added subtree for visible text — this is what
+          // catches plain-text indicators like "Yolo is working..."
+          // that aren't class-tagged.
+          if (n.nodeType === 1) {
+            const txt = (n.textContent || '').trim();
+            if (txt) {
+              pushText(txt, 'add');
+              notifyWatchers(textBuf[textBuf.length - 1] || { t: now(), text: txt });
+            }
+          } else if (n.nodeType === 3) {
+            pushText(n.nodeValue, 'add');
+            notifyWatchers(textBuf[textBuf.length - 1] || { t: now(), text: n.nodeValue });
+          }
+        }
+        for (const n of m.removedNodes) {
+          if (matches(n)) push('loading-hide', { el: describe(n) });
+        }
+        if (m.type === 'attributes') {
           if (matches(m.target)) push('loading-show', { el: describe(m.target), attr: m.attributeName });
+        }
+        if (m.type === 'characterData') {
+          // Streaming text updates fire characterData on the text node.
+          // Skip noisy inputs (textarea/input contenteditable) since
+          // they fire on every keystroke the agent makes — only log
+          // when the parent is something we'd consider status-bearing
+          // OR when the page has otherwise interesting state.
+          const parent = m.target.parentElement;
+          const isInput = parent && (parent.isContentEditable || parent.tagName === 'TEXTAREA' || parent.tagName === 'INPUT');
+          if (!isInput) {
+            pushText(m.target.nodeValue, 'change');
+            notifyWatchers(textBuf[textBuf.length - 1] || { t: now(), text: m.target.nodeValue });
+          }
         }
       }
     }).observe(document.documentElement || document, {
-      childList: true, subtree: true, attributes: true,
-      attributeFilter: ['aria-busy', 'data-state', 'data-loading', 'class'],
+      childList: true, subtree: true, attributes: true, characterData: true,
+      attributeFilter: ['aria-busy', 'aria-live', 'data-state', 'data-loading', 'class', 'role'],
     });
   } catch {}
-  // 2. fetch() wrapper. Captures URL, status, duration. Doesn't change
-  //    behaviour — pass-through that records both ends.
+  // fetch() wrapper — pass-through that records start/end.
   try {
     const origFetch = window.fetch;
     if (origFetch) {
@@ -298,7 +363,7 @@ const FLIGHT_RECORDER_INIT = `
       };
     }
   } catch {}
-  // 3. XMLHttpRequest wrapper. Same idea, for the apps that don't use fetch.
+  // XMLHttpRequest wrapper — same idea for legacy / polling apps.
   try {
     const X = window.XMLHttpRequest;
     if (X) {
@@ -319,23 +384,109 @@ const FLIGHT_RECORDER_INIT = `
       };
     }
   } catch {}
-  // 4. Public API on window. The agent uses these via browser_evaluate.
+
+  // Helper used by both findText() and waitForText(): coerce a string
+  // pattern to a case-insensitive RegExp; preserve a RegExp as-is.
+  const toRegex = (p) => {
+    if (p instanceof RegExp) return p;
+    return new RegExp(String(p), 'i');
+  };
+
   window.__tikFlight = {
+    /** Drop a timestamp marker. Returns the timestamp. */
     mark(label) {
       const t = now();
       marks[String(label)] = t;
       push('mark', { label: String(label) });
       return t;
     },
+
+    /**
+     * THE PREFERRED API for "did this text appear after I did X?". One
+     * call, sync, no second marker needed. Returns either:
+     *   { matched: true, atMs: <ms after marker>, text: <captured>, durationMs?: <ms visible> }
+     *   { matched: false, searchedMs: <window size>, recentText: [<top 8 captured>] }
+     *
+     * Use for streaming indicators ("Yolo is working...", "AI is thinking..."),
+     * toast messages, success banners, error flashes — anything that's
+     * plain text rather than a class-tagged spinner.
+     *
+     * If opts.since is omitted, searches the last 5 seconds.
+     */
+    findText(pattern, opts = {}) {
+      const re = toRegex(pattern);
+      const sinceLabel = opts.since;
+      const sinceT = sinceLabel != null
+        ? (typeof sinceLabel === 'number' ? sinceLabel : marks[String(sinceLabel)])
+        : (now() - 5000);
+      if (sinceT == null) return { error: 'mark not found: ' + sinceLabel };
+      const matches = textBuf.filter((e) => e.t >= sinceT && re.test(e.text));
+      if (matches.length === 0) {
+        return {
+          matched: false,
+          searchedMs: Math.round(now() - sinceT),
+          recentText: textBuf.slice(-8).map((e) => ({ atMs: Math.round(e.t - sinceT), text: e.text })),
+        };
+      }
+      const first = matches[0];
+      const last = matches[matches.length - 1];
+      return {
+        matched: true,
+        atMs: Math.round(first.t - sinceT),
+        text: first.text,
+        durationMs: matches.length > 1 ? Math.round(last.t - first.t) : null,
+        occurrences: matches.length,
+      };
+    },
+
+    /**
+     * Async — resolves the MOMENT matching text appears (no polling),
+     * or after opts.timeout ms with matched: false, timedOut: true.
+     * Use this when you're about to fire an action and want to know
+     * the result without burning tool calls in a poll loop.
+     *
+     * Default timeout 2000ms.
+     */
+    waitForText(pattern, opts = {}) {
+      const re = toRegex(pattern);
+      const start = now();
+      // First, check if it ALREADY appeared since the optional opts.since
+      // marker - saves a roundtrip when the text is already on screen.
+      const sinceT = opts.since != null
+        ? (typeof opts.since === 'number' ? opts.since : marks[String(opts.since)])
+        : start;
+      if (sinceT != null) {
+        const existing = textBuf.find((e) => e.t >= sinceT && re.test(e.text));
+        if (existing) {
+          return Promise.resolve({ matched: true, atMs: Math.round(existing.t - sinceT), text: existing.text, alreadyPresent: true });
+        }
+      }
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          const idx = watchers.findIndex((w) => w.resolve === resolve);
+          if (idx >= 0) watchers.splice(idx, 1);
+          resolve({
+            matched: false,
+            timedOut: true,
+            waitedMs: Math.round(now() - start),
+            recentText: textBuf.slice(-8).map((e) => ({ atMs: Math.round(e.t - start), text: e.text })),
+          });
+        }, opts.timeout ?? 2000);
+        watchers.push({ regex: re, start, resolve, timer });
+      });
+    },
+
+    /** Full event window between two markers. Use when findText isn't
+     *  enough — e.g. "did a fetch fire, AND did a spinner show, AND did
+     *  the spinner hide before the fetch resolved?" */
     between(labelA, labelB) {
       const a = typeof labelA === 'number' ? labelA : marks[String(labelA)];
-      const b = typeof labelB === 'number' ? labelB : marks[String(labelB)] ?? now();
+      const b = typeof labelB === 'number' ? labelB : (marks[String(labelB)] ?? now());
       if (a == null) return { error: 'mark not found: ' + labelA };
       const lo = Math.min(a, b);
       const hi = Math.max(a, b);
       const events = buf.filter((e) => e.t >= lo - 50 && e.t <= hi + 50).map((e) => ({ ...e, dt: Math.round(e.t - lo) }));
-      // Summarise for readability — the agent gets the structured list AND
-      // a one-line summary so it doesn't have to parse 200 events.
+      const texts = textBuf.filter((e) => e.t >= lo - 50 && e.t <= hi + 50).map((e) => ({ ...e, dt: Math.round(e.t - lo) }));
       const counts = {};
       const loadingShown = new Set();
       let firstLoading = null, lastLoading = null;
@@ -353,26 +504,30 @@ const FLIGHT_RECORDER_INIT = `
       const summary = {
         windowMs: Math.round(hi - lo),
         eventCount: events.length,
+        textCount: texts.length,
         loadingFlash: loadingShown.size > 0
           ? { elements: [...loadingShown].slice(0, 5), firstAtMs: firstLoading, lastAtMs: lastLoading, durationMs: lastLoading != null && firstLoading != null ? lastLoading - firstLoading : null }
           : null,
         network: { starts: netStarts, ends: netEnds },
         kinds: counts,
       };
-      return { summary, events: events.slice(0, 60) };
+      return { summary, events: events.slice(0, 60), texts: texts.slice(0, 30) };
     },
+
+    /** Synchronous current state: what's loading RIGHT NOW. Useful right
+     *  after firing an action when you want to confirm the spinner is
+     *  on-screen without needing a marker pair. */
     snapshot() {
-      // Synchronous current state — what's loading RIGHT NOW. Cheap to
-      // call at any moment without needing a marker pair.
       const els = Array.from(document.querySelectorAll(LOADING_SEL)).slice(0, 10).map(describe);
       const animations = (document.getAnimations ? document.getAnimations() : []).slice(0, 10).map((a) => ({
         playState: a.playState,
         duration: a.effect?.getTiming?.()?.duration,
       }));
-      return { now: now(), loadingNow: els, animations };
+      return { now: now(), loadingNow: els, animations, recentText: textBuf.slice(-5).map((e) => e.text) };
     },
-    raw(limit = 200) { return buf.slice(-limit); },
-    clear() { buf.length = 0; for (const k in marks) delete marks[k]; },
+
+    raw(limit = 200) { return { events: buf.slice(-limit), texts: textBuf.slice(-limit) }; },
+    clear() { buf.length = 0; textBuf.length = 0; for (const k in marks) delete marks[k]; },
   };
 })();
 `;
