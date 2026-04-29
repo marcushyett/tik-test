@@ -24,30 +24,12 @@ Copy one of these prompts into [Claude Code](https://docs.claude.com/en/docs/cla
 **Wire it into a GitHub repo** — `cd` into your repo, open Claude Code, paste:
 
 ````
-Set up tik-test (https://github.com/marcushyett/tik-test — 45s video reviews on every PR) on this repo. The objective: end with a working tik-test.yml + a properly drafted tiktest.md + clear instructions for the secrets you can't add for me. We'll exercise it on a real PR after.
-
-1. Read the project README, especially the "GitHub Action" section and templates/workflows/.
-
-2. Pick the right workflow template (local-dev / vercel-preview / staging-with-services) by inspecting package.json, framework configs (next.config.*, vite.config.*, etc.), and deploy setup (vercel.json, render.yaml, fly.toml). Ask me if it's ambiguous.
-
-3. Create .github/workflows/tik-test.yml from that template, adapted for this project (build command, dev port, working-directory if the app is in a subdir).
-
-4. Draft tiktest.md at the repo root. This file is the contract — tik-test will read it on every PR. To draft it well:
-   a. Read README.md, package.json, and ~5-10 representative source files (routes/pages, primary components) to infer what the app does and the main user flows.
-   b. Detect login surface: search for "sign in" / "login" / auth provider imports. If there's a login wall, ask me for test credentials.
-   c. Identify the 3-5 highest-risk user-facing surfaces (forms, dialogs, lists with filtering, payment flows, anything stateful).
-   d. Write tiktest.md as: one-paragraph app description → login section (if any) → "Risky surfaces" bullet list → optional "Hints" with selectors or test-IDs you found.
-   e. Show it to me before you commit it. Ask for corrections. Don't proceed until I confirm.
-
-5. Sanity-check what tik-test will read: confirm tiktest.md is at the repo root (or under your chosen working-directory) and is the only config file there. If CLAUDE.md / AGENTS.md / claude.md exist and you set working-directory: . (root), warn me — tik-test prefers tiktest.md but a path mismatch can cause silent fallback to the wrong file.
-
-6. List the GitHub Secrets I need to add. Required: CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token` locally, then paste). Inspect the repo to decide which optional secrets apply: OPENAI_API_KEY (TTS narration — recommend if I want sound), VERCEL_AUTOMATION_BYPASS_SECRET (only if you detected Vercel + Deployment Protection — Vercel project Settings → Deployment Protection → Protection Bypass for Automation). Give me a one-line instruction per secret on where to get it.
-
-7. Tell me whether to lock down `TIKTEST_OWNERS`. By default any collaborator can trigger runs. If this is a public repo and you want to restrict to specific users, set repo Settings → Variables → TIKTEST_OWNERS to a JSON array like `["my-username"]`.
-
-8. Open a PR with the workflow + tiktest.md. **Heads up: this PR's diff has no UI surface for tik-test to test, so the auto-review on it will skip with a "no UI changed" comment — that's expected, not a failure.** The next PR with real UI changes is where we'll see tik-test actually work.
-
-9. After I merge that, find a small visible change to test on — scan open issues or surface a tiny UX nit (one-screen change ideal: button label, empty state, missing affordance, simple modal). Describe it to me with the issue number and your proposed implementation. Wait for my okay before writing any code. Once approved, ship it on a separate branch as the real first test PR.
+Set up tik-test (https://github.com/marcushyett/tik-test — 45s video reviews on every PR) on this repo. Goal: working tik-test.yml + drafted tiktest.md + secret instructions, then test on a real PR.
+1. Pick a template (local-dev / vercel-preview / staging-with-services) from inspecting package.json, framework configs, and deploy setup; ask if ambiguous. Create .github/workflows/tik-test.yml from it, adapted (build cmd, dev port, working-directory).
+2. Draft tiktest.md at repo root: read README + package.json + 5-10 representative source files to infer flows; detect login (ask me for creds if there's a wall); list 3-5 highest-risk user-facing surfaces. Format: one-paragraph app description → login → "Risky surfaces" bullets → optional "Hints" with test-IDs. Show me the draft and wait for confirmation before committing. Warn if CLAUDE.md / AGENTS.md sit alongside it (silent-fallback footgun).
+3. List the secrets I need to add: CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`, required) plus optionals you detect apply (OPENAI_API_KEY for narration; VERCEL_AUTOMATION_BYPASS_SECRET if Vercel Deployment Protection is on). One line each on where to get them. Mention that TIKTEST_OWNERS in repo Variables can restrict who triggers runs (default = any collaborator).
+4. Open the PR. Heads-up: its diff has no UI surface, so the auto-review will skip with a "no UI changed" comment — expected, not a failure.
+5. After I merge it, propose a small visible UI change (one-screen nit from open issues or your own suggestion) to be the real first test PR. Wait for my okay, then ship on a separate branch.
 ````
 
 **Install the Claude Code plugin** — records a walkthrough of whatever you just shipped, locally.
