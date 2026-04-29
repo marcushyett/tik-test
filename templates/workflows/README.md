@@ -84,6 +84,12 @@ where the app crashes without a real DB.
   don't add those steps yourself, you'll just slow the run down.
 - `tiktest.md` is your contract with tik-test. The templates show the
   minimum shape; full reference is in the root [`README.md`](../../README.md#telling-tik-test-how-to-test-your-app).
+- **Pure-docs / config-only / lockfile-only PRs** are detected by the
+  plan generator on every run and skipped cleanly with an explanatory
+  comment plus a `tik-test` check-run with `conclusion: skipped`. You
+  don't need to scope `paths:` defensively to avoid them — but a
+  `paths:` filter is still useful to keep workflow runs off PRs that
+  obviously can't affect your app.
 
 ## Reference: dogfooded versions
 

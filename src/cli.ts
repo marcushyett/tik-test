@@ -120,7 +120,6 @@ program
   .option("--require-pass", "exit non-zero if any test step failed (for CI gating)")
   .option("--review <mode>", "post a formal PR review: none | approve-on-pass | request-changes-on-fail | always", "request-changes-on-fail")
   .option("--strict-config", "refuse silent fallback to CLAUDE.md / bare README — require an explicit tiktest.md")
-  .option("--skip-no-ui", "exit cleanly with a 'no UI surface' comment when the diff has no UI files")
   .action(async (pr, opts) => {
     const voice = opts.voice === false ? null : (opts.voice as string);
     await runForPR(pr, {
@@ -137,7 +136,6 @@ program
       requirePass: !!opts.requirePass,
       review: opts.review,
       strictConfig: !!opts.strictConfig || process.env.TIK_STRICT_CONFIG === "1",
-      skipNoUi: !!opts.skipNoUi || process.env.TIK_SKIP_NO_UI === "1",
     });
   });
 

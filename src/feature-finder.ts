@@ -17,7 +17,7 @@ type FinderAction =
   | { action: "click"; target: string }
   | { action: "wait"; ms?: number };
 
-interface PageSnapshot {
+export interface PageSnapshot {
   url: string;
   title: string;
   navItems: string[];
@@ -25,7 +25,7 @@ interface PageSnapshot {
   bodyExcerpt: string;
 }
 
-async function snapshot(page: Page): Promise<PageSnapshot> {
+export async function snapshot(page: Page): Promise<PageSnapshot> {
   const url = page.url();
   let title = "";
   try { title = await page.title(); } catch {}

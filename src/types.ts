@@ -23,6 +23,18 @@ export interface TestPlan {
   viewport?: { width: number; height: number };
   /** High-level goals driven by an autonomous agent. */
   goals?: Goal[];
+  /** Plan generator's verdict on whether this PR has any chance of
+   *  affecting user-facing behaviour — directly OR via a backend
+   *  endpoint that powers a UI surface. When `true`, the diff is a
+   *  genuine no-op (pure docs / lockfile-only / unrelated config) and
+   *  the rest of the run is skipped cleanly with a "skipped" comment +
+   *  neutral check-run conclusion. The agent decides; tik-test does
+   *  NOT pre-classify files by extension or path. */
+  noOp?: boolean;
+  /** Short reason returned alongside `noOp: true` — surfaced verbatim in
+   *  the skipped PR comment so reviewers know WHY the run was skipped
+   *  ("only README + lockfile changed", "moves a CI workflow", etc). */
+  noOpReason?: string;
 }
 
 export type EventOutcome = "success" | "failure" | "skipped";
@@ -110,4 +122,9 @@ export interface Config {
   prContext?: string;
   plan?: TestPlan;
   music?: string;
+  /** Optional sign-in button label declared by the consumer's tiktest.md
+   *  frontmatter (`signin-button:`). When present, the runner uses it to
+   *  word a more actionable failure when login can't proceed: "expected
+   *  button matching `<label>` not found, visible buttons were: …". */
+  expectedSignInButton?: string;
 }

@@ -3,7 +3,7 @@ import path from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import chalk from "chalk";
 import type { Goal, RunArtifacts, StepEvent, TestPlan } from "./types.js";
-import { findFeature, isFeaturePageReady } from "./feature-finder.js";
+import { findFeature, isFeaturePageReady, snapshot } from "./feature-finder.js";
 import { runGoal } from "./goal-agent.js";
 
 /**
@@ -125,6 +125,11 @@ export interface RunOptions {
   prTitle?: string;
   /** PR description / body — the "why" behind the change. */
   prBody?: string;
+  /** Optional sign-in button label declared in the consumer repo's
+   *  tiktest.md frontmatter. When provided, the pre-test sign-in pass
+   *  passes it through to the agent as a hint and the runner produces a
+   *  more actionable diagnostic on failure. */
+  expectedSignInButton?: string;
 }
 
 /**
@@ -236,7 +241,7 @@ const INTERACTION_RECORDER_INIT = `
 })();
 `;
 
-export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, projectContext, diff, comments, prTitle, prBody }: RunOptions): Promise<RunArtifacts> {
+export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, projectContext, diff, comments, prTitle, prBody, expectedSignInButton }: RunOptions): Promise<RunArtifacts> {
   await mkdir(runDir, { recursive: true });
   const videoDir = path.join(runDir, "video");
   await mkdir(videoDir, { recursive: true });
@@ -401,7 +406,33 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
 
   try {
     // Always navigate to startUrl first so the setup phase has a valid page.
-    await page.goto(plan.startUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
+    // Distinguish "preview URL unreachable" (network error / DNS / 4xx on the
+    // root) from "preview URL reached but sign-in UI was missing" — the two
+    // failure modes need different fixes (#1 the URL is wrong / preview not
+    // deployed yet; #2 the dev-auth UI doesn't exist on this preview).
+    try {
+      const resp = await page.goto(plan.startUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
+      if (resp && resp.status() >= 400) {
+        throw new Error(
+          `Preview URL ${plan.startUrl} responded ${resp.status()} on the root. ` +
+          `If you're using the official Vercel GitHub integration this is usually transient; ` +
+          `if you're using a hand-rolled deploy workflow, the registered URL might point at build logs ` +
+          `(GitHub's deprecated 'target_url' alias) instead of the deployed app. ` +
+          `In templates/workflows/vercel-preview.yml, prefer '(.environment_url // .target_url)' over '.target_url'.`
+        );
+      }
+    } catch (e) {
+      const msg = (e as Error).message;
+      throw new Error(
+        `Couldn't reach preview URL ${plan.startUrl}: ${msg.split("\n")[0]}\n\n` +
+        `What this means: Playwright failed to load the root of the URL tik-test was given. ` +
+        `It is NOT a sign-in / auth / "couldn't find dev login" failure — the agent never got a chance to look at the page.\n\n` +
+        `Common causes:\n` +
+        `  • The PR's preview deployment isn't actually ready yet, or the workflow timed out polling for it.\n` +
+        `  • The URL the workflow registered points at build logs (vercel.com/.../build-logs) rather than the deployed app — check 'environment_url' vs 'target_url' on the GitHub Deployment status.\n` +
+        `  • Vercel Deployment Protection is on but no automation-bypass secret was supplied.`
+      );
+    }
     // Let network settle, then prime lazy-loaders + wait for images so the
     // app's thumbnails are actually rendered before we start recording.
     await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
@@ -414,12 +445,18 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     // before the real goals run. Use a goal-agent with a fixed,
     // narrow intent: log in if needed, otherwise do nothing.
     if (projectContext && projectContext.trim()) {
+      const expectedBtnHint = expectedSignInButton
+        ? ` The repo's tiktest.md declares the expected sign-in button label as: ${JSON.stringify(expectedSignInButton)}. ` +
+          `Click that button (or one whose text matches) to start the dev-auth flow. ` +
+          `If you cannot find a button with that label among the visible buttons, REPORT FAILURE — do not guess at Google / SSO paths.`
+        : "";
       const loginGoal: Goal = {
         id: "_login",
         intent:
           "If the current page shows a sign-in / login / authentication screen, sign in using the credentials in the CONTEXT below, then stop. " +
           "If the page is already past auth (you can see the app's main content), do nothing and emit OUTCOME: success — already authenticated. " +
-          "DO NOT explore the app, DO NOT test any feature, DO NOT click around. Sign in only.",
+          "DO NOT explore the app, DO NOT test any feature, DO NOT click around. Sign in only." +
+          expectedBtnHint,
         shortLabel: "Sign in",
         importance: "high",
       };
@@ -427,7 +464,21 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       try {
         const loginResult = await runGoal(page, loginGoal, projectContext.trim(), cdpEndpoint);
         if (loginResult.outcome === "failure") {
-          console.log(chalk.yellow(`  ! login phase reported failure but continuing — goals may still work if no auth required: ${loginResult.note?.slice(0, 100)}`));
+          // Auth UI couldn't be driven — produce a diagnostic that names
+          // (a) the page we landed on and (b) the visible buttons we
+          // actually found. This distinguishes "page loaded but the
+          // expected dev-auth button isn't here" from "preview URL
+          // unreachable" (which fails earlier at page.goto above).
+          let diag = "";
+          try {
+            const snap = await snapshot(page);
+            const visible = snap.buttons.length ? snap.buttons.slice(0, 8).map((b) => JSON.stringify(b)).join(", ") : "(none visible)";
+            const expected = expectedSignInButton
+              ? `expected button matching ${JSON.stringify(expectedSignInButton)} not found`
+              : `no button matched the credentials in tiktest.md`;
+            diag = `\n    page: ${snap.url}\n    diagnosis: reached sign-in but ${expected}; visible buttons were: [${visible}]`;
+          } catch {}
+          console.log(chalk.yellow(`  ! login phase reported failure but continuing — goals may still work if no auth required: ${loginResult.note?.slice(0, 100)}${diag}`));
         } else {
           console.log(chalk.dim(`  ✓ pre-test sign-in: ${loginResult.note?.slice(0, 80)}`));
         }

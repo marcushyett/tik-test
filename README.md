@@ -28,7 +28,7 @@ Set up tik-test (https://github.com/marcushyett/tik-test — 45s video reviews o
 1. Pick a template (local-dev / vercel-preview / staging-with-services) from inspecting package.json, framework configs, and deploy setup; ask if ambiguous. Create .github/workflows/tik-test.yml from it, adapted (build cmd, dev port, working-directory).
 2. Draft tiktest.md at repo root: read README + package.json + 5-10 representative source files to infer flows; detect login (ask me for creds if there's a wall); list 3-5 highest-risk user-facing surfaces. Format: one-paragraph app description → login → "Risky surfaces" bullets → optional "Hints" with test-IDs. Show me the draft and wait for confirmation before committing. Warn if CLAUDE.md / AGENTS.md sit alongside it (silent-fallback footgun).
 3. List the secrets I need to add: CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`, required) plus optionals you detect apply (OPENAI_API_KEY for narration; VERCEL_AUTOMATION_BYPASS_SECRET if Vercel Deployment Protection is on). One line each on where to get them. Mention that TIKTEST_OWNERS in repo Variables can restrict who triggers runs (default = any collaborator).
-4. Open the PR. Heads-up: its diff has no UI surface, so the auto-review will skip with a "no UI changed" comment — expected, not a failure.
+4. Open the PR. Heads-up: tik-test's plan generator looks at the diff and will skip cleanly with a "no testable change" comment when the only edits are workflow + tiktest.md (no impact on the UI). That's expected, not a failure — the action itself is wired up correctly.
 5. After I merge it, propose a small visible UI change (one-screen nit from open issues or your own suggestion) to be the real first test PR. Wait for my okay, then ship on a separate branch.
 ````
 
@@ -92,7 +92,32 @@ Two pieces of context, in two different places:
 
 Acme is a project tracker for engineering teams.
 
-Login: email `review-bot@acme.app`, password `hunter2`
+Login: email `review-bot@acme.app`, password `hunter2`. Click the
+"Sign in with email" button on the landing page; the app then redirects
+back to its home view.
+```
+
+**A note on phrasing.** Describe navigation in terms a user would think
+about — "click Sign In on the landing page", "open the side menu and
+choose Settings" — rather than absolute URL paths. Writing instructions
+like _"navigate to `/sign-in`"_ can lead an agent to assemble the wrong
+absolute URL when the preview host doesn't resolve as expected (see the
+auto-detection notes below). Click-paths through visible UI are robust
+across previews, custom domains, and unusual routing setups.
+
+**Optional: declare the expected sign-in button text.** If your app's
+landing page has multiple sign-in options (e.g. Google + email + SSO),
+add a `signin-button:` directive in YAML frontmatter so the agent's
+diagnostic on a failed login mentions the specific button it was looking
+for, listing the visible buttons it actually found instead.
+
+```markdown
+---
+signin-button: Preview Sign In
+---
+
+# Acme
+…
 ```
 
 **2. PR-level: a "what to test" note in your PR description.** Changes per PR. Tells the agent which surfaces this change touches and what's risky. Skip it and tik-test plans from the diff alone (best-effort).
@@ -308,10 +333,10 @@ By default the agent generates a plan from the PR diff plus your `## TikTest` se
 
 ## GitHub Action
 
-> **Quick start:** copy one of the drop-in templates from
+> **Quick start:** copy one of the three drop-in templates from
 > [`templates/workflows/`](./templates/workflows/) into your repo at
-> `.github/workflows/tik-test.yml`. There are three, picked by what your
-> app needs to boot:
+> `.github/workflows/tik-test.yml`. The three options, picked by what
+> your app needs to boot:
 >
 > - [`local-dev.yml`](./templates/workflows/local-dev.yml) — `npm run dev`
 >   inside the runner. Best for SPAs, static sites, Next.js with mocked
@@ -324,10 +349,12 @@ By default the agent generates a plan from the PR diff plus your `## TikTest` se
 >   then starts the app. Best for Rails / Django / Next.js + Prisma.
 >
 > See [`templates/workflows/README.md`](./templates/workflows/README.md)
-> for the chooser tree and the per-template `tiktest.md` shape they expect.
+> for the chooser tree and the per-template `tiktest.md` shape each one
+> expects.
 >
-> The minimal hand-written form below is kept as a reference if you want
-> to wire it up yourself.
+> There is no separate `templates/workflows/tik-test.yml` file — the
+> minimal hand-written YAML below is inlined here for reference if you'd
+> rather wire the action up by hand than copy a template.
 
 ```yaml
 # .github/workflows/tik-test.yml (rename to whatever you want — pick a path

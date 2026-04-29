@@ -47,9 +47,20 @@ name: tik-test review
 
 on:
   pull_request:
+    # The plan generator decides on every run whether the diff is a no-op
+    # (pure docs, lockfile-only, etc) and skips cleanly when it is — so a
+    # tight `paths:` filter is no longer required for cost control.
+    # Keep this filter loose so backend-only changes still trigger a
+    # regression pass on the UI surfaces they power. Common Next.js App
+    # Router additions: `components/**`, `hooks/**`, `lib/**`, `public/**`.
+    # Drop the whole `paths:` block to review every PR.
     paths:
       - 'src/**'
       - 'app/**'
+      - 'components/**'
+      - 'hooks/**'
+      - 'lib/**'
+      - 'public/**'
       - 'package.json'
       - 'tiktest.md'
       - '.github/workflows/tik-test.yml'
@@ -119,7 +130,12 @@ jobs:
           while [[ $(date +%s) -lt $DEADLINE ]]; do
             DEP_ID=$(gh api "repos/$REPO/deployments?sha=$SHA&environment=Preview&per_page=5" --jq '.[0].id // empty')
             if [[ -n "$DEP_ID" ]]; then
-              URL=$(gh api "repos/$REPO/deployments/$DEP_ID/statuses" --jq '.[] | select(.state == "success") | .target_url' | head -1)
+              # Prefer `environment_url` (the deployed app URL) over `target_url`
+              # (GitHub's deprecated alias for `log_url`). The official Vercel
+              # GH integration sets both to the app URL, but hand-rolled deploy
+              # workflows commonly set `target_url` to build logs
+              # (vercel.com/.../build-logs) — which would 404 every navigation.
+              URL=$(gh api "repos/$REPO/deployments/$DEP_ID/statuses" --jq '.[] | select(.state == "success") | (.environment_url // .target_url)' | head -1)
               if [[ -n "$URL" ]]; then
                 echo "Found preview: $URL"
                 echo "url=$URL" >> "$GITHUB_OUTPUT"
@@ -140,6 +156,4 @@ jobs:
           # If yours don't, this is harmless empty-string passthrough.
           vercel-bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           pr-number: ${{ github.event.inputs.pr_number }}
-          # Skip cleanly on workflow-only / docs-only PRs (no UI surface).
-          skip-no-ui: true
           preview-url: ${{ steps.vercel.outputs.url || github.event.inputs.preview_url }}
