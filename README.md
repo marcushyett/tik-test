@@ -1,18 +1,11 @@
-<div align="center">
 
 # tiktest
 
 **Automated TikTok-style video review of every PR.**
 
-the more I shipped stuff with claude the more I realised; in the long term the most value I can add as a human is testing - finding the stuff other humans would struggle with.
+the more I shipped stuff with claude the more I realised; in the long term the most value I can add as a human is testing - finding the stuff other humans would struggle with...
 
-...but testing is boring. 
-
-so I tried to make it less boring - or at least take way less of my time.
-
-tiktest drops a short narrated videos on every PR: claude drives the actual app via playwright, narrates what it's doing, calls out bugs. you can just skim 5 PRs between meetings and give the agent the feedback it needs to make it good enough for our users.
-
-</div>
+...but testing is boring. so I tried to make it less boring - or at least take way less of my time.
 
 <p align="center">
   <a href="https://github.com/marcushyett/tik-test/releases/download/v0.1.0/demo.mp4">
