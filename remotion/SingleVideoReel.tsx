@@ -359,7 +359,7 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
         <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 240 }}>
           <WordCaption
             text={input.bodyCaption}
-            durationInFrames={masterFrames}
+            durationInFrames={Math.max(1, Math.round(input.masterDurS * fps))}
             fps={fps}
             accent="#00e5a0"
             voiceDurS={input.bodyVoiceDurS ? input.bodyVoiceDurS / (input.bodyVoicePlaybackRate ?? 1) : undefined}
