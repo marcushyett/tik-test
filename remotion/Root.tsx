@@ -6,7 +6,7 @@ import { SingleVideoReel, computeSingleVideoDuration, type SingleVideoInput } fr
 const DEFAULT_INPUT: ReelInput = {
   title: "tik-test preview",
   summary: "Pass empty inputProps — the CLI fills these at render time.",
-  viewport: { width: 1280, height: 800 },
+  viewport: { width: 1920, height: 1080 },
   steps: [],
   introDurFrames: FPS * 3,
   outroDurFrames: FPS * 3,
@@ -17,7 +17,7 @@ const DEFAULT_SINGLE_VIDEO_INPUT: SingleVideoInput = {
   title: "tik-test preview",
   summary: "Pass empty inputProps — the CLI fills these at render time.",
   masterVideoSrc: "master.mp4",
-  viewport: { width: 1280, height: 800 },
+  viewport: { width: 1920, height: 1080 },
   masterDurS: 0,
   events: [],
   introDurFrames: FPS * 3,

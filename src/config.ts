@@ -98,9 +98,9 @@ export async function loadConfig(configPath: string, urlOverride?: string): Prom
   }
 
   const viewport = (() => {
-    const v = data.viewport ?? "1280x800";
+    const v = data.viewport ?? "1920x1080";
     const m = /^(\d+)\s*x\s*(\d+)$/i.exec(v.trim());
-    return m ? { width: +m[1], height: +m[2] } : { width: 1280, height: 800 };
+    return m ? { width: +m[1], height: +m[2] } : { width: 1920, height: 1080 };
   })();
 
   // Optional inline plan: still supports `## Test Plan` for power users

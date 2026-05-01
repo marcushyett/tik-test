@@ -105,7 +105,7 @@ function normalize(plan: TestPlan, cfg: Config): TestPlan {
       name: plan.name || cfg.name || "tik-test (skipped — no-op)",
       summary: plan.summary || "",
       startUrl: plan.startUrl || cfg.url,
-      viewport: plan.viewport || cfg.viewport || { width: 1280, height: 800 },
+      viewport: plan.viewport || cfg.viewport || { width: 1920, height: 1080 },
       noOp: true,
       noOpReason: plan.noOpReason?.trim() || "no user-facing impact",
     };
@@ -114,7 +114,7 @@ function normalize(plan: TestPlan, cfg: Config): TestPlan {
     name: plan.name || cfg.name || "Feature review",
     summary: plan.summary || "",
     startUrl: plan.startUrl || cfg.url,
-    viewport: plan.viewport || cfg.viewport || { width: 1280, height: 800 },
+    viewport: plan.viewport || cfg.viewport || { width: 1920, height: 1080 },
   };
   if (plan.goals && plan.goals.length > 0) {
     // Defensive cap — the prompt asks for ≤ MAX_GOALS but the LLM can ignore

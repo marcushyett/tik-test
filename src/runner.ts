@@ -519,19 +519,22 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   const shotsDir = path.join(runDir, "screenshots");
   await mkdir(shotsDir, { recursive: true });
 
-  // Snap viewport WIDTH to a canvas-friendly value (540 mobile, 720 tablet,
-  // 1080 desktop). Reason: the Remotion canvas is 1080×1920 and the body
-  // recording is rendered with objectFit:contain. If the recording's
-  // width doesn't divide 1080 cleanly (e.g. 1280 → 1080 is 0.84×), the
-  // browser bilinear-downsamples on every frame and ALL the page text
-  // looks aliased even at zoom=1.0. By snapping to {540, 720, 1080} the
-  // contain math becomes integer (2×, 1.5×, 1×) and text stays crisp.
+  // Snap viewport WIDTH to a canvas-friendly value (540, 720, 1080, 1920).
+  // Reason: the Remotion canvas is 1080×1920 and the body recording is
+  // rendered with objectFit:contain. If the recording's width doesn't
+  // divide 1080 cleanly (e.g. 1280 → 1080 is 0.84×), the browser
+  // bilinear-downsamples on every frame and ALL the page text looks
+  // aliased even at zoom=1.0. {540, 720, 1080} give integer scales
+  // (2×, 1.5×, 1×); 1920 maps to 1080 at exactly 9/16 — not integer
+  // but a clean repeating fraction, and 1920×1080 is the realistic
+  // 2026 desktop default (StatCounter: ~21.5% US share, top resolution).
   // Heights round to the nearest 8 for x264 chroma-subsampling alignment.
-  const requested = plan.viewport ?? { width: 1280, height: 800 };
+  const requested = plan.viewport ?? { width: 1920, height: 1080 };
   const snapWidth = (w: number): number => {
-    if (w <= 600) return 540;   // mobile portrait
-    if (w <= 900) return 720;   // tablet portrait
-    return 1080;                // desktop landscape
+    if (w <= 600) return 540;    // mobile portrait
+    if (w <= 900) return 720;    // tablet portrait
+    if (w <= 1280) return 1080;  // narrow desktop / laptop
+    return 1920;                 // wide desktop (realistic 2026 default)
   };
   const targetWidth = snapWidth(requested.width);
   // Preserve the agent's intended aspect ratio when scaling height.

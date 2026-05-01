@@ -441,9 +441,9 @@ export async function editSingleVideo({
     stagedRaw,
   ]);
   const rawDurS = await ffprobeDuration(stagedRaw);
-  console.log(chalk.dim(`  raw: ${rawDurS.toFixed(1)}s @ ${artifacts.plan.viewport?.width ?? 1280}×${artifacts.plan.viewport?.height ?? 800}`));
+  console.log(chalk.dim(`  raw: ${rawDurS.toFixed(1)}s @ ${artifacts.plan.viewport?.width ?? 1920}×${artifacts.plan.viewport?.height ?? 1080}`));
 
-  const viewport = artifacts.plan.viewport ?? { width: 1280, height: 800 };
+  const viewport = artifacts.plan.viewport ?? { width: 1920, height: 1080 };
   const ttsBackend: TTSBackend = resolveBackend(voice, artifacts.plan.name);
   console.log(chalk.dim(`  voice-over: ${describeBackend(ttsBackend)}`));
 
