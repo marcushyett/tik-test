@@ -8,7 +8,7 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
 import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.js";
-import { generateNarration, type BodyMoment as NarrationMoment } from "./timed-narration.js";
+import { generateNarration, type NarrationWindow } from "./timed-narration.js";
 import { generateChecklist } from "./checklist.js";
 import {
   MIN_CHUNK_S, MAX_BODY_SCENES, TRIM_MERGE_S,
@@ -549,17 +549,119 @@ export async function editSingleVideo({
     coalesced = sampled;
   }
 
-  // ── 5. Build body-moment timeline for the narrator.
-  //      The narrator gets the full ordered list as context (with body-relative
-  //      timestamps) and writes ONE flowing script for the whole body. No more
-  //      per-moment chunk slicing — silence-by-construction is gone.
-  const bodyMoments: NarrationMoment[] = coalesced.map((m) => ({
-    startS: m.startS,
-    visibility: m.visibility,
-    toolKind: m.toolKind,
-    toolInput: m.toolInput,
-    toolResult: m.toolResult,
-  }));
+  // ── 5. Map raw-video-ms interactions onto the trimmed master timeline.
+  //      Clicks are the timing anchors for narration windows, so we need
+  //      them in body-relative seconds before we build the windows.
+  type MappedInteraction = { tsMs: number; tsS: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string };
+  const mappedInteractions: MappedInteraction[] = [];
+  if (artifacts.interactions?.length) {
+    for (const ev of artifacts.interactions) {
+      const rawS = ev.ts / 1000;
+      let mappedS: number | null = null;
+      for (const seg of plan) {
+        if (rawS >= seg.rawStartS && rawS <= seg.rawEndS + 1e-6) {
+          mappedS = seg.trimmedStartS + (rawS - seg.rawStartS) / seg.speed;
+          break;
+        }
+      }
+      if (mappedS == null) continue;
+      mappedInteractions.push({
+        tsMs: Math.max(0, Math.round(mappedS * 1000)),
+        tsS: Math.max(0, mappedS),
+        kind: ev.kind, x: ev.x, y: ev.y, key: ev.key,
+      });
+    }
+    console.log(chalk.dim(`  interactions: ${mappedInteractions.length}/${artifacts.interactions.length} kept after trim mapping`));
+  }
+
+  // ── 6. Build CLICK-ANCHORED narration windows. The body is partitioned
+  //      into segments separated by clicks (with very-close clicks merged
+  //      into one anchor so we don't end up with sub-second windows nobody
+  //      can narrate). The narrator writes ONE beat per window — beat
+  //      timing is FIXED to the click that opens or closes the window, so
+  //      the spoken word is anchored to the meaningful visual moment.
+  const MIN_WINDOW_DUR_S = 1.5;
+  const clicks = mappedInteractions
+    .filter((ev) => ev.kind === "click")
+    .sort((a, b) => a.tsS - b.tsS);
+  // Match each click to its nearest "visible-action" tool window by time
+  // proximity so we can include the clicked element's description in the
+  // window context. This is what makes the difference between the narrator
+  // saying "we click the button" vs "we click the new Bulk Archive button".
+  const visibleTools = (artifacts.toolWindows ?? [])
+    .filter((tw) => classifyTool(tw.kind) === "visible")
+    .map((tw) => ({
+      bodyS: rawToTrimmed(tw.startMs / 1000, plan),
+      kind: tw.kind,
+      input: tw.input ?? "",
+      result: tw.result ?? "",
+    }))
+    .sort((a, b) => a.bodyS - b.bodyS);
+  function describeClickAt(bodyS: number): { element: string; tool: string } {
+    let best: typeof visibleTools[number] | null = null;
+    let bestDt = Infinity;
+    for (const t of visibleTools) {
+      const dt = Math.abs(t.bodyS - bodyS);
+      if (dt < 1.5 && dt < bestDt) { best = t; bestDt = dt; }
+    }
+    if (!best) return { element: "", tool: "click" };
+    return { element: best.input || "", tool: best.kind };
+  }
+  // Merge clicks that are very close (≤ MIN_WINDOW_DUR_S apart) into a
+  // single anchor — the leading click defines the window boundary. Without
+  // this, double-tap interactions or quick form-fills produce too many
+  // tiny windows for the narrator to fill.
+  const anchors: Array<{ tsS: number; element: string; tool: string }> = [];
+  for (const c of clicks) {
+    const last = anchors[anchors.length - 1];
+    if (last && c.tsS - last.tsS < MIN_WINDOW_DUR_S) continue;
+    const desc = describeClickAt(c.tsS);
+    anchors.push({ tsS: c.tsS, element: desc.element, tool: desc.tool });
+  }
+  const windows: NarrationWindow[] = [];
+  // Build window boundaries: 0 → anchor[0] → anchor[1] → ... → masterDurS.
+  for (let i = 0; i <= anchors.length; i++) {
+    const startS = i === 0 ? 0 : anchors[i - 1].tsS;
+    const endS = i < anchors.length ? anchors[i].tsS : masterDurS;
+    if (endS - startS < 0.4) continue; // skip degenerate slivers
+    const events = (artifacts.toolWindows ?? [])
+      .filter((tw) => classifyTool(tw.kind) !== "skip")
+      .map((tw) => ({
+        startS: rawToTrimmed(tw.startMs / 1000, plan),
+        kind: tw.kind,
+        input: tw.input ?? "",
+        result: tw.result ?? "",
+      }))
+      .filter((e) => e.startS >= startS && e.startS < endS)
+      .map((e) => ({
+        startS: e.startS,
+        tool: e.kind,
+        description: e.input.replace(/\s+/g, " ").slice(0, 140),
+        result: e.result ? e.result.replace(/\s+/g, " ").slice(0, 140) : undefined,
+      }));
+    windows.push({
+      idx: windows.length,
+      startS, endS, durS: endS - startS,
+      startingClick: i > 0 ? { tsS: anchors[i - 1].tsS, element: anchors[i - 1].element, tool: anchors[i - 1].tool } : undefined,
+      endingClick: i < anchors.length ? { tsS: anchors[i].tsS, element: anchors[i].element, tool: anchors[i].tool } : undefined,
+      events,
+    });
+  }
+  // Edge case: no clicks at all → one window covering the whole body.
+  if (windows.length === 0) {
+    windows.push({
+      idx: 0, startS: 0, endS: masterDurS, durS: masterDurS,
+      events: (artifacts.toolWindows ?? [])
+        .filter((tw) => classifyTool(tw.kind) !== "skip")
+        .map((tw) => ({
+          startS: rawToTrimmed(tw.startMs / 1000, plan),
+          tool: tw.kind,
+          description: (tw.input ?? "").replace(/\s+/g, " ").slice(0, 140),
+          result: tw.result ? tw.result.replace(/\s+/g, " ").slice(0, 140) : undefined,
+        })),
+    });
+  }
+  console.log(chalk.dim(`  click-anchored windows: ${windows.length} (from ${clicks.length} clicks, merged to ${anchors.length} anchors)`));
 
   // Kick off the checklist Claude call in parallel — it doesn't depend on
   // narration. Skip when the caller already synthesised the checklist for us.
@@ -567,22 +669,23 @@ export async function editSingleVideo({
     precomputedChecklist !== undefined
       ? Promise.resolve(precomputedChecklist)
       : generateChecklist({ artifacts, prTitle, prBody });
+
+  // ── 7. Generate the narration: intro line + one beat per click window +
+  //      outro line, structured as a demo around the test plan goals.
   const narration = await generateNarration({
     plan: artifacts.plan, prTitle, prBody, focus,
     introTargetS: INTRO_TARGET_S,
     bodyDurS: masterDurS,
     outroTargetS: OUTRO_TARGET_S,
-    bodyMoments,
+    goals: artifacts.plan.goals ?? [],
+    windows,
   });
 
-  // ── 6. TTS each beat + the intro / outro lines, in parallel. Per-beat
-  //      audio means each beat lands at its narrator-declared startS — sync
-  //      with the visuals is anchored by construction, not hoped for.
-  const beats = narration.body.beats;
+  // ── 8. TTS the intro + each non-empty body beat + outro in parallel.
   type TtsJob = { id: string; text: string; fileName: string };
   const ttsJobs: TtsJob[] = [
     { id: "intro", text: narration.intro.text, fileName: "voice-intro.wav" },
-    ...beats.map((b, i) => ({ id: `beat-${i}`, text: b.text, fileName: `voice-beat-${String(i).padStart(3, "0")}.wav` })),
+    ...narration.body.beats.map((b, i) => ({ id: `beat-${i}`, text: b.text, fileName: `voice-beat-${String(i).padStart(3, "0")}.wav` })),
     { id: "outro", text: narration.outro.text, fileName: "voice-outro.wav" },
   ];
   const ttsResults = await runWithConcurrency(ttsJobs, 6, async (job) => {
@@ -599,55 +702,52 @@ export async function editSingleVideo({
   const outroTts = ttsResults[ttsResults.length - 1];
   const beatTts = ttsResults.slice(1, ttsResults.length - 1);
 
-  // ── 7. Build the body chunk timeline — one BodyChunk per narrator beat.
-  //      Each chunk gets a per-beat playbackRate that fits its TTS duration
-  //      to its declared durS slot. Floors at 0.7× because beats are short
-  //      and a slight stretch is much less audible than the silence we'd
-  //      get if we floored higher; caps at 1.5× to avoid chipmunk speed.
+  // ── 9. Build the body chunk timeline — ONE BodyChunk per click window.
+  //      Each chunk gets a per-beat playbackRate that fits its TTS audio
+  //      to the window's fixed durS. Floor 0.7× / cap 1.5×; outside that
+  //      range the narrator's word-budget aim was too far off and we
+  //      accept a small tail of silence (or a clipped trailing word) over
+  //      audibly distorted speech.
   const bodyChunks: BodyChunk[] = [];
   let totalBeatSlackS = 0;
-  for (let i = 0; i < beats.length; i++) {
-    const b = beats[i];
+  let narratedWindowCount = 0;
+  for (let i = 0; i < windows.length; i++) {
+    const w = windows[i];
+    const beat = narration.body.beats[i];
     const v = beatTts[i];
     let rate = 1;
     if (v.dur > 0) {
-      // Aim to fit just inside the slot. 0.05s tail keeps the next beat's
-      // first word from colliding with this beat's trailing breath.
-      const targetSpeechS = Math.max(0.5, b.durS - 0.05);
+      const targetSpeechS = Math.max(0.5, w.durS - 0.05);
       rate = Math.max(0.7, Math.min(1.5, v.dur / targetSpeechS));
     }
     const playedS = v.dur > 0 ? v.dur / rate : 0;
-    const slack = Math.max(0, b.durS - playedS);
-    totalBeatSlackS += slack;
+    if (playedS > 0) narratedWindowCount++;
+    totalBeatSlackS += Math.max(0, w.durS - playedS);
     bodyChunks.push({
-      startS: b.startS,
-      durS: b.durS,
-      text: sanitiseForSpeech(b.captionText),
+      startS: w.startS,
+      durS: w.durS,
+      text: sanitiseForSpeech(beat.captionText),
       voiceSrc: v.src,
       voiceDurS: v.dur || undefined,
       voicePlaybackRate: rate,
     });
   }
-  console.log(chalk.dim(`  body beats: ${beats.length} chunks · total slack ${totalBeatSlackS.toFixed(1)}s of ${masterDurS.toFixed(1)}s body (${((totalBeatSlackS / masterDurS) * 100).toFixed(1)}%)`));
+  console.log(chalk.dim(`  body beats: ${narratedWindowCount}/${windows.length} narrated · total slack ${totalBeatSlackS.toFixed(1)}s of ${masterDurS.toFixed(1)}s body (${((totalBeatSlackS / masterDurS) * 100).toFixed(1)}%)`));
 
-  // ── 8. Body badges — overlay cards keyed to silent investigative moments.
-  //      Pulled from the narrator's per-moment label/detail pairs and pinned
-  //      to the original tool window's body-relative timestamp. Independent
-  //      of the narration audio, so they never desync with the on-screen
-  //      action even if a beat's pacing drifts.
-  const badgeByMoment = new Map<number, { label: string; detail?: string }>(
-    narration.badges.map((b) => [b.momentIdx, { label: b.label.trim(), detail: b.detail?.trim() || undefined }])
+  // ── 10. Body badges — overlay cards for windows whose events include
+  //       silent investigative tools. Pinned to the silent tool's
+  //       body-relative timestamp inside its window.
+  const badgeByWindow = new Map<number, { label: string; detail?: string }>(
+    narration.badges.map((b) => [b.windowIdx, { label: b.label.trim(), detail: b.detail?.trim() || undefined }])
   );
   const bodyBadges: BodyBadge[] = [];
-  for (let i = 0; i < bodyMoments.length; i++) {
-    const m = bodyMoments[i];
-    if (m.visibility !== "silent") continue;
-    const badge = badgeByMoment.get(i);
+  for (const w of windows) {
+    const badge = badgeByWindow.get(w.idx);
     if (!badge?.label) continue;
-    const next = bodyMoments[i + 1];
-    const endS = next ? Math.min(next.startS, masterDurS) : masterDurS;
-    const durS = Math.max(1.0, Math.min(endS - m.startS, 6.0));
-    bodyBadges.push({ startS: Math.max(0, m.startS), durS, label: badge.label, detail: badge.detail });
+    const silentEvent = w.events.find((e) => classifyTool(e.tool) === "silent");
+    const startS = silentEvent?.startS ?? w.startS;
+    const durS = Math.max(1.0, Math.min(w.endS - startS, 5.0));
+    bodyBadges.push({ startS, durS, label: badge.label, detail: badge.detail });
   }
 
   // ── 8. Intro / outro durations based on actual voice length.
@@ -691,27 +791,12 @@ export async function editSingleVideo({
     console.log(chalk.dim(`  checklist: ${checklist.length} fallback goal-level items`));
   }
 
-  // Map raw-video-ms interactions onto the master timeline. Interactions
-  // that landed in a trimmed-out gap get filtered out (rawToTrimmed has no
-  // way to signal that, so we walk the trim plan ourselves). `key` events
-  // get coerced to the most recent move position so they still anchor a
-  // ToolBadge in the right spot, even though they don't need a cursor flash.
-  const mappedInteractions: SingleVideoInput["interactions"] = [];
-  if (artifacts.interactions?.length) {
-    for (const ev of artifacts.interactions) {
-      const rawS = ev.ts / 1000;
-      let mappedS: number | null = null;
-      for (const seg of plan) {
-        if (rawS >= seg.rawStartS && rawS <= seg.rawEndS + 1e-6) {
-          mappedS = seg.trimmedStartS + (rawS - seg.rawStartS) / seg.speed;
-          break;
-        }
-      }
-      if (mappedS == null) continue;
-      mappedInteractions.push({ ts: Math.max(0, Math.round(mappedS * 1000)), kind: ev.kind, x: ev.x, y: ev.y, key: ev.key });
-    }
-    console.log(chalk.dim(`  interactions: ${mappedInteractions.length}/${artifacts.interactions.length} kept after trim mapping`));
-  }
+  // Reuse the click + move + key stream we mapped earlier (used for
+  // building the click-anchored narration windows) — Remotion's cursor
+  // overlay and pan-zoom logic want body-relative ms timestamps, so we
+  // strip the body-seconds field and keep only the canonical ms shape.
+  const remotionInteractions: SingleVideoInput["interactions"] = mappedInteractions
+    .map((ev) => ({ ts: ev.tsMs, kind: ev.kind, x: ev.x, y: ev.y, key: ev.key }));
 
   const input: SingleVideoInput = {
     title: artifacts.plan.name || "Feature review",
@@ -733,7 +818,7 @@ export async function editSingleVideo({
     versionTag: getVersionTag(),
     bodyChunks,
     bodyBadges: bodyBadges.length > 0 ? bodyBadges : undefined,
-    interactions: mappedInteractions.length > 0 ? mappedInteractions : undefined,
+    interactions: remotionInteractions.length > 0 ? remotionInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,
   };
   await writeFile(path.join(runDir, "reel-input.json"), JSON.stringify(input, null, 2));

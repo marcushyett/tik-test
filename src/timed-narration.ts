@@ -1,26 +1,36 @@
 import chalk from "chalk";
-import type { TestPlan } from "./types.js";
+import type { TestPlan, Goal } from "./types.js";
 import { NARRATION_TIMEOUT_MS } from "./timeouts.js";
 import { runClaude, extractJson } from "./claude-cli.js";
 
 /**
- * One on-screen moment the body video shows. Each moment carries a
- * body-relative timestamp + a human-readable description of what the
- * agent did. The narrator uses this timeline to ANCHOR each spoken
- * beat to its real on-screen moment — without timestamps, a single
- * continuous voice over the body drifts away from the visuals within
- * 10-15 seconds.
+ * One CLICK-ANCHORED window of the body video. Windows partition the body
+ * into segments separated by clicks (or click-clusters merged when very
+ * close together). The narrator writes ONE beat per window. Each beat
+ * plays for that window's full duration, so the spoken word is anchored
+ * to the click that opens or closes the window — no drift possible.
+ *
+ * Why click-anchoring beats narrator-chosen timestamps: clicks are when
+ * meaningful state changes happen on screen. Narration pinned to a click
+ * is automatically pinned to the moment the viewer cares about.
  */
-export interface BodyMoment {
-  /** Body-relative seconds — when this moment begins in the trimmed master. */
+export interface NarrationWindow {
+  idx: number;
+  /** Body-relative seconds when this window begins. */
   startS: number;
-  /** "silent" → the agent is investigating without visible UI change.
-   *  "visible" → click/type/etc. that the viewer can see. Used to decide
-   *  whether to render a small ToolBadge during this window. */
-  visibility: "silent" | "visible";
-  toolKind: string;
-  toolInput?: string;
-  toolResult?: string;
+  /** Body-relative seconds when this window ends. */
+  endS: number;
+  durS: number;
+  /** The click that ENDS this window (fires at endS). null for the final
+   *  window after the last click. The narrator can lead INTO this click
+   *  ("we're about to hit Save"). */
+  endingClick?: { tsS: number; element: string; tool: string };
+  /** The click that STARTED this window (fired at startS). null for the
+   *  first window before any click. The narrator can react TO this click
+   *  ("now we see the toast appear"). */
+  startingClick?: { tsS: number; element: string; tool: string };
+  /** Other tool events that fired within [startS, endS], for context. */
+  events: Array<{ startS: number; tool: string; description: string; result?: string }>;
 }
 
 export interface NarrationInput {
@@ -28,56 +38,42 @@ export interface NarrationInput {
   prTitle?: string;
   prBody?: string;
   focus?: string;
-  /** Title-card window. The intro narration is sized to this. */
+  /** Title-card window. */
   introTargetS: number;
-  /** Master body duration in seconds. Beats must cover [0, bodyDurS]. */
+  /** Master body duration in seconds. */
   bodyDurS: number;
-  /** Outro window (before the post-voice hold). */
+  /** Outro window. */
   outroTargetS: number;
-  /** What happens on screen, in order — anchors for the narrator. */
-  bodyMoments: BodyMoment[];
+  /** Test plan goals — each goal is a chapter in the demo. */
+  goals: Goal[];
+  /** Click-anchored windows partitioning the body. The narrator writes
+   *  one beat per window in order; durations are FIXED to the window. */
+  windows: NarrationWindow[];
 }
 
 export interface NarrationLine {
-  /** Spoken text, becomes the TTS source. */
   text: string;
-  /** Caption text — must match `text` word-for-word for the on-screen
-   *  subtitle to stay synced. */
   captionText: string;
 }
 
-/**
- * One narrator-defined beat in the body timeline. The narrator picks
- * BOTH the timestamp AND the duration based on what's on screen, so the
- * audio TTS for this beat plays exactly when the corresponding visual
- * moment happens. Per-beat audio = anchored sync by construction.
- */
-export interface BodyBeat extends NarrationLine {
-  /** Body-relative seconds when this beat begins. Must be sorted +
-   *  non-overlapping across the body. The first beat starts at 0. */
-  startS: number;
-  /** Wall-clock duration of this beat in the composition. The narrator
-   *  picks this so they own the word budget — `~durS * 3` words. */
-  durS: number;
+/** One narrator-written beat for a click window. Empty text = silent gap. */
+export interface WindowBeat extends NarrationLine {
+  windowIdx: number;
 }
 
+/** A badge keyed to a window's silent investigative tool event. */
 export interface NarrationBadge {
-  /** Index into `bodyMoments` that this badge labels. Only emitted for
-   *  visibility=="silent" moments where a viewer would otherwise wonder
-   *  what the agent is doing during a frozen-looking screen. */
-  momentIdx: number;
+  /** Index into NarrationInput.windows whose silent event this badge labels. */
+  windowIdx: number;
   /** 4-7 word plain-English summary, e.g. "checking the today filter". */
   label: string;
-  /** Optional terminal-style one-liner, max 60 chars, e.g. `fetch /api/today`. */
+  /** Optional terminal-style one-liner, max 60 chars. */
   detail?: string;
 }
 
 export interface NarrationOutput {
   intro: NarrationLine;
-  /** Body narration as a TIMED beat list. Beats are sorted, non-overlapping,
-   *  and cover [0, bodyDurS]. Each beat is TTS'd separately and placed at
-   *  its declared startS so the spoken word lines up with the visuals. */
-  body: { beats: BodyBeat[] };
+  body: { beats: WindowBeat[] };
   outro: NarrationLine;
   badges: NarrationBadge[];
 }
@@ -89,54 +85,110 @@ function targetWords(durS: number): number {
   return Math.max(8, Math.round(durS * WORDS_PER_SEC));
 }
 
-const PROMPT = `You are the narrator of a short developer screen-share. Picture a calm 1:1 — not a launch demo, not a hype reel — quietly walking a colleague through what you just shipped and welcoming critique.
+const PROMPT = `You are the narrator of a 60-second video that walks a stranger through a feature a developer just built.
 
-The video has THREE sections: an intro title card, the body recording, and an outro card.
+WHO IS WATCHING.
+Imagine the viewer is a teammate or reviewer who has NEVER seen this codebase. They have ~60 seconds of attention and they need to leave the video understanding FOUR things, in order:
+  1. WHAT was built — what the new feature is, named in plain English.
+  2. WHY it matters — what problem it solves or what it improves.
+  3. HOW it works — what the user does to use it, and what they should expect to see happen.
+  4. WHETHER it works — for each goal in the test plan, did this video show the test PASSING (or failing visibly).
 
-INTRO line: ≈{{INTRO_WORDS}} words, names WHY this feature exists and what PROBLEM it solves (use the PR body / focus).
-OUTRO line: ≈{{OUTRO_WORDS}} words, ONE sentence asking for input or naming an open question. Don't summarise what was shown.
+If the viewer can't answer those four questions after watching, the narration failed. That is the bar.
 
-BODY: a TIMED list of beats over the {{BODY_DUR}}s recording. THIS IS THE HARD PART.
+VOICE.
+You are the developer who built this, sitting next to a colleague at their desk and walking them through what you shipped. Calm. Specific. You are not pitching, not hyping, not selling. Just showing your work and inviting feedback. The tone is "here's what I did, here's why, here's how I checked it works."
 
-Each beat is { "startS": number, "durS": number, "text": string, "captionText": string }. Each beat is TTS'd separately and placed at its declared startS in the final composition, so the spoken word lands EXACTLY when the corresponding visual happens. Without this, narration drifts away from the visuals within 10-15 seconds and the video feels broken.
+ASSETS YOU HAVE TO WORK WITH.
+- The PR title and body — the developer's own writeup of the feature. Read this first. Use its actual language. Don't paraphrase "Today filter" into "the filter we have". Use the names the developer chose.
+- The plan summary — Claude's reading of what the test plan is checking.
+- The list of goals — the EXACT things this video proves. Each goal is one chapter in your demo.
+- The click-anchored window list — the on-screen events you're narrating, with their exact times and the buttons / fields the agent clicked.
+- The events inside each window — what happened on screen between clicks (navigation, typing, investigation).
 
-Strict rules for the body beats:
-- The FIRST beat starts at 0. The beats are sorted by startS. The LAST beat ENDS at {{BODY_DUR}}s (its startS + durS = {{BODY_DUR}}).
-- Beats are NON-OVERLAPPING and CONTIGUOUS — beat[i+1].startS = beat[i].startS + beat[i].durS exactly.
-- Anchor each beat to the BODY MOMENT TIMELINE below. If something visible happens at t=5.4s (e.g. the Today filter is clicked), the beat that talks about it should START at or just before 5.4s. Do not narrate an action that hasn't happened yet, and do not narrate an action 4 seconds after it's already off-screen.
-- Each beat's text is sized for ~3 words/sec of speech. With durS={{EX_DUR}}s, that's ~{{EX_WORDS}} words. Stay within ±15% of the per-beat target — going under leaves silence, going over chipmunks the audio.
-- 4-12 body beats total. Shorter (2-4s) for tight reactions; longer (5-9s) when the agent is doing something extended like typing or reading. Pick whatever cadence fits the visual story.
+THINK FIRST. Do this before writing any beats:
 
-Tonal rules (strict, apply to ALL text and captionText):
-- The narrator is a HUMAN developer talking through their own work. Watchers should never feel they're listening to a robot.
-- Each beat connects to the previous — refer back, set up what's next. ONE CONTINUOUS STORY.
-- Narrate WHY/INTENT, not WHAT/MECHANISM. "once we save this, we should see it under Today…" beats "now we click X".
-- BANNED VOCABULARY — never appears anywhere in narration text or captionText, even paraphrased:
+STEP 1 — Read the PR body / focus and answer in your head: "If a viewer asked me 'so what does this feature do?', what's my one-sentence answer using the developer's own vocabulary?" That sentence is the seed of the INTRO.
+
+STEP 2 — Read the GOALS. Each goal is a chapter in the demo. Decide the rough story arc:
+  • Goal 1: introduce it, show it being tested, confirm it works.
+  • Goal 2: same.
+  • etc.
+  Some windows in the body are "setup", some are "executing", some are "confirming". Map every window to one role.
+
+STEP 3 — For each click in the WINDOWS list, name what the click DOES in the feature's vocabulary, not in mechanical terms:
+  • Bad: "we click the button at the top right".
+  • Good: "I'm hitting the new Bulk Archive button I just added at the top of the list".
+  Use the element description in the click data (it's literally what the developer or DOM said the button was called) and tie it back to the feature you described in the intro.
+
+STEP 4 — Write each window's beat. RULES PER BEAT:
+  • Lead INTO the click that closes the window OR react TO the click that opened it. Beats anchor to clicks. The viewer just saw or is about to see that click.
+  • Setup pattern (window before a click): "now we want to check that <goal> works. I'm going to <action> and we should see <expected outcome>." Then the click fires.
+  • Confirm pattern (window after a click): "and yep, <expected outcome happened>" or "hmm, that didn't work — <expected> but we got <actual>." Then the next setup begins.
+  • Specific over abstract. "Save", "Today filter", "priority badge" — name the actual UI element by the name it has on screen. The developer named these things; honour their names.
+  • Connect goal to goal. When you finish one chapter, briefly bridge to the next: "alright, that's the count working. Next thing on my list is checking the empty state."
+  • Word budget = window durS × 3 words/sec, ±15%. UNDER means silence; OVER means rushed audio. Most windows are 3–8s, so 9–24 words.
+
+STEP 5 — INTRO and OUTRO.
+  • INTRO (≈{{INTRO_WORDS}} words): name the feature in plain English, name the problem it solves, foreshadow the demo. Example shape: "I shipped a Bulk Archive option for the task list. Up until now you had to clear completed tasks one at a time, which gets tedious past five or six. Let me walk you through the new flow and how I'm checking it doesn't break anything else."
+  • OUTRO (≈{{OUTRO_WORDS}} words): one sentence inviting input. Examples: "let me know if the confirm dialog feels heavy — I almost cut it" / "open question: should bulk-archive also include high-priority tasks, or only low?"
+
+EXAMPLES OF GOOD vs BAD BEATS:
+
+  Bad (mechanical, no feature context, viewer learns nothing):
+    "the agent clicks the button and waits for the page to update."
+  Good (specific, anchored, names the feature):
+    "now I'm hitting Bulk Archive on the five tasks I selected. The counter top-right should drop from twelve to seven."
+
+  Bad (filler, no continuity):
+    "now we'll see what happens."
+  Good (sets up the next click, names the goal):
+    "next thing on my list is the empty state. I'll archive the last task and we should see the friendly 'all clear' card."
+
+  Bad (jargon, technical):
+    "querying the dataset to confirm the model state."
+  Good (human voice for silent investigation):
+    "let me double-check the count actually decreased in the data, not just the UI."
+
+  Bad (drama / banned phrasing):
+    "moment of truth, drum roll, here we go!"
+  Good (calm, declarative):
+    "alright, archiving."
+
+OK TO SKIP A WINDOW. If a window is genuinely <1.5s of dead air or a transition with nothing meaningful to say, leave its beat text as "" (empty string). The video plays a silent gap, which is much better than 4-word filler that breaks the flow. Use sparingly — most windows should have a beat.
+
+STRICT RULES:
+- ONE CONTINUOUS DEMO. Each beat builds on the previous. No jumping topics. The viewer can follow the thread from intro to outro.
+- HUMAN VOICE. The narrator is the developer, not a robot. Watchers should never feel they're listening to a tool log.
+- NARRATE WHY, NOT WHAT. The visuals show WHAT. Your voice adds WHY/INTENT and what to look for.
+- BANNED VOCABULARY — never appears in narration text or captionText:
   • Tool names: "snapshot", "screenshot", "browser snapshot", "DOM", "evaluate", "fetch", "querySelector", "API call", "browser_X" prefix.
   • Process language: "the agent", "automation", "tool call", "playwright", "MCP", "framework".
-  • These are correct words for the per-moment BADGES below, never the voice.
+  • These belong in the per-window BADGES (below), never the voice.
 - HUMAN-VOICE REPLACEMENTS for moments where the page sits while we investigate:
   • "let me take a closer look at this", "want to make sure I'm reading this right", "double-checking what we got back".
-  • Failed/retry/timeout → "oops, missed that, let me try again", "hang on, that didn't catch — one more time".
-  • Verifying state → "yep, that's what I expected", "exactly the value we wanted".
+  • Failed / retry / timeout: "oops, missed that, let me try again", "hang on, that didn't catch — one more time".
+  • Verifying state: "yep, that's what I expected", "exactly the value we wanted".
 - BANNED PHRASES, never use these or close paraphrases:
   "moment of truth", "here we go", "let's see", "watch this", "drum roll", "the big reveal",
   "here's the moment", "and... there it is", "ready for prod", "ship it", "good to go",
   "looks clean", "we're golden", "magic happens".
-- PUNCTUATION: do NOT use em-dashes (—) anywhere in text or captionText. Use commas, colons, or periods. Em-dashes break TTS pacing AND fragment the on-screen subtitles.
-- When something breaks or looks wrong, just say it plainly: "that's not right, the Today filter is empty even though we just added one." State expected vs actual. No drama.
+- PUNCTUATION: do NOT use em-dashes (—) anywhere. Use commas, colons, or periods. Em-dashes break TTS pacing AND fragment on-screen subtitles.
+- When something breaks: state plainly — "that's not right, the Today filter is empty even though we just added one." Expected vs actual. No drama.
 
-For each SILENT moment in the timeline below (visibility=silent), also produce a BADGE — a tiny on-screen card that pops up while the page sits. The badge says WHAT technically; your voice (in the matching beat) tells WHY.
+For each window whose events include silent investigative tools (browser_evaluate / fetch / network / console), you MAY emit a BADGE — a tiny on-screen card that pops up while the page sits. The badge says WHAT technically; your voice (the matching beat) tells WHY.
 - badgeLabel: 4-7 word plain-English summary of what's being checked.
-- badgeDetail (optional): terminal-style one-liner, ≤60 chars, e.g. "evaluate document.querySelectorAll('[data-priority=high]')".
+- badgeDetail (optional): terminal-style one-liner, ≤60 chars.
 
-Output STRICT JSON (no markdown, no prose, no comments):
+Output STRICT JSON (no markdown, no prose, no thinking preamble):
 {
   "intro": { "text": string, "captionText": string },
-  "body": { "beats": [ { "startS": number, "durS": number, "text": string, "captionText": string } ] },
+  "body": { "beats": [ { "windowIdx": number, "text": string, "captionText": string } ] },
   "outro": { "text": string, "captionText": string },
-  "badges": [ { "momentIdx": number, "label": string, "detail"?: string } ]
+  "badges": [ { "windowIdx": number, "label": string, "detail"?: string } ]
 }
+
+Beats: exactly one per window, in order (windowIdx 0, 1, 2, …). Use empty text "" for windows you choose to skip.
 
 CONTEXT:
 Plan name: {{NAME}}
@@ -150,49 +202,65 @@ PR body (why this change matters):
 Focus / changes notes:
 {{FOCUS}}
 
-BODY MOMENTS (in playback order — the narrator anchors body beats to these timestamps):
-{{MOMENTS}}
+GOALS (the demo's chapter titles — narrate them in order):
+{{GOALS}}
+
+CLICK-ANCHORED WINDOWS (each beat covers one window in order):
+{{WINDOWS}}
 
 Return only the JSON.`;
 
 function buildPrompt(ctx: NarrationInput): string {
-  const moments = ctx.bodyMoments.map((m, i) => {
-    const head = `   ${i}. t=${m.startS.toFixed(1)}s · ${m.visibility} · ${m.toolKind}`;
-    const inp = m.toolInput ? ` input="${m.toolInput.replace(/\s+/g, " ").slice(0, 160)}"` : "";
-    const out = m.toolResult ? ` result="${m.toolResult.replace(/\s+/g, " ").slice(0, 160)}"` : "";
-    return `${head}${inp}${out}`;
-  }).join("\n");
+  const goals = ctx.goals.length
+    ? ctx.goals.map((g, i) => `   ${i + 1}. ${g.intent}${g.success ? `\n      success: ${g.success}` : ""}`).join("\n")
+    : "   (no goals provided — treat the body as a single uncategorised demo)";
 
-  const exDur = 5;
+  const windows = ctx.windows.map((w) => {
+    const target = targetWords(w.durS);
+    const lines: string[] = [];
+    lines.push(`   window ${w.idx}: t=${w.startS.toFixed(1)}–${w.endS.toFixed(1)}s · ${w.durS.toFixed(1)}s · ≈${target} words`);
+    if (w.startingClick) {
+      lines.push(`     opened by click at ${w.startingClick.tsS.toFixed(1)}s on: ${w.startingClick.element || "(no description)"}`);
+    } else {
+      lines.push(`     opens the body (no click yet — set the scene)`);
+    }
+    if (w.events.length) {
+      const evt = w.events.slice(0, 6).map((e) => `       · t=${e.startS.toFixed(1)}s ${e.tool}${e.description ? `: ${e.description}` : ""}${e.result ? ` → ${e.result}` : ""}`).join("\n");
+      lines.push(`     events while the page sits:\n${evt}`);
+    }
+    if (w.endingClick) {
+      lines.push(`     closed by click at ${w.endingClick.tsS.toFixed(1)}s on: ${w.endingClick.element || "(no description)"}`);
+    } else {
+      lines.push(`     closes the body (no click after — wrap up)`);
+    }
+    return lines.join("\n");
+  }).join("\n\n");
+
   return PROMPT
     .replace("{{INTRO_WORDS}}", String(targetWords(ctx.introTargetS)))
-    .replace("{{BODY_DUR}}", ctx.bodyDurS.toFixed(1))
-    .replace(/\{\{BODY_DUR\}\}/g, ctx.bodyDurS.toFixed(1))
     .replace("{{OUTRO_WORDS}}", String(targetWords(ctx.outroTargetS)))
-    .replace("{{EX_DUR}}", String(exDur))
-    .replace("{{EX_WORDS}}", String(targetWords(exDur)))
     .replace("{{NAME}}", ctx.plan.name ?? "")
     .replace("{{SUMMARY}}", ctx.plan.summary ?? "")
     .replace("{{URL}}", ctx.plan.startUrl ?? "")
     .replace("{{PR_TITLE}}", ctx.prTitle ?? "(not available)")
     .replace("{{PR_BODY}}", (ctx.prBody ?? "(not available)").slice(0, 4000))
     .replace("{{FOCUS}}", (ctx.focus ?? "(not available)").slice(0, 2000))
-    .replace("{{MOMENTS}}", moments || "   (no moments — narrate the URL alone, one beat covering the whole body)");
+    .replace("{{GOALS}}", goals)
+    .replace("{{WINDOWS}}", windows || "   (no windows — narrate the URL as one beat)");
 }
 
 /**
- * Generate one coherent narration script — intro line, timed body beats,
- * outro line — in a single Claude call. The body is a TIMED LIST so each
- * spoken beat is anchored to a body-relative timestamp; per-beat audio
- * placed at its declared startS keeps the voice locked to the visuals.
- *
- * No fallback — if Claude fails, the whole render aborts. tik-test pays
- * for Claude everywhere else; silently degrading to mechanical templates
- * here would hide a real environment bug behind a low-quality video.
+ * Generate the narration script — intro + per-window body beats + outro
+ * — in a single Claude call. Body beats are tied to click-anchored
+ * windows whose timestamps are FIXED, so the spoken word stays locked to
+ * the visual moment by construction.
  */
 export async function generateNarration(ctx: NarrationInput): Promise<NarrationOutput> {
+  if (ctx.windows.length === 0) {
+    throw new Error("generateNarration called with zero windows — body has no time to fill");
+  }
   const prompt = buildPrompt(ctx);
-  console.log(chalk.dim(`  asking claude for timed narration (intro + ${ctx.bodyDurS.toFixed(0)}s body in beats + outro, ${ctx.bodyMoments.length} moments)…`));
+  console.log(chalk.dim(`  asking claude for click-anchored narration (intro + ${ctx.windows.length} body windows + outro, ${ctx.goals.length} goals)…`));
   const raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "narration", timeoutKnob: "TIK_NARRATION_TIMEOUT_MS" });
   const json = extractJson(raw);
   let parsed: NarrationOutput;
@@ -210,55 +278,27 @@ export async function generateNarration(ctx: NarrationInput): Promise<NarrationO
       line.captionText = line.text;
     }
   }
-  if (!parsed.body || !Array.isArray(parsed.body.beats) || parsed.body.beats.length === 0) {
-    throw new Error(`claude narration JSON is missing a non-empty body.beats array`);
+  if (!parsed.body || !Array.isArray(parsed.body.beats)) {
+    throw new Error(`claude narration JSON is missing body.beats array`);
   }
-  parsed.body.beats = normaliseBeats(parsed.body.beats, ctx.bodyDurS);
+  // Fill missing windowIdx slots with empty beats so the editor can rely on
+  // a 1:1 mapping. Drop any out-of-range entries.
+  const beatsByIdx = new Map<number, WindowBeat>();
+  for (const b of parsed.body.beats) {
+    if (typeof b?.windowIdx !== "number") continue;
+    if (b.windowIdx < 0 || b.windowIdx >= ctx.windows.length) continue;
+    beatsByIdx.set(b.windowIdx, {
+      windowIdx: b.windowIdx,
+      text: typeof b.text === "string" ? b.text.trim() : "",
+      captionText: (typeof b.captionText === "string" && b.captionText.trim()) ? b.captionText.trim() : (typeof b.text === "string" ? b.text.trim() : ""),
+    });
+  }
+  parsed.body.beats = ctx.windows.map((w) => beatsByIdx.get(w.idx) ?? { windowIdx: w.idx, text: "", captionText: "" });
   if (!Array.isArray(parsed.badges)) parsed.badges = [];
   parsed.badges = parsed.badges.filter((b) => {
-    const m = ctx.bodyMoments[b.momentIdx];
-    return !!m && m.visibility === "silent" && typeof b.label === "string" && b.label.trim().length > 0;
+    return typeof b?.windowIdx === "number"
+      && b.windowIdx >= 0 && b.windowIdx < ctx.windows.length
+      && typeof b.label === "string" && b.label.trim().length > 0;
   });
   return parsed;
-}
-
-/**
- * Defensive cleanup of the narrator's beat list. The narrator hits the
- * timing rules ~95% of the time, but a 5% drift (e.g. last beat ending at
- * 58.7s instead of 60.0s, or beats overlapping by 0.3s) will leave silence
- * gaps or audio collisions. We snap beats into a clean contiguous timeline
- * preserving each beat's text but adjusting startS / durS so:
- *   - first beat starts at exactly 0
- *   - last beat ends at exactly bodyDurS
- *   - beats are contiguous and non-overlapping
- *   - durations are scaled proportionally if the narrator's totals drifted
- */
-function normaliseBeats(beats: BodyBeat[], bodyDurS: number): BodyBeat[] {
-  // Validate every beat has text + captionText + finite numbers.
-  const cleaned: BodyBeat[] = beats
-    .filter((b) => b && typeof b.text === "string" && b.text.trim().length > 0)
-    .map((b) => ({
-      startS: Number.isFinite(b.startS) ? Math.max(0, b.startS) : 0,
-      durS: Number.isFinite(b.durS) && b.durS > 0 ? b.durS : 1,
-      text: b.text.trim(),
-      captionText: (b.captionText ?? b.text).trim(),
-    }))
-    .sort((a, b) => a.startS - b.startS);
-  if (cleaned.length === 0) {
-    throw new Error("narration body has no usable beats after cleaning");
-  }
-  // Snap to contiguous coverage of [0, bodyDurS]. Each beat keeps its
-  // proportional share of the original total duration so the narrator's
-  // pacing intent survives the snap.
-  const totalDeclared = cleaned.reduce((s, b) => s + b.durS, 0);
-  let cursor = 0;
-  for (let i = 0; i < cleaned.length; i++) {
-    const b = cleaned[i];
-    const proportional = (b.durS / totalDeclared) * bodyDurS;
-    const isLast = i === cleaned.length - 1;
-    const newDur = isLast ? Math.max(0.5, bodyDurS - cursor) : Math.max(0.5, proportional);
-    cleaned[i] = { ...b, startS: cursor, durS: newDur };
-    cursor += newDur;
-  }
-  return cleaned;
 }
