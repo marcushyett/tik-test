@@ -344,7 +344,10 @@ export async function runGoal(
               if (block.type === "tool_use") {
                 const name = String(block.name || "").replace(/^mcp__playwright__/, "");
                 const input = block.input ?? {};
-                const target = input.ref || input.element || input.url || input.selector || "";
+                // Prefer the HUMAN-READABLE description (`element`) so downstream
+                // narration can say "clicked Sign In" instead of "clicked ref=e123".
+                // Fall back to selector / url / ref only when no description exists.
+                const target = input.element || input.url || input.selector || input.ref || "";
                 const value = input.text ?? input.key ?? input.function ?? "";
                 const idx = history.length;
                 history.push({

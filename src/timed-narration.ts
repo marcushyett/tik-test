@@ -4,17 +4,19 @@ import { NARRATION_TIMEOUT_MS } from "./timeouts.js";
 import { runClaude, extractJson } from "./claude-cli.js";
 
 /**
- * One on-screen moment the body video shows. The narrator gets the full
- * sequence as context (with timestamps) and writes ONE flowing script for
- * the entire body — no per-moment chunks. This gives us a single audio
- * file that plays start-to-end with zero possibility of mid-body silence.
+ * One on-screen moment the body video shows. Each moment carries a
+ * body-relative timestamp + a human-readable description of what the
+ * agent did. The narrator uses this timeline to ANCHOR each spoken
+ * beat to its real on-screen moment — without timestamps, a single
+ * continuous voice over the body drifts away from the visuals within
+ * 10-15 seconds.
  */
 export interface BodyMoment {
   /** Body-relative seconds — when this moment begins in the trimmed master. */
   startS: number;
   /** "silent" → the agent is investigating without visible UI change.
    *  "visible" → click/type/etc. that the viewer can see. Used to decide
-   *  whether to show a small ToolBadge overlay during this window. */
+   *  whether to render a small ToolBadge during this window. */
   visibility: "silent" | "visible";
   toolKind: string;
   toolInput?: string;
@@ -28,12 +30,11 @@ export interface NarrationInput {
   focus?: string;
   /** Title-card window. The intro narration is sized to this. */
   introTargetS: number;
-  /** Master body duration in seconds. The body script is sized to this. */
+  /** Master body duration in seconds. Beats must cover [0, bodyDurS]. */
   bodyDurS: number;
   /** Outro window (before the post-voice hold). */
   outroTargetS: number;
-  /** What happens on screen, in order. The narrator references the timestamps
-   *  so the script lands on the right moment without per-chunk slicing. */
+  /** What happens on screen, in order — anchors for the narrator. */
   bodyMoments: BodyMoment[];
 }
 
@@ -43,6 +44,21 @@ export interface NarrationLine {
   /** Caption text — must match `text` word-for-word for the on-screen
    *  subtitle to stay synced. */
   captionText: string;
+}
+
+/**
+ * One narrator-defined beat in the body timeline. The narrator picks
+ * BOTH the timestamp AND the duration based on what's on screen, so the
+ * audio TTS for this beat plays exactly when the corresponding visual
+ * moment happens. Per-beat audio = anchored sync by construction.
+ */
+export interface BodyBeat extends NarrationLine {
+  /** Body-relative seconds when this beat begins. Must be sorted +
+   *  non-overlapping across the body. The first beat starts at 0. */
+  startS: number;
+  /** Wall-clock duration of this beat in the composition. The narrator
+   *  picks this so they own the word budget — `~durS * 3` words. */
+  durS: number;
 }
 
 export interface NarrationBadge {
@@ -58,7 +74,10 @@ export interface NarrationBadge {
 
 export interface NarrationOutput {
   intro: NarrationLine;
-  body: NarrationLine;
+  /** Body narration as a TIMED beat list. Beats are sorted, non-overlapping,
+   *  and cover [0, bodyDurS]. Each beat is TTS'd separately and placed at
+   *  its declared startS so the spoken word lines up with the visuals. */
+  body: { beats: BodyBeat[] };
   outro: NarrationLine;
   badges: NarrationBadge[];
 }
@@ -72,15 +91,27 @@ function targetWords(durS: number): number {
 
 const PROMPT = `You are the narrator of a short developer screen-share. Picture a calm 1:1 — not a launch demo, not a hype reel — quietly walking a colleague through what you just shipped and welcoming critique.
 
-The video has THREE sections: an intro title card, the body recording, and an outro card. You write ONE narration LINE for the intro (≈{{INTRO_WORDS}} words), ONE script for the body (≈{{BODY_WORDS}} words to fit the {{BODY_DUR}}s recording), and ONE line for the outro (≈{{OUTRO_WORDS}} words). The body script plays as a single audio file over the recording — its pace will be slightly stretched or compressed (within 0.9×–1.5×) to fit, so hit the body word target within ±15%. Going under leaves silence; going modestly over speeds up a touch.
+The video has THREE sections: an intro title card, the body recording, and an outro card.
 
-The body script is ONE continuous flowing narration. Refer to what's happening on screen using the moment timeline below — but write prose, not a list. The reader/listener should feel they're watching a person talk through their own work, with the camera happening to be on the screen.
+INTRO line: ≈{{INTRO_WORDS}} words, names WHY this feature exists and what PROBLEM it solves (use the PR body / focus).
+OUTRO line: ≈{{OUTRO_WORDS}} words, ONE sentence asking for input or naming an open question. Don't summarise what was shown.
 
-Tonal rules (strict):
-- The intro names WHY this feature exists and what PROBLEM it solves (use the PR body / focus).
-- The body script weaves through the moments naturally. Connect actions to intent ("once we save this, we should see it under Today…"), not the action ("now we click X"). Ground each beat in WHY before WHAT.
-- You are a HUMAN developer talking through the work, not an AI agent narrating its tool calls. Watchers should never feel they're listening to a robot.
-- BANNED VOCABULARY — never appears in any text/captionText, even paraphrased:
+BODY: a TIMED list of beats over the {{BODY_DUR}}s recording. THIS IS THE HARD PART.
+
+Each beat is { "startS": number, "durS": number, "text": string, "captionText": string }. Each beat is TTS'd separately and placed at its declared startS in the final composition, so the spoken word lands EXACTLY when the corresponding visual happens. Without this, narration drifts away from the visuals within 10-15 seconds and the video feels broken.
+
+Strict rules for the body beats:
+- The FIRST beat starts at 0. The beats are sorted by startS. The LAST beat ENDS at {{BODY_DUR}}s (its startS + durS = {{BODY_DUR}}).
+- Beats are NON-OVERLAPPING and CONTIGUOUS — beat[i+1].startS = beat[i].startS + beat[i].durS exactly.
+- Anchor each beat to the BODY MOMENT TIMELINE below. If something visible happens at t=5.4s (e.g. the Today filter is clicked), the beat that talks about it should START at or just before 5.4s. Do not narrate an action that hasn't happened yet, and do not narrate an action 4 seconds after it's already off-screen.
+- Each beat's text is sized for ~3 words/sec of speech. With durS={{EX_DUR}}s, that's ~{{EX_WORDS}} words. Stay within ±15% of the per-beat target — going under leaves silence, going over chipmunks the audio.
+- 4-12 body beats total. Shorter (2-4s) for tight reactions; longer (5-9s) when the agent is doing something extended like typing or reading. Pick whatever cadence fits the visual story.
+
+Tonal rules (strict, apply to ALL text and captionText):
+- The narrator is a HUMAN developer talking through their own work. Watchers should never feel they're listening to a robot.
+- Each beat connects to the previous — refer back, set up what's next. ONE CONTINUOUS STORY.
+- Narrate WHY/INTENT, not WHAT/MECHANISM. "once we save this, we should see it under Today…" beats "now we click X".
+- BANNED VOCABULARY — never appears anywhere in narration text or captionText, even paraphrased:
   • Tool names: "snapshot", "screenshot", "browser snapshot", "DOM", "evaluate", "fetch", "querySelector", "API call", "browser_X" prefix.
   • Process language: "the agent", "automation", "tool call", "playwright", "MCP", "framework".
   • These are correct words for the per-moment BADGES below, never the voice.
@@ -88,23 +119,22 @@ Tonal rules (strict):
   • "let me take a closer look at this", "want to make sure I'm reading this right", "double-checking what we got back".
   • Failed/retry/timeout → "oops, missed that, let me try again", "hang on, that didn't catch — one more time".
   • Verifying state → "yep, that's what I expected", "exactly the value we wanted".
-- BANNED PHRASES, never use any of these or close paraphrases:
+- BANNED PHRASES, never use these or close paraphrases:
   "moment of truth", "here we go", "let's see", "watch this", "drum roll", "the big reveal",
   "here's the moment", "and... there it is", "ready for prod", "ship it", "good to go",
   "looks clean", "we're golden", "magic happens".
-- PUNCTUATION: do NOT use em-dashes (—) anywhere in text or captionText. Em-dashes read as a hard pause in TTS and double as caption page breaks, so they fragment the on-screen subtitles. Use commas, colons, or periods instead. Plain hyphens inside identifiers are fine.
+- PUNCTUATION: do NOT use em-dashes (—) anywhere in text or captionText. Use commas, colons, or periods. Em-dashes break TTS pacing AND fragment the on-screen subtitles.
 - When something breaks or looks wrong, just say it plainly: "that's not right, the Today filter is empty even though we just added one." State expected vs actual. No drama.
-- The outro is one sentence asking for input or naming an open question.
 
-For each SILENT moment in the timeline below (visibility=silent), also produce a BADGE — a tiny on-screen card that pops up while the page sits. The badge says WHAT technically (your voice tells WHY/INTENT). Output one badge per silent moment, identified by its 0-based index in the timeline.
+For each SILENT moment in the timeline below (visibility=silent), also produce a BADGE — a tiny on-screen card that pops up while the page sits. The badge says WHAT technically; your voice (in the matching beat) tells WHY.
 - badgeLabel: 4-7 word plain-English summary of what's being checked.
 - badgeDetail (optional): terminal-style one-liner, ≤60 chars, e.g. "evaluate document.querySelectorAll('[data-priority=high]')".
 
-Output STRICT JSON (no markdown, no prose):
+Output STRICT JSON (no markdown, no prose, no comments):
 {
-  "intro":  { "text": string, "captionText": string },
-  "body":   { "text": string, "captionText": string },
-  "outro":  { "text": string, "captionText": string },
+  "intro": { "text": string, "captionText": string },
+  "body": { "beats": [ { "startS": number, "durS": number, "text": string, "captionText": string } ] },
+  "outro": { "text": string, "captionText": string },
   "badges": [ { "momentIdx": number, "label": string, "detail"?: string } ]
 }
 
@@ -120,39 +150,41 @@ PR body (why this change matters):
 Focus / changes notes:
 {{FOCUS}}
 
-BODY MOMENTS (in playback order — anchor your script to these timestamps):
+BODY MOMENTS (in playback order — the narrator anchors body beats to these timestamps):
 {{MOMENTS}}
 
 Return only the JSON.`;
 
 function buildPrompt(ctx: NarrationInput): string {
   const moments = ctx.bodyMoments.map((m, i) => {
-    const head = `${i}. t=${m.startS.toFixed(1)}s · ${m.visibility} · ${m.toolKind}`;
+    const head = `   ${i}. t=${m.startS.toFixed(1)}s · ${m.visibility} · ${m.toolKind}`;
     const inp = m.toolInput ? ` input="${m.toolInput.replace(/\s+/g, " ").slice(0, 160)}"` : "";
     const out = m.toolResult ? ` result="${m.toolResult.replace(/\s+/g, " ").slice(0, 160)}"` : "";
-    return `   ${head}${inp}${out}`;
+    return `${head}${inp}${out}`;
   }).join("\n");
 
+  const exDur = 5;
   return PROMPT
     .replace("{{INTRO_WORDS}}", String(targetWords(ctx.introTargetS)))
-    .replace("{{BODY_WORDS}}", String(targetWords(ctx.bodyDurS)))
-    .replace("{{BODY_DUR}}", ctx.bodyDurS.toFixed(0))
+    .replace("{{BODY_DUR}}", ctx.bodyDurS.toFixed(1))
+    .replace(/\{\{BODY_DUR\}\}/g, ctx.bodyDurS.toFixed(1))
     .replace("{{OUTRO_WORDS}}", String(targetWords(ctx.outroTargetS)))
+    .replace("{{EX_DUR}}", String(exDur))
+    .replace("{{EX_WORDS}}", String(targetWords(exDur)))
     .replace("{{NAME}}", ctx.plan.name ?? "")
     .replace("{{SUMMARY}}", ctx.plan.summary ?? "")
     .replace("{{URL}}", ctx.plan.startUrl ?? "")
     .replace("{{PR_TITLE}}", ctx.prTitle ?? "(not available)")
     .replace("{{PR_BODY}}", (ctx.prBody ?? "(not available)").slice(0, 4000))
     .replace("{{FOCUS}}", (ctx.focus ?? "(not available)").slice(0, 2000))
-    .replace("{{MOMENTS}}", moments || "   (no moments — narrate the URL alone)");
+    .replace("{{MOMENTS}}", moments || "   (no moments — narrate the URL alone, one beat covering the whole body)");
 }
 
 /**
- * Generate ONE coherent narration script for the whole video in a single
- * Claude call. Three sections (intro, body, outro) each get one line; the
- * body line is a continuous script sized to the master video duration so a
- * single TTS call produces one audio file that plays start-to-end with no
- * mid-body silence by construction.
+ * Generate one coherent narration script — intro line, timed body beats,
+ * outro line — in a single Claude call. The body is a TIMED LIST so each
+ * spoken beat is anchored to a body-relative timestamp; per-beat audio
+ * placed at its declared startS keeps the voice locked to the visuals.
  *
  * No fallback — if Claude fails, the whole render aborts. tik-test pays
  * for Claude everywhere else; silently degrading to mechanical templates
@@ -160,7 +192,7 @@ function buildPrompt(ctx: NarrationInput): string {
  */
 export async function generateNarration(ctx: NarrationInput): Promise<NarrationOutput> {
   const prompt = buildPrompt(ctx);
-  console.log(chalk.dim(`  asking claude for one narration script (intro + ${ctx.bodyDurS.toFixed(0)}s body + outro, ${ctx.bodyMoments.length} moments)…`));
+  console.log(chalk.dim(`  asking claude for timed narration (intro + ${ctx.bodyDurS.toFixed(0)}s body in beats + outro, ${ctx.bodyMoments.length} moments)…`));
   const raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "narration", timeoutKnob: "TIK_NARRATION_TIMEOUT_MS" });
   const json = extractJson(raw);
   let parsed: NarrationOutput;
@@ -169,21 +201,64 @@ export async function generateNarration(ctx: NarrationInput): Promise<NarrationO
   } catch (e) {
     throw new Error(`claude returned unparseable JSON for narration: ${(e as Error).message.split("\n")[0]}\n--- raw output (first 500 chars) ---\n${raw.slice(0, 500)}`);
   }
-  for (const key of ["intro", "body", "outro"] as const) {
+  for (const key of ["intro", "outro"] as const) {
     const line = parsed[key];
     if (!line || typeof line.text !== "string" || !line.text.trim()) {
       throw new Error(`claude narration JSON is missing a non-empty "${key}.text"`);
     }
     if (typeof line.captionText !== "string" || !line.captionText.trim()) {
-      // Fall back to the spoken line — captions occasionally drift in practice.
       line.captionText = line.text;
     }
   }
+  if (!parsed.body || !Array.isArray(parsed.body.beats) || parsed.body.beats.length === 0) {
+    throw new Error(`claude narration JSON is missing a non-empty body.beats array`);
+  }
+  parsed.body.beats = normaliseBeats(parsed.body.beats, ctx.bodyDurS);
   if (!Array.isArray(parsed.badges)) parsed.badges = [];
-  // Defensive: drop badges that point at non-existent or non-silent moments.
   parsed.badges = parsed.badges.filter((b) => {
     const m = ctx.bodyMoments[b.momentIdx];
     return !!m && m.visibility === "silent" && typeof b.label === "string" && b.label.trim().length > 0;
   });
   return parsed;
+}
+
+/**
+ * Defensive cleanup of the narrator's beat list. The narrator hits the
+ * timing rules ~95% of the time, but a 5% drift (e.g. last beat ending at
+ * 58.7s instead of 60.0s, or beats overlapping by 0.3s) will leave silence
+ * gaps or audio collisions. We snap beats into a clean contiguous timeline
+ * preserving each beat's text but adjusting startS / durS so:
+ *   - first beat starts at exactly 0
+ *   - last beat ends at exactly bodyDurS
+ *   - beats are contiguous and non-overlapping
+ *   - durations are scaled proportionally if the narrator's totals drifted
+ */
+function normaliseBeats(beats: BodyBeat[], bodyDurS: number): BodyBeat[] {
+  // Validate every beat has text + captionText + finite numbers.
+  const cleaned: BodyBeat[] = beats
+    .filter((b) => b && typeof b.text === "string" && b.text.trim().length > 0)
+    .map((b) => ({
+      startS: Number.isFinite(b.startS) ? Math.max(0, b.startS) : 0,
+      durS: Number.isFinite(b.durS) && b.durS > 0 ? b.durS : 1,
+      text: b.text.trim(),
+      captionText: (b.captionText ?? b.text).trim(),
+    }))
+    .sort((a, b) => a.startS - b.startS);
+  if (cleaned.length === 0) {
+    throw new Error("narration body has no usable beats after cleaning");
+  }
+  // Snap to contiguous coverage of [0, bodyDurS]. Each beat keeps its
+  // proportional share of the original total duration so the narrator's
+  // pacing intent survives the snap.
+  const totalDeclared = cleaned.reduce((s, b) => s + b.durS, 0);
+  let cursor = 0;
+  for (let i = 0; i < cleaned.length; i++) {
+    const b = cleaned[i];
+    const proportional = (b.durS / totalDeclared) * bodyDurS;
+    const isLast = i === cleaned.length - 1;
+    const newDur = isLast ? Math.max(0.5, bodyDurS - cursor) : Math.max(0.5, proportional);
+    cleaned[i] = { ...b, startS: cursor, durS: newDur };
+    cursor += newDur;
+  }
+  return cleaned;
 }

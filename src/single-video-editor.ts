@@ -48,10 +48,29 @@ function getVersionTag(): string {
 }
 
 /**
+ * One body narration beat. The narrator picks BOTH the timestamp and the
+ * duration based on the moment timeline, so when we synth this beat into
+ * its own audio file and place it at startS, the spoken word lands exactly
+ * when the corresponding visual happens. Sum of all chunks ≈ masterDurS;
+ * non-overlapping; cover the body contiguously.
+ */
+export interface BodyChunk {
+  /** Body-relative seconds (0 = first frame of master). */
+  startS: number;
+  /** Slot duration for this beat. The narrator's text was sized for this. */
+  durS: number;
+  /** Caption text — must match the voice line word-for-word. */
+  text: string;
+  voiceSrc?: string;
+  voiceDurS?: number;
+  voicePlaybackRate?: number;
+}
+
+/**
  * One on-screen overlay badge that pops up during a SILENT investigative
  * moment (browser_evaluate, network probe, etc.). Body-relative timestamps,
- * decoupled from the narration audio — the body now plays as ONE continuous
- * voice file, so badges live on their own timeline pinned to the tool window.
+ * decoupled from the narration audio so they never desync with the actual
+ * visual moment even if a beat's audio drifts a fraction of a second.
  */
 export interface BodyBadge {
   /** Body-relative seconds (0 = first frame of master video). */
@@ -91,15 +110,12 @@ export interface SingleVideoInput {
   outroVoicePlaybackRate?: number;
   outroCaption?: string;
   versionTag?: string;
-  /** Single body narration voice file, played start-to-end over the master.
-   *  Pace is fit globally via `bodyVoicePlaybackRate` (clamped 0.9–1.5×) so
-   *  modest narrator under/over-shoot is absorbed without leaving silence. */
-  bodyVoiceSrc?: string;
-  bodyVoiceDurS?: number;
-  bodyVoicePlaybackRate?: number;
-  /** Full body script, paginated by WordCaption against the body audio's
-   *  effective duration. One continuous flow of subtitles for the whole body. */
-  bodyCaption?: string;
+  /** Body narration as TIMED beats — one chunk per narrator-defined beat.
+   *  Each chunk renders ONE Audio + ONE WordCaption Sequence at its declared
+   *  startS, so the spoken word is anchored to the visual moment by
+   *  construction (no global drift). Chunks are sorted, non-overlapping,
+   *  cover the master body. */
+  bodyChunks: BodyChunk[];
   /** Optional overlay badges keyed to silent investigative moments. */
   bodyBadges?: BodyBadge[];
   /** Mouse + click + keystroke stream, mapped from raw video timeline into
@@ -559,48 +575,66 @@ export async function editSingleVideo({
     bodyMoments,
   });
 
-  // ── 6. TTS three files in parallel: intro, body, outro. The body is one
-  //      audio clip spanning the entire master — playbackRate is fit globally
-  //      so any modest narrator under/over-shoot is absorbed without leaving
-  //      a mid-body silence gap.
-  const tts = await runWithConcurrency(
-    [
-      { id: "intro", text: narration.intro.text, fileName: "voice-intro.wav" },
-      { id: "body", text: narration.body.text, fileName: "voice-body.wav" },
-      { id: "outro", text: narration.outro.text, fileName: "voice-outro.wav" },
-    ],
-    3,
-    async (s) => {
-      if (!ttsBackend || !s.text.trim()) return { src: undefined as string | undefined, dur: 0 };
-      try {
-        await synth(ttsBackend, sanitiseForSpeech(s.text), path.join(publicDir, s.fileName));
-        return { src: s.fileName, dur: await ffprobeDuration(path.join(publicDir, s.fileName)) };
-      } catch (e) {
-        console.log(chalk.yellow(`  voice skipped for ${s.id}: ${(e as Error).message.split("\n")[0]}`));
-        return { src: undefined, dur: 0 };
-      }
+  // ── 6. TTS each beat + the intro / outro lines, in parallel. Per-beat
+  //      audio means each beat lands at its narrator-declared startS — sync
+  //      with the visuals is anchored by construction, not hoped for.
+  const beats = narration.body.beats;
+  type TtsJob = { id: string; text: string; fileName: string };
+  const ttsJobs: TtsJob[] = [
+    { id: "intro", text: narration.intro.text, fileName: "voice-intro.wav" },
+    ...beats.map((b, i) => ({ id: `beat-${i}`, text: b.text, fileName: `voice-beat-${String(i).padStart(3, "0")}.wav` })),
+    { id: "outro", text: narration.outro.text, fileName: "voice-outro.wav" },
+  ];
+  const ttsResults = await runWithConcurrency(ttsJobs, 6, async (job) => {
+    if (!ttsBackend || !job.text.trim()) return { src: undefined as string | undefined, dur: 0 };
+    try {
+      await synth(ttsBackend, sanitiseForSpeech(job.text), path.join(publicDir, job.fileName));
+      return { src: job.fileName, dur: await ffprobeDuration(path.join(publicDir, job.fileName)) };
+    } catch (e) {
+      console.log(chalk.yellow(`  voice skipped for ${job.id}: ${(e as Error).message.split("\n")[0]}`));
+      return { src: undefined, dur: 0 };
     }
-  );
-  const [introTts, bodyTts, outroTts] = tts;
+  });
+  const introTts = ttsResults[0];
+  const outroTts = ttsResults[ttsResults.length - 1];
+  const beatTts = ttsResults.slice(1, ttsResults.length - 1);
 
-  // ── 7. Body voice fit: ONE playbackRate across the whole body so the audio
-  //      lasts exactly masterDurS. Clamped 0.9–1.5× — within that range the
-  //      pace stays natural; outside it the narrator should rewrite. Below
-  //      0.9 we accept a small trailing silence rather than slow to a crawl;
-  //      above 1.5 we accept a tiny audio overrun rather than chipmunk speed.
-  const bodyVoicePlaybackRate = bodyTts.dur > 0
-    ? Math.max(0.9, Math.min(1.5, bodyTts.dur / Math.max(0.5, masterDurS)))
-    : 1;
-  if (bodyTts.dur > 0) {
-    const playedS = bodyTts.dur / bodyVoicePlaybackRate;
-    const drift = playedS - masterDurS;
-    const driftPct = (drift / masterDurS) * 100;
-    console.log(chalk.dim(`  body voice: ${bodyTts.dur.toFixed(1)}s @ ${bodyVoicePlaybackRate.toFixed(2)}× → ${playedS.toFixed(1)}s vs ${masterDurS.toFixed(1)}s body (${drift >= 0 ? "+" : ""}${driftPct.toFixed(1)}%)`));
+  // ── 7. Build the body chunk timeline — one BodyChunk per narrator beat.
+  //      Each chunk gets a per-beat playbackRate that fits its TTS duration
+  //      to its declared durS slot. Floors at 0.7× because beats are short
+  //      and a slight stretch is much less audible than the silence we'd
+  //      get if we floored higher; caps at 1.5× to avoid chipmunk speed.
+  const bodyChunks: BodyChunk[] = [];
+  let totalBeatSlackS = 0;
+  for (let i = 0; i < beats.length; i++) {
+    const b = beats[i];
+    const v = beatTts[i];
+    let rate = 1;
+    if (v.dur > 0) {
+      // Aim to fit just inside the slot. 0.05s tail keeps the next beat's
+      // first word from colliding with this beat's trailing breath.
+      const targetSpeechS = Math.max(0.5, b.durS - 0.05);
+      rate = Math.max(0.7, Math.min(1.5, v.dur / targetSpeechS));
+    }
+    const playedS = v.dur > 0 ? v.dur / rate : 0;
+    const slack = Math.max(0, b.durS - playedS);
+    totalBeatSlackS += slack;
+    bodyChunks.push({
+      startS: b.startS,
+      durS: b.durS,
+      text: sanitiseForSpeech(b.captionText),
+      voiceSrc: v.src,
+      voiceDurS: v.dur || undefined,
+      voicePlaybackRate: rate,
+    });
   }
+  console.log(chalk.dim(`  body beats: ${beats.length} chunks · total slack ${totalBeatSlackS.toFixed(1)}s of ${masterDurS.toFixed(1)}s body (${((totalBeatSlackS / masterDurS) * 100).toFixed(1)}%)`));
 
   // ── 8. Body badges — overlay cards keyed to silent investigative moments.
   //      Pulled from the narrator's per-moment label/detail pairs and pinned
-  //      to the original tool window's body-relative timestamp.
+  //      to the original tool window's body-relative timestamp. Independent
+  //      of the narration audio, so they never desync with the on-screen
+  //      action even if a beat's pacing drifts.
   const badgeByMoment = new Map<number, { label: string; detail?: string }>(
     narration.badges.map((b) => [b.momentIdx, { label: b.label.trim(), detail: b.detail?.trim() || undefined }])
   );
@@ -697,10 +731,7 @@ export async function editSingleVideo({
     outroVoicePlaybackRate: outroPlaybackRate,
     outroCaption: sanitiseForSpeech(narration.outro.captionText),
     versionTag: getVersionTag(),
-    bodyVoiceSrc: bodyTts.src,
-    bodyVoiceDurS: bodyTts.dur || undefined,
-    bodyVoicePlaybackRate,
-    bodyCaption: sanitiseForSpeech(narration.body.captionText),
+    bodyChunks,
     bodyBadges: bodyBadges.length > 0 ? bodyBadges : undefined,
     interactions: mappedInteractions.length > 0 ? mappedInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,
