@@ -50,6 +50,16 @@
   footer.foot { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; font-size: 12px; color: var(--ink-2); background: #fafbfd; border-top: 1px solid var(--line); }
   footer.foot button { background: transparent; border: 0; color: var(--ink-2); font-size: 12px; cursor: pointer; }
   footer.foot button:hover { color: var(--danger); text-decoration: underline; }
+  .confirm-panel { display: none; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; background: #fff8e6; border-top: 1px solid #f0deb0; color: #8a6310; font-size: 13px; }
+  .confirm-panel.show { display: flex; }
+  .confirm-panel .confirm-msg { flex: 1; min-width: 0; }
+  .confirm-panel .confirm-msg strong { color: #5d420a; }
+  .confirm-panel .confirm-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .confirm-panel button { font-size: 12px; padding: 6px 12px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; font-weight: 600; }
+  .confirm-panel .confirm-cancel { background: #fff; color: var(--ink-2); border-color: var(--line); }
+  .confirm-panel .confirm-cancel:hover { color: var(--ink); border-color: #c8ccd6; }
+  .confirm-panel .confirm-go { background: var(--danger); color: #fff; border-color: var(--danger); }
+  .confirm-panel .confirm-go:hover { background: #d83a3a; border-color: #d83a3a; }
   .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity 160ms, transform 160ms; }
   .toast.show { opacity: 1; transform: translate(-50%, -8px); }
 
@@ -127,6 +137,16 @@
       <span id="stats" data-testid="stats">—</span>
       <button id="clear-done" data-testid="clear-done">Clear completed</button>
     </footer>
+
+    <div class="confirm-panel" id="confirm-clear" data-testid="confirm-clear" role="alertdialog" aria-labelledby="confirm-clear-msg">
+      <div class="confirm-msg" id="confirm-clear-msg" data-testid="confirm-clear-msg">
+        Clear <strong id="confirm-clear-count" data-testid="confirm-clear-count">0</strong> completed tasks? This can't be undone.
+      </div>
+      <div class="confirm-actions">
+        <button class="confirm-cancel" id="confirm-clear-cancel" data-testid="confirm-clear-cancel">Cancel</button>
+        <button class="confirm-go" id="confirm-clear-go" data-testid="confirm-clear-go">Clear</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -244,13 +264,47 @@
     });
   });
 
-  $("#clear-done").addEventListener("click", () => {
+  // "Clear completed" used to wipe done tasks immediately. Now it opens an
+  // inline confirmation panel showing the exact count to be removed, so a
+  // mis-click on a long list doesn't lose work. The actual deletion logic
+  // is unchanged — only the entry point is gated behind a confirm step.
+  const confirmPanel = $("#confirm-clear");
+  const confirmCount = $("#confirm-clear-count");
+
+  function openClearConfirm() {
+    const doneCount = state.tasks.filter((t) => t.done).length;
+    if (doneCount === 0) {
+      toast("Nothing to clear.");
+      return;
+    }
+    confirmCount.textContent = String(doneCount);
+    confirmPanel.classList.add("show");
+    // Focus Cancel by default so a stray Enter press doesn't auto-confirm.
+    $("#confirm-clear-cancel").focus();
+  }
+
+  function closeClearConfirm() {
+    confirmPanel.classList.remove("show");
+  }
+
+  function performClear() {
     const before = state.tasks.length;
     // BUG (for tik-test demo): "Clear completed" also nukes HIGH priority rows
     // regardless of status — user reported it wipes critical pending work.
     state.tasks = state.tasks.filter((t) => !t.done && t.priority !== "high");
     if (before !== state.tasks.length) toast("Cleared completed.");
+    closeClearConfirm();
     render();
+  }
+
+  $("#clear-done").addEventListener("click", openClearConfirm);
+  $("#confirm-clear-cancel").addEventListener("click", closeClearConfirm);
+  $("#confirm-clear-go").addEventListener("click", performClear);
+  // Esc cancels the confirm panel — standard dismissal affordance.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && confirmPanel.classList.contains("show")) {
+      closeClearConfirm();
+    }
   });
 
   // Seed with some demo data so first run isn't empty
