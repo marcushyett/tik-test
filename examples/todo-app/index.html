@@ -144,6 +144,71 @@
     setTimeout(() => t.classList.remove("show"), 1400);
   };
 
+  // ── Persistence ────────────────────────────────────────────────────────
+  // Until now Taskpad's state died on every reload — fine for a static
+  // demo but the #1 question we kept getting was "where did my list go?".
+  // Store under a versioned key so a future schema change can be migrated
+  // (or quietly dropped) without colliding with old data on the same
+  // origin. localStorage write failures (Safari private mode, quota
+  // exceeded) are swallowed — best-effort persistence.
+  const STORAGE_KEY = "taskpad.v1.tasks";
+
+  function loadTasks() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return null;
+      return parsed.filter(isValidTask);
+    } catch {
+      return null;
+    }
+  }
+  function saveTasks() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.tasks));
+    } catch {
+      /* quota / private-mode — ignore */
+    }
+  }
+  function isValidTask(t) {
+    return t && typeof t === "object"
+      && typeof t.id === "string"
+      && typeof t.title === "string"
+      && (t.priority === "low" || t.priority === "normal" || t.priority === "high")
+      && typeof t.done === "boolean";
+  }
+
+  // crypto.randomUUID covers every modern engine (Safari 15.4+, Chrome
+  // 92+, Firefox 95+); the suffix-from-Math.random fallback keeps IE-ish
+  // contexts limping along — better collision behaviour than the old
+  // `tN-<rand>` scheme, which collided when N was reused after a delete.
+  function newId() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    return "t-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+  }
+
+  // Debug API — quietly hung off `window.taskpad` so tests / power users
+  // can inspect or seed state from devtools without us shipping any UI.
+  window.taskpad = {
+    exportJSON: () => JSON.stringify(state.tasks, null, 2),
+    importJSON: (json) => {
+      const parsed = JSON.parse(json);
+      if (!Array.isArray(parsed) || !parsed.every(isValidTask)) throw new Error("invalid tasks payload");
+      state.tasks = parsed;
+      saveTasks();
+      render();
+      return state.tasks.length;
+    },
+    clearAll: () => {
+      state.tasks = [];
+      saveTasks();
+      render();
+    },
+  };
+
   function render() {
     let items = state.tasks;
     if (state.filter === "active") items = items.filter((t) => !t.done);
@@ -180,6 +245,7 @@
         const t = state.tasks.find((x) => x.id === id);
         t.done = cb.checked;
         if (t.done) toast("Nice — marked done.");
+        saveTasks();
         render();
       });
     });
@@ -188,6 +254,7 @@
         const id = b.closest("li").dataset.id;
         state.tasks = state.tasks.filter((x) => x.id !== id);
         toast("Task removed.");
+        saveTasks();
         render();
       });
     });
@@ -228,9 +295,10 @@
     setTimeout(() => {
       btn.classList.remove("loading");
       btn.innerHTML = originalHtml;
-      state.tasks.push({ id: "t" + (state.tasks.length + 1) + "-" + Math.random().toString(36).slice(2, 6), title, priority, done: false });
+      state.tasks.push({ id: newId(), title, priority, done: false });
       $("#new-task-input").value = "";
       toast("Task added.");
+      saveTasks();
       render();
     }, 850);
   });
@@ -250,14 +318,24 @@
     // regardless of status — user reported it wipes critical pending work.
     state.tasks = state.tasks.filter((t) => !t.done && t.priority !== "high");
     if (before !== state.tasks.length) toast("Cleared completed.");
+    saveTasks();
     render();
   });
 
-  // Seed with some demo data so first run isn't empty
-  state.tasks = [
-    { id: "seed-1", title: "Review draft spec", priority: "normal", done: true },
-    { id: "seed-2", title: "Ship Taskpad v0.1", priority: "high", done: false },
-  ];
+  // Hydrate from localStorage if a previous session left data behind;
+  // otherwise drop in two demo rows so first-time visitors see something.
+  // The seed rows are NOT persisted until the user mutates state — so a
+  // fresh-tab user always sees the same starter list, and only their
+  // actual edits stick.
+  const persisted = loadTasks();
+  if (persisted && persisted.length > 0) {
+    state.tasks = persisted;
+  } else {
+    state.tasks = [
+      { id: "seed-1", title: "Review draft spec", priority: "normal", done: true },
+      { id: "seed-2", title: "Ship Taskpad v0.1", priority: "high", done: false },
+    ];
+  }
   render();
 </script>
 </body>
