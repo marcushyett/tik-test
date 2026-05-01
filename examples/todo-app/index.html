@@ -30,9 +30,19 @@
   .new-task select { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fff; }
   .new-task button { background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: 0 18px; font-weight: 700; cursor: pointer; transition: transform 80ms, background 120ms; }
   .new-task button:hover { transform: translateY(-1px); background: #5a4bf0; }
-  .filters { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: #fafbfd; }
+  .filters { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: #fafbfd; flex-wrap: wrap; align-items: center; }
   .filters button { background: transparent; border: 1px solid var(--line); color: var(--ink-2); border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
   .filters button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .filters .sort-wrap { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+  .filters .sort-wrap select { border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; background: #fff; color: var(--ink); font-size: 12px; }
+  .search-row { display: flex; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: #fff; }
+  .search-row input { flex: 1; border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font-size: 14px; outline: none; transition: border-color 120ms; }
+  .search-row input:focus { border-color: var(--accent); }
+  .search-row .clear-search { background: transparent; border: 1px solid var(--line); color: var(--ink-2); border-radius: 10px; padding: 0 12px; cursor: pointer; font-size: 13px; }
+  .search-row .clear-search:hover { color: var(--ink); }
+  .search-row .clear-search:disabled { opacity: 0.4; cursor: not-allowed; }
+  .no-match { padding: 28px 20px; text-align: center; color: var(--ink-2); font-size: 13px; }
+  .no-match strong { color: var(--ink); }
   ul.tasks { list-style: none; margin: 0; padding: 0; }
   ul.tasks li { display: grid; grid-template-columns: 28px 1fr auto auto; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); transition: background 120ms; }
   ul.tasks li:last-child { border-bottom: 0; }
@@ -113,15 +123,30 @@
       <button type="submit" data-testid="add-task">Add</button>
     </form>
 
+    <div class="search-row" data-testid="search-row">
+      <input id="search-input" data-testid="search-input" type="search" placeholder="Search tasks…" autocomplete="off" />
+      <button id="clear-search" data-testid="clear-search" class="clear-search" disabled>Clear</button>
+    </div>
+
     <div class="filters" data-testid="filters">
       <button data-filter="all" class="active">All</button>
       <button data-filter="active">Active</button>
       <button data-filter="done">Done</button>
       <button data-filter="high">High priority</button>
+      <div class="sort-wrap">
+        <label for="sort-select">Sort</label>
+        <select id="sort-select" data-testid="sort-select">
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="priority">Priority</option>
+          <option value="alpha">Alphabetical</option>
+        </select>
+      </div>
     </div>
 
     <ul class="tasks" id="tasks" data-testid="tasks"></ul>
     <div class="empty" id="empty" data-testid="empty">Nothing here yet — add your first task above.</div>
+    <div class="no-match" id="no-match" data-testid="no-match" style="display:none">No tasks match <strong id="no-match-q"></strong>.</div>
 
     <footer class="foot">
       <span id="stats" data-testid="stats">—</span>
@@ -133,12 +158,16 @@
 <div class="toast" id="toast" data-testid="toast"></div>
 
 <script>
-  const state = { tasks: [], filter: "all" };
+  const state = { tasks: [], filter: "all", search: "", sort: "newest" };
   const $ = (s) => document.querySelector(s);
   const tasksEl = $("#tasks");
   const emptyEl = $("#empty");
+  const noMatchEl = $("#no-match");
+  const noMatchQEl = $("#no-match-q");
   const statsEl = $("#stats");
   const counterEl = $("#counter");
+  // Monotonic counter so sort-by-newest/oldest is stable across same-millisecond inserts.
+  let nextSeq = 1;
   const toast = (msg) => {
     const t = $("#toast"); t.textContent = msg; t.classList.add("show");
     setTimeout(() => t.classList.remove("show"), 1400);
@@ -153,6 +182,22 @@
     // classic "two things on the same page, wrong one wired up" regression.
     else if (state.filter === "high") items = items.filter((t) => t.priority === "low");
 
+    // BUG #3 (for tik-test demo): search is case-sensitive — typing "buy"
+    // doesn't match "Buy milk". Classic missed-toLowerCase that slips
+    // through unit tests if every fixture title is already lowercase.
+    if (state.search) {
+      items = items.filter((t) => t.title.includes(state.search));
+    }
+
+    // BUG #4 (for tik-test demo): "Priority" sort orders LOW priority first
+    // (low → normal → high) instead of high → normal → low. The rank map
+    // got copy-pasted from the badge-color CSS where order didn't matter.
+    const PRIORITY_RANK = { low: 0, normal: 1, high: 2 };
+    if (state.sort === "newest") items = [...items].sort((a, b) => b.seq - a.seq);
+    else if (state.sort === "oldest") items = [...items].sort((a, b) => a.seq - b.seq);
+    else if (state.sort === "priority") items = [...items].sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
+    else if (state.sort === "alpha") items = [...items].sort((a, b) => a.title.localeCompare(b.title));
+
     tasksEl.innerHTML = items.map((t) => `
       <li class="${t.done ? "done" : ""}" data-id="${t.id}" data-testid="task-${t.id}">
         <input type="checkbox" data-testid="toggle-${t.id}" ${t.done ? "checked" : ""} />
@@ -162,7 +207,15 @@
       </li>
     `).join("");
 
-    emptyEl.style.display = items.length ? "none" : "block";
+    // Empty-state vs no-search-match are different copy. Empty fires when
+    // there are zero tasks at all (or zero in the active filter); no-match
+    // fires when search narrows a non-empty filter to zero rows.
+    const showNoMatch = items.length === 0 && state.search.length > 0;
+    const showEmpty = items.length === 0 && !showNoMatch;
+    emptyEl.style.display = showEmpty ? "block" : "none";
+    noMatchEl.style.display = showNoMatch ? "block" : "none";
+    if (showNoMatch) noMatchQEl.textContent = `"${state.search}"`;
+
     const total = state.tasks.length;
     const done = state.tasks.filter((t) => t.done).length;
     counterEl.textContent = `${total} ${total === 1 ? "task" : "tasks"}`;
@@ -228,20 +281,46 @@
     setTimeout(() => {
       btn.classList.remove("loading");
       btn.innerHTML = originalHtml;
-      state.tasks.push({ id: "t" + (state.tasks.length + 1) + "-" + Math.random().toString(36).slice(2, 6), title, priority, done: false });
+      state.tasks.push({ id: "t" + (state.tasks.length + 1) + "-" + Math.random().toString(36).slice(2, 6), title, priority, done: false, seq: nextSeq++ });
       $("#new-task-input").value = "";
       toast("Task added.");
       render();
     }, 850);
   });
 
-  document.querySelectorAll(".filters button").forEach((b) => {
+  document.querySelectorAll(".filters button[data-filter]").forEach((b) => {
     b.addEventListener("click", () => {
-      document.querySelectorAll(".filters button").forEach((x) => x.classList.remove("active"));
+      document.querySelectorAll(".filters button[data-filter]").forEach((x) => x.classList.remove("active"));
       b.classList.add("active");
       state.filter = b.dataset.filter;
       render();
     });
+  });
+
+  // Search: live filter as the user types. Clear button enables/disables
+  // with the input. The X in the input itself works too (type=search) but
+  // not every browser styles it; the explicit Clear button is the durable
+  // affordance.
+  const searchInput = $("#search-input");
+  const clearSearchBtn = $("#clear-search");
+  searchInput.addEventListener("input", () => {
+    state.search = searchInput.value;
+    clearSearchBtn.disabled = state.search.length === 0;
+    render();
+  });
+  clearSearchBtn.addEventListener("click", () => {
+    searchInput.value = "";
+    state.search = "";
+    clearSearchBtn.disabled = true;
+    searchInput.focus();
+    render();
+  });
+
+  // Sort dropdown — sorts the *currently filtered + searched* set so the
+  // ordering stays meaningful within the visible scope.
+  $("#sort-select").addEventListener("change", (e) => {
+    state.sort = e.target.value;
+    render();
   });
 
   $("#clear-done").addEventListener("click", () => {
@@ -255,8 +334,8 @@
 
   // Seed with some demo data so first run isn't empty
   state.tasks = [
-    { id: "seed-1", title: "Review draft spec", priority: "normal", done: true },
-    { id: "seed-2", title: "Ship Taskpad v0.1", priority: "high", done: false },
+    { id: "seed-1", title: "Review draft spec", priority: "normal", done: true, seq: nextSeq++ },
+    { id: "seed-2", title: "Ship Taskpad v0.1", priority: "high", done: false, seq: nextSeq++ },
   ];
   render();
 </script>
