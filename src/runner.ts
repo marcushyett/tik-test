@@ -328,6 +328,190 @@ const MUTATION_RECORDER_INIT = `
 })();
 `;
 
+/**
+ * Page-side TIME-TRAVEL BUFFER + FREEZE HELPER. Solves a class of
+ * agent-loop bugs where the thing the agent is verifying is ephemeral:
+ *
+ *   - chat-bot replies that scroll off-screen as new messages arrive
+ *   - spinners / loading flashes that complete during the snapshot RTT
+ *   - toast notifications that fade within ~2s
+ *   - success banners that auto-dismiss
+ *
+ * Without this, the agent takes a snapshot, the state is gone, the
+ * agent retries, the next snapshot is also too late, and either the
+ * agent loops or it incorrectly concludes the feature is broken.
+ *
+ * Two namespaces, both exposed on every page (survives navigations
+ * because addInitScript runs before any page script):
+ *
+ *   window.__tikHistory — read-only buffer of the last 30s of DOM
+ *     mutations, queryable by text / tag / testid / kind. The agent
+ *     uses this via browser_evaluate to verify state that ALREADY
+ *     happened ("did the bot say X at any point in the last 20s?").
+ *
+ *   window.__tikFreeze — pause / resume CSS animations + Web Animations
+ *     API instances. The agent calls pause() before
+ *     browser_take_screenshot to catch sub-second transitions, then
+ *     resume() to let the page continue. This is the same recipe the
+ *     agent's prompt already taught it to write inline; surfacing it as
+ *     a global helper makes it one-liner.
+ *
+ * The buffer caps at 30s × ~60 mutations/s ≈ 1800 entries × ~500 bytes
+ * = ~900KB. Trimmed on every push so memory never grows unbounded.
+ */
+const TIK_HISTORY_INIT = `
+(() => {
+  if (window.__tikHistory) return;
+  const RING_MS = 30000;
+  const MAX_TEXT_LEN = 240;
+  const log = [];
+
+  function trim() {
+    const cutoff = performance.now() - RING_MS;
+    while (log.length > 0 && log[0].ts < cutoff) log.shift();
+  }
+  function isInteresting(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const t = node.tagName;
+    if (!t) return false;
+    if (t === 'SCRIPT' || t === 'STYLE' || t === 'META' || t === 'LINK' || t === 'NOSCRIPT' || t === 'HEAD') return false;
+    return true;
+  }
+  function ancestorTestid(node) {
+    let n = node;
+    let depth = 0;
+    while (n && n.getAttribute && depth < 8) {
+      const v = n.getAttribute('data-testid');
+      if (v) return v;
+      n = n.parentNode;
+      depth++;
+    }
+    return undefined;
+  }
+  function nodeInfo(node) {
+    try {
+      const r = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+      const text = (node.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, MAX_TEXT_LEN);
+      const a = node.getAttribute ? (node.getAttribute('aria-label') || node.getAttribute('aria-labelledby')) : '';
+      return {
+        tag: (node.tagName || 'unknown').toLowerCase(),
+        testid: (node.getAttribute && node.getAttribute('data-testid')) || undefined,
+        containerTestid: ancestorTestid(node),
+        ariaLabel: a || undefined,
+        role: (node.getAttribute && node.getAttribute('role')) || undefined,
+        text: text || undefined,
+        bbox: r ? { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) } : undefined,
+      };
+    } catch (e) { return { tag: 'unknown' }; }
+  }
+  function record(kind, node, extra) {
+    if (!isInteresting(node)) return;
+    log.push({ ts: performance.now(), kind, ...nodeInfo(node), ...(extra || {}) });
+    trim();
+  }
+  function recordTextChange(target, oldValue, newValue) {
+    const parent = target && target.parentNode;
+    if (!isInteresting(parent)) return;
+    log.push({
+      ts: performance.now(),
+      kind: 'text-changed',
+      ...nodeInfo(parent),
+      previousText: (oldValue || '').replace(/\\s+/g, ' ').trim().slice(0, MAX_TEXT_LEN) || undefined,
+    });
+    trim();
+  }
+  function init() {
+    try {
+      new MutationObserver((muts) => {
+        for (const m of muts) {
+          if (m.type === 'childList') {
+            m.addedNodes.forEach((n) => record('added', n));
+            m.removedNodes.forEach((n) => record('removed', n));
+          } else if (m.type === 'attributes') {
+            record('attr-changed', m.target, { changedAttr: m.attributeName, attrValue: m.target.getAttribute && m.target.getAttribute(m.attributeName) || undefined });
+          } else if (m.type === 'characterData') {
+            recordTextChange(m.target, m.oldValue, m.target.nodeValue);
+          }
+        }
+      }).observe(document.documentElement || document, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'aria-expanded', 'aria-busy', 'aria-live', 'data-state', 'data-open', 'data-loading', 'role'],
+        characterData: true,
+        characterDataOldValue: true,
+      });
+    } catch (e) {}
+  }
+  if (document.readyState !== 'loading') init();
+  else window.addEventListener('DOMContentLoaded', init);
+
+  // Public read-only API. The agent calls these via browser_evaluate.
+  window.__tikHistory = {
+    // Filter the buffer by any combination of fields. Returns oldest-first.
+    //   text:           substring match, case-insensitive, on the entry's text content
+    //   tag:            exact tag match (lowercased)
+    //   testid:         element's own data-testid
+    //   containerTestid: any ancestor's data-testid (within 8 levels)
+    //   kind:           'added' | 'removed' | 'text-changed' | 'attr-changed'
+    //   sinceMs:        only entries within this many ms of now (default 30000)
+    find(query) {
+      query = query || {};
+      const sinceMs = typeof query.sinceMs === 'number' ? query.sinceMs : RING_MS;
+      const cutoff = performance.now() - sinceMs;
+      const ql = query.text ? String(query.text).toLowerCase() : null;
+      const out = [];
+      for (const e of log) {
+        if (e.ts < cutoff) continue;
+        if (ql && (!e.text || !e.text.toLowerCase().includes(ql))) continue;
+        if (query.tag && e.tag !== String(query.tag).toLowerCase()) continue;
+        if (query.testid && e.testid !== query.testid) continue;
+        if (query.containerTestid && e.containerTestid !== query.containerTestid) continue;
+        if (query.kind && e.kind !== query.kind) continue;
+        out.push({ ...e, sinceNowMs: Math.round(performance.now() - e.ts) });
+      }
+      return out;
+    },
+    // Elements that appeared then disappeared within the window. Match by
+    // tag + testid + first 80 chars of text. Useful for spinners, toasts,
+    // loading states that flashed up and are now gone.
+    transients(sinceMs) {
+      const window_ms = typeof sinceMs === 'number' ? sinceMs : RING_MS;
+      const cutoff = performance.now() - window_ms;
+      const recent = log.filter((e) => e.ts >= cutoff);
+      const added = recent.filter((e) => e.kind === 'added');
+      const removed = recent.filter((e) => e.kind === 'removed');
+      const sig = (e) => e.tag + '|' + (e.testid || '') + '|' + ((e.text || '').slice(0, 80));
+      const pairs = [];
+      for (const a of added) {
+        const k = sig(a);
+        const r = removed.find((x) => x.ts > a.ts && sig(x) === k);
+        if (r) pairs.push({ ...a, addedAt: a.ts, removedAt: r.ts, durationMs: Math.round(r.ts - a.ts), sinceNowMs: Math.round(performance.now() - r.ts) });
+      }
+      return pairs;
+    },
+    // Quick stats — useful for debugging the agent's queries.
+    stats() {
+      return { entries: log.length, oldestSinceNowMs: log.length ? Math.round(performance.now() - log[0].ts) : 0, ringMs: RING_MS };
+    },
+  };
+
+  // Page freeze helper. Pause all CSS animations + Web Animations API
+  // instances; combined with browser_take_screenshot this catches
+  // sub-second transitions (spinners, toast flashes, focus rings,
+  // skeleton states). Always call resume() afterwards.
+  window.__tikFreeze = {
+    pause() {
+      try { document.getAnimations().forEach((a) => { try { a.pause(); } catch (e) {} }); } catch (e) {}
+      return performance.now();
+    },
+    resume() {
+      try { document.getAnimations().forEach((a) => { try { a.play(); } catch (e) {} }); } catch (e) {}
+    },
+  };
+})();
+`;
+
 export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies, storageStatePath, projectContext, diff, comments, prTitle, prBody, expectedSignInButton }: RunOptions): Promise<RunArtifacts> {
   await mkdir(runDir, { recursive: true });
   const videoDir = path.join(runDir, "video");
@@ -498,6 +682,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   });
   await context.addInitScript(INTERACTION_RECORDER_INIT);
   await context.addInitScript(MUTATION_RECORDER_INIT);
+  await context.addInitScript(TIK_HISTORY_INIT);
   await context.addInitScript(BROKEN_IMAGE_FALLBACK);
   const page = await context.newPage();
 
