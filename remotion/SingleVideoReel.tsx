@@ -5,6 +5,7 @@ import { Intro } from "./components/Intro";
 import { Outro } from "./components/Outro";
 import { WordCaption } from "./components/WordCaption";
 import { ToolBadge } from "./components/ToolBadge";
+import { VerificationStamp } from "./components/VerificationStamp";
 
 export interface BodyChunk {
   startS: number;
@@ -49,6 +50,10 @@ export interface SingleVideoInput {
    *  badge mounts in its own Sequence at body-relative timestamps,
    *  independent of the narration audio. */
   bodyBadges?: BodyBadge[];
+  /** Animated check / cross / dash stamps timed to each goal's verification
+   *  moment — body-relative seconds. Punctuates the video so the viewer
+   *  sees exactly when the agent declared a pass / fail / skip. */
+  verificationStamps?: Array<{ atS: number; outcome: "success" | "failure" | "skipped"; label: string }>;
   /** Body-relative intervals where pan-zoom should RELEASE — computed by
    *  the editor from post-click DOM mutations that landed outside the
    *  clicked element. When the page changes far from where you clicked,
@@ -458,6 +463,20 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
         return (
           <Sequence key={`badge-${i}`} from={startFrame} durationInFrames={durFrames} layout="none">
             <ToolBadge label={b.label} detail={b.detail} />
+          </Sequence>
+        );
+      })}
+
+      {/* Verification stamps — animated check / cross / dash at the exact
+          moment each goal was decided by the agent. Lives 1.8s. Pinned to
+          body-relative seconds so it tracks the trimmed timeline exactly. */}
+      {(input.verificationStamps ?? []).map((s, i) => {
+        const STAMP_DUR_S = 1.8;
+        const startFrame = Math.round(s.atS * fps);
+        const durFrames = Math.max(1, Math.round(STAMP_DUR_S * fps));
+        return (
+          <Sequence key={`vstamp-${i}`} from={startFrame} durationInFrames={durFrames} layout="none">
+            <VerificationStamp outcome={s.outcome} label={s.label} />
           </Sequence>
         );
       })}

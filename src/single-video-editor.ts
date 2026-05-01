@@ -118,6 +118,9 @@ export interface SingleVideoInput {
   bodyChunks: BodyChunk[];
   /** Optional overlay badges keyed to silent investigative moments. */
   bodyBadges?: BodyBadge[];
+  /** Animated check / cross / dash stamps timed to the moment each goal
+   *  was decided by the agent. Body-relative seconds. */
+  verificationStamps?: Array<{ atS: number; outcome: "success" | "failure" | "skipped"; label: string }>;
   /** Body-relative intervals where the pan-zoom should RELEASE to neutral
    *  framing. Computed from page-side MutationObserver data: whenever a
    *  click triggers DOM mutations OUTSIDE the clicked element's bbox
@@ -905,6 +908,41 @@ export async function editSingleVideo({
   const remotionInteractions: SingleVideoInput["interactions"] = mappedInteractions
     .map((ev) => ({ ts: ev.tsMs, kind: ev.kind, x: ev.x, y: ev.y, key: ev.key }));
 
+  // Verification stamps — one animated check / cross / dash per goal,
+  // pinned to the moment the agent declared the OUTCOME. We anchor at
+  // event endMs (decision moment) and pull `shortLabel` if the agent
+  // produced one, falling back to a trimmed description. Stamps live
+  // 1.8s on screen; if two goals end within that window the editor
+  // de-overlaps them so the viewer never sees stamped goals on top of
+  // each other.
+  const STAMP_DUR_S = 1.8;
+  const STAMP_GAP_S = 0.25;
+  const goalEvents = artifacts.events.filter((e) => e.kind === "intent");
+  const stampCandidates = goalEvents
+    .map((e) => {
+      const rawEndS = e.endMs / 1000;
+      let bodyS = rawToTrimmed(rawEndS, plan);
+      // Pull stamps slightly INSIDE the body so the entrance animation
+      // isn't clipped by the master end. Also nudge off the very start.
+      bodyS = Math.max(0.1, Math.min(masterDurS - 0.1, bodyS));
+      const label = (e.shortLabel ?? e.description ?? "").replace(/\s+/g, " ").trim().slice(0, 48);
+      return label ? { atS: bodyS, outcome: e.outcome, label } : null;
+    })
+    .filter((x): x is { atS: number; outcome: typeof goalEvents[number]["outcome"]; label: string } => !!x)
+    .sort((a, b) => a.atS - b.atS);
+  const verificationStamps: Array<{ atS: number; outcome: "success" | "failure" | "skipped"; label: string }> = [];
+  let lastEndS = -Infinity;
+  for (const c of stampCandidates) {
+    const minStartS = lastEndS + STAMP_GAP_S;
+    const atS = Math.max(c.atS, minStartS);
+    if (atS >= masterDurS - 0.2) continue; // no room before body ends
+    verificationStamps.push({ atS, outcome: c.outcome, label: c.label });
+    lastEndS = atS + STAMP_DUR_S;
+  }
+  if (verificationStamps.length > 0) {
+    console.log(chalk.dim(`  verification stamps: ${verificationStamps.length} (${verificationStamps.filter(s => s.outcome === "success").length} pass / ${verificationStamps.filter(s => s.outcome === "failure").length} fail / ${verificationStamps.filter(s => s.outcome === "skipped").length} skip)`));
+  }
+
   const input: SingleVideoInput = {
     title: artifacts.plan.name || "Feature review",
     summary: artifacts.plan.summary || artifacts.plan.startUrl,
@@ -925,6 +963,7 @@ export async function editSingleVideo({
     versionTag: getVersionTag(),
     bodyChunks,
     bodyBadges: bodyBadges.length > 0 ? bodyBadges : undefined,
+    verificationStamps: verificationStamps.length > 0 ? verificationStamps : undefined,
     zoomReleaseIntervals: mergedReleaseIntervals.length > 0 ? mergedReleaseIntervals : undefined,
     interactions: remotionInteractions.length > 0 ? remotionInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,

@@ -31,12 +31,22 @@ export const WordCaption: React.FC<Props> = ({
   if (words.length === 0) return null;
 
   const leadInFrames = Math.max(2, Math.round(fps * voiceStartDelayS));
-  // Minimum 0.28s per word — below this, captions flash too fast to read.
-  // With voice, pace to the narration; clamp to the min. Without voice, ~0.38s/word.
-  const minWordFrames = Math.round(fps * 0.28);
+  // When VOICE is provided, captions track it exactly — even if that means
+  // a word's highlight only sits for a few frames. The viewer can read a
+  // whole page at a glance once it appears; the highlight is just a "you
+  // are here" indicator and lagging the voice for legibility loses the
+  // sync, which is worse. Cap the effective duration at the segment so a
+  // sequence cut-off doesn't cause the highlight to outrun the visible
+  // captions.
+  // Without voice, fall back to ~0.38s/word with a 0.28s floor so pages
+  // don't flash unreadably fast.
+  const captionSpanFrames = voiceDurS && voiceDurS > 0
+    ? Math.max(1, Math.min(durationInFrames - leadInFrames, Math.round(voiceDurS * fps)))
+    : Math.max(1, durationInFrames - leadInFrames);
+  const minWordFramesNoVoice = Math.round(fps * 0.28);
   const perWordFrames = voiceDurS && voiceDurS > 0
-    ? Math.max(minWordFrames, Math.floor((voiceDurS * fps) / words.length))
-    : Math.max(minWordFrames, Math.floor((durationInFrames - leadInFrames) / words.length));
+    ? Math.max(1, Math.floor(captionSpanFrames / words.length))
+    : Math.max(minWordFramesNoVoice, Math.floor(captionSpanFrames / words.length));
 
   // ── Group words into PAGES so caption position stays stable per phrase.
   //   New page on punctuation OR at the soft cap. Cap = 6 words (≈ 2 lines).
@@ -48,21 +58,33 @@ export const WordCaption: React.FC<Props> = ({
   const POST_DWELL = Math.round(fps * 0.18);
   const FADE_FRAMES = Math.round(fps * 0.18);
 
-  // Find the active page (if any) at this frame.
-  let active: { startWordIdx: number; endWordIdx: number; appearAt: number; lastWordAt: number; fadeStart: number; fadeEnd: number } | null = null;
-  let cursor = 0;
-  for (const page of pages) {
-    const startWordIdx = cursor;
-    const endWordIdx = cursor + page.length - 1;
-    const appearAt = leadInFrames + startWordIdx * perWordFrames;
-    const lastWordAt = leadInFrames + endWordIdx * perWordFrames;
-    const fadeStart = lastWordAt + perWordFrames + POST_DWELL;
-    const fadeEnd = fadeStart + FADE_FRAMES;
-    if (frame >= appearAt && frame < fadeEnd) {
-      active = { startWordIdx, endWordIdx, appearAt, lastWordAt, fadeStart, fadeEnd };
+  // Build per-page timing windows up-front, then pick the LATEST page
+  // whose appearAt has already passed. If we picked the first match (in
+  // order), an earlier page still fading would visually block a later
+  // page that should have started — the cure is just to prefer "latest
+  // started" so caption pages turn over crisply with the voice.
+  type PageWin = { startWordIdx: number; endWordIdx: number; appearAt: number; lastWordAt: number; fadeStart: number; fadeEnd: number };
+  const pageWindows: PageWin[] = [];
+  {
+    let cursor = 0;
+    for (const page of pages) {
+      const startWordIdx = cursor;
+      const endWordIdx = cursor + page.length - 1;
+      const appearAt = leadInFrames + startWordIdx * perWordFrames;
+      const lastWordAt = leadInFrames + endWordIdx * perWordFrames;
+      const fadeStart = lastWordAt + perWordFrames + POST_DWELL;
+      const fadeEnd = fadeStart + FADE_FRAMES;
+      pageWindows.push({ startWordIdx, endWordIdx, appearAt, lastWordAt, fadeStart, fadeEnd });
+      cursor = endWordIdx + 1;
+    }
+  }
+  let active: PageWin | null = null;
+  for (let i = pageWindows.length - 1; i >= 0; i--) {
+    const p = pageWindows[i];
+    if (frame >= p.appearAt && frame < p.fadeEnd) {
+      active = p;
       break;
     }
-    cursor = endWordIdx + 1;
   }
   if (!active) return null;
 

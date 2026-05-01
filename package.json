@@ -1,6 +1,6 @@
 {
   "name": "tik-test",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "description": "TikTok-style automated video testing for UI feature reviews.",
   "bin": {
     "tik-test": "dist/cli.js"
