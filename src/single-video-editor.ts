@@ -8,7 +8,7 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
 import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.js";
-import { generateTimedNarration, type NarrationScene } from "./timed-narration.js";
+import { generateNarration, type BodyMoment as NarrationMoment } from "./timed-narration.js";
 import { generateChecklist } from "./checklist.js";
 import {
   MIN_CHUNK_S, MAX_BODY_SCENES, TRIM_MERGE_S,
@@ -48,29 +48,20 @@ function getVersionTag(): string {
 }
 
 /**
- * One slot in the body timeline. Slots are SORTED + NON-OVERLAPPING + COVER
- * the entire master video — voice and caption never stack and never leave
- * silence between them. Each slot's voice is sized via playbackRate to fit
- * its window exactly.
+ * One on-screen overlay badge that pops up during a SILENT investigative
+ * moment (browser_evaluate, network probe, etc.). Body-relative timestamps,
+ * decoupled from the narration audio — the body now plays as ONE continuous
+ * voice file, so badges live on their own timeline pinned to the tool window.
  */
-export interface BodyChunk {
+export interface BodyBadge {
   /** Body-relative seconds (0 = first frame of master video). */
   startS: number;
-  /** Window duration. Sum of all chunks ≈ masterDurS. */
+  /** Visible duration. Clamped at render time to fit inside the body. */
   durS: number;
-  /** Caption text (rendered word-by-word). Matches voice word-for-word. */
-  text: string;
-  voiceSrc?: string;
-  voiceDurS?: number;
-  voicePlaybackRate?: number;
-  /** Plain-English overlay label for SILENT investigation moments
-   *  (browser_evaluate, network, screenshot-then-think). Shown as a small
-   *  card near the top of the frame so the viewer sees what the agent is
-   *  checking even when the UI is static. Empty for visible interactions. */
-  badgeLabel?: string;
-  /** Terminal-style technical detail (e.g. `evaluate document.querySelectorAll(...)`).
-   *  Only meaningful when badgeLabel is set. */
-  badgeDetail?: string;
+  /** 4-7 word plain-English summary, e.g. "checking the today filter". */
+  label: string;
+  /** Optional terminal-style one-liner, ≤60 chars. */
+  detail?: string;
 }
 
 /** One row on the outro checklist. Replaces the abstract pass/fail
@@ -100,9 +91,17 @@ export interface SingleVideoInput {
   outroVoicePlaybackRate?: number;
   outroCaption?: string;
   versionTag?: string;
-  /** Body narration timeline — back-to-back chunks that cover the full
-   *  master duration. Each chunk owns its voice + caption + optional badge. */
-  bodyChunks: BodyChunk[];
+  /** Single body narration voice file, played start-to-end over the master.
+   *  Pace is fit globally via `bodyVoicePlaybackRate` (clamped 0.9–1.5×) so
+   *  modest narrator under/over-shoot is absorbed without leaving silence. */
+  bodyVoiceSrc?: string;
+  bodyVoiceDurS?: number;
+  bodyVoicePlaybackRate?: number;
+  /** Full body script, paginated by WordCaption against the body audio's
+   *  effective duration. One continuous flow of subtitles for the whole body. */
+  bodyCaption?: string;
+  /** Optional overlay badges keyed to silent investigative moments. */
+  bodyBadges?: BodyBadge[];
   /** Mouse + click + keystroke stream, mapped from raw video timeline into
    *  master-timeline seconds (so timestamps line up with the trimmed video).
    *  Remotion renders a cinematic cursor overlay using `move`+`click` events
@@ -486,25 +485,27 @@ export async function editSingleVideo({
     }))
     .sort((a, b) => a.startS - b.startS);
 
-  // Ensure first body moment starts at 0 — otherwise the opening seconds
-  // of the master have no chunk and would render silent.
-  const bodyMoments: BodyMoment[] = [];
+  // Ensure the first moment is anchored at 0 — otherwise the opening
+  // seconds of the master have no narration anchor.
+  const anchoredMoments: BodyMoment[] = [];
   if (bodyMomentsRaw.length === 0) {
-    bodyMoments.push({ startS: 0, visibility: "visible", toolKind: "intro-cover" });
+    anchoredMoments.push({ startS: 0, visibility: "visible", toolKind: "intro-cover" });
   } else {
     if (bodyMomentsRaw[0].startS > 0.4) {
-      bodyMoments.push({ ...bodyMomentsRaw[0], startS: 0 });
-      for (let i = 1; i < bodyMomentsRaw.length; i++) bodyMoments.push(bodyMomentsRaw[i]);
+      anchoredMoments.push({ ...bodyMomentsRaw[0], startS: 0 });
+      for (let i = 1; i < bodyMomentsRaw.length; i++) anchoredMoments.push(bodyMomentsRaw[i]);
     } else {
-      bodyMoments.push(...bodyMomentsRaw);
-      bodyMoments[0] = { ...bodyMoments[0], startS: 0 };
+      anchoredMoments.push(...bodyMomentsRaw);
+      anchoredMoments[0] = { ...anchoredMoments[0], startS: 0 };
     }
   }
 
   // Coalesce moments closer than MIN_CHUNK_S into the previous one — keeps
-  // the narrator from having to write a 4-word filler line.
+  // the narrator from having to anchor a thought to a too-tight cluster of
+  // tool calls. Also caps the count at MAX_BODY_SCENES so the narration
+  // prompt size stays bounded.
   let coalesced: BodyMoment[] = [];
-  for (const m of bodyMoments) {
+  for (const m of anchoredMoments) {
     const last = coalesced[coalesced.length - 1];
     if (last && m.startS - last.startS < MIN_CHUNK_S) {
       // Merge into previous: keep prev's startS, but if THIS one is silent
@@ -532,102 +533,87 @@ export async function editSingleVideo({
     coalesced = sampled;
   }
 
-  // Compose the full scene list (intro + body + outro) with composition
-  // timeline start times, then compute targetDurS = gap to next scene.
-  const sceneList: NarrationScene[] = [];
-  sceneList.push({
-    id: "intro", kind: "intro", visibility: "intro",
-    startS: 0, targetDurS: INTRO_TARGET_S,
-    context: `Title card. Open by naming the PROBLEM the PR addresses, then preview what we'll see in the next ${(masterDurS).toFixed(0)}s of screen recording.`,
-  });
-  for (let i = 0; i < coalesced.length; i++) {
-    const m = coalesced[i];
-    const composedStart = INTRO_TARGET_S + m.startS;
-    sceneList.push({
-      id: `m-${i}`, kind: "moment", visibility: m.visibility,
-      startS: composedStart, targetDurS: 0, // filled below
-      context: m.visibility === "silent"
-        ? `The screen is briefly static while the agent investigates with ${m.toolKind}. Narrate the WHY (what we're looking for, what should happen next).`
-        : `On-screen: the agent is performing ${m.toolKind}. Narrate the INTENT and what we should see appear.`,
-      toolKind: m.toolKind,
-      toolInput: m.toolInput,
-      toolResult: m.toolResult,
-    });
-  }
-  sceneList.push({
-    id: "outro", kind: "outro", visibility: "outro",
-    startS: INTRO_TARGET_S + masterDurS, targetDurS: OUTRO_TARGET_S,
-    context: "Closing card. ONE sentence asking for input or naming an open question. Don't summarize what was shown.",
-  });
+  // ── 5. Build body-moment timeline for the narrator.
+  //      The narrator gets the full ordered list as context (with body-relative
+  //      timestamps) and writes ONE flowing script for the whole body. No more
+  //      per-moment chunk slicing — silence-by-construction is gone.
+  const bodyMoments: NarrationMoment[] = coalesced.map((m) => ({
+    startS: m.startS,
+    visibility: m.visibility,
+    toolKind: m.toolKind,
+    toolInput: m.toolInput,
+    toolResult: m.toolResult,
+  }));
 
-  // Fill targetDurS from gaps. Intro/outro keep their fixed targets.
-  for (let i = 0; i < sceneList.length - 1; i++) {
-    if (sceneList[i].kind === "moment") {
-      const gap = sceneList[i + 1].startS - sceneList[i].startS;
-      sceneList[i].targetDurS = Math.max(MIN_CHUNK_S, Math.min(14, gap));
-    }
-  }
-
-  // ── 5. Single Claude call → coherent narration sized to scene targets.
-  //      Kick off the checklist Claude call in parallel — it doesn't depend
-  //      on narration so we don't pay its latency twice. Skip when the caller
-  //      already synthesised the checklist for us (e.g. the `run` CLI command
-  //      now generates + prints it before deciding whether to render a video).
+  // Kick off the checklist Claude call in parallel — it doesn't depend on
+  // narration. Skip when the caller already synthesised the checklist for us.
   const checklistPromise: Promise<ChecklistItem[] | null> =
     precomputedChecklist !== undefined
       ? Promise.resolve(precomputedChecklist)
       : generateChecklist({ artifacts, prTitle, prBody });
-  const narration = await generateTimedNarration({
+  const narration = await generateNarration({
     plan: artifacts.plan, prTitle, prBody, focus,
-    scenes: sceneList,
+    introTargetS: INTRO_TARGET_S,
+    bodyDurS: masterDurS,
+    outroTargetS: OUTRO_TARGET_S,
+    bodyMoments,
   });
 
-  // ── 6. TTS every chunk in parallel (intro + body + outro). One bounded pool.
-  const tts = await runWithConcurrency(sceneList, 6, async (s, i) => {
-    const text = narration.chunks[i].text;
-    if (!ttsBackend || !text.trim()) return { src: undefined as string | undefined, dur: 0 };
-    const fileName = `voice-${String(i).padStart(3, "0")}.wav`;
-    try {
-      await synth(ttsBackend, sanitiseForSpeech(text), path.join(publicDir, fileName));
-      return { src: fileName, dur: await ffprobeDuration(path.join(publicDir, fileName)) };
-    } catch (e) {
-      console.log(chalk.yellow(`  voice skipped for scene ${s.id}: ${(e as Error).message.split("\n")[0]}`));
-      return { src: undefined, dur: 0 };
+  // ── 6. TTS three files in parallel: intro, body, outro. The body is one
+  //      audio clip spanning the entire master — playbackRate is fit globally
+  //      so any modest narrator under/over-shoot is absorbed without leaving
+  //      a mid-body silence gap.
+  const tts = await runWithConcurrency(
+    [
+      { id: "intro", text: narration.intro.text, fileName: "voice-intro.wav" },
+      { id: "body", text: narration.body.text, fileName: "voice-body.wav" },
+      { id: "outro", text: narration.outro.text, fileName: "voice-outro.wav" },
+    ],
+    3,
+    async (s) => {
+      if (!ttsBackend || !s.text.trim()) return { src: undefined as string | undefined, dur: 0 };
+      try {
+        await synth(ttsBackend, sanitiseForSpeech(s.text), path.join(publicDir, s.fileName));
+        return { src: s.fileName, dur: await ffprobeDuration(path.join(publicDir, s.fileName)) };
+      } catch (e) {
+        console.log(chalk.yellow(`  voice skipped for ${s.id}: ${(e as Error).message.split("\n")[0]}`));
+        return { src: undefined, dur: 0 };
+      }
     }
-  });
+  );
+  const [introTts, bodyTts, outroTts] = tts;
 
-  // ── 7. Convert intro + body + outro into renderable shapes. Each body
-  //      chunk gets a playback rate that fits its voice into its window;
-  //      intro/outro stretch their Sequence to fit the voice.
-  const introTts = tts[0];
-  const outroTts = tts[tts.length - 1];
-  const bodyChunks: BodyChunk[] = [];
-  for (let i = 1; i < sceneList.length - 1; i++) {
-    const s = sceneList[i];
-    const c = narration.chunks[i];
-    const v = tts[i];
-    const next = sceneList[i + 1];
-    const durS = next.startS - s.startS; // composition gap = body gap (intro offset cancels)
-    let rate = 1;
-    if (v.dur > 0) {
-      // Aim to fit within the slot minus a small tail so the next chunk's
-      // first word never collides with the trailing breath. Wide range:
-      // 0.85x stretches a short line to fill ~15% more wall-clock without
-      // sounding distorted; 1.6x lets us fit an over-eager narrator into
-      // a tight slot rather than dropping into the next chunk.
-      const targetSpeechS = Math.max(0.5, durS - 0.08);
-      rate = Math.max(0.85, Math.min(1.6, v.dur / targetSpeechS));
-    }
-    bodyChunks.push({
-      startS: s.startS - INTRO_TARGET_S, // back to body-relative
-      durS,
-      text: sanitiseForSpeech(c.captionText),
-      voiceSrc: v.src,
-      voiceDurS: v.dur || undefined,
-      voicePlaybackRate: rate,
-      badgeLabel: s.visibility === "silent" ? c.badgeLabel?.trim() || undefined : undefined,
-      badgeDetail: s.visibility === "silent" ? c.badgeDetail?.trim() || undefined : undefined,
-    });
+  // ── 7. Body voice fit: ONE playbackRate across the whole body so the audio
+  //      lasts exactly masterDurS. Clamped 0.9–1.5× — within that range the
+  //      pace stays natural; outside it the narrator should rewrite. Below
+  //      0.9 we accept a small trailing silence rather than slow to a crawl;
+  //      above 1.5 we accept a tiny audio overrun rather than chipmunk speed.
+  const bodyVoicePlaybackRate = bodyTts.dur > 0
+    ? Math.max(0.9, Math.min(1.5, bodyTts.dur / Math.max(0.5, masterDurS)))
+    : 1;
+  if (bodyTts.dur > 0) {
+    const playedS = bodyTts.dur / bodyVoicePlaybackRate;
+    const drift = playedS - masterDurS;
+    const driftPct = (drift / masterDurS) * 100;
+    console.log(chalk.dim(`  body voice: ${bodyTts.dur.toFixed(1)}s @ ${bodyVoicePlaybackRate.toFixed(2)}× → ${playedS.toFixed(1)}s vs ${masterDurS.toFixed(1)}s body (${drift >= 0 ? "+" : ""}${driftPct.toFixed(1)}%)`));
+  }
+
+  // ── 8. Body badges — overlay cards keyed to silent investigative moments.
+  //      Pulled from the narrator's per-moment label/detail pairs and pinned
+  //      to the original tool window's body-relative timestamp.
+  const badgeByMoment = new Map<number, { label: string; detail?: string }>(
+    narration.badges.map((b) => [b.momentIdx, { label: b.label.trim(), detail: b.detail?.trim() || undefined }])
+  );
+  const bodyBadges: BodyBadge[] = [];
+  for (let i = 0; i < bodyMoments.length; i++) {
+    const m = bodyMoments[i];
+    if (m.visibility !== "silent") continue;
+    const badge = badgeByMoment.get(i);
+    if (!badge?.label) continue;
+    const next = bodyMoments[i + 1];
+    const endS = next ? Math.min(next.startS, masterDurS) : masterDurS;
+    const durS = Math.max(1.0, Math.min(endS - m.startS, 6.0));
+    bodyBadges.push({ startS: Math.max(0, m.startS), durS, label: badge.label, detail: badge.detail });
   }
 
   // ── 8. Intro / outro durations based on actual voice length.
@@ -705,13 +691,17 @@ export async function editSingleVideo({
     introVoiceSrc: introTts.src,
     introVoiceDurS: introTts.dur || undefined,
     introVoicePlaybackRate: introPlaybackRate,
-    introCaption: sanitiseForSpeech(narration.chunks[0].captionText),
+    introCaption: sanitiseForSpeech(narration.intro.captionText),
     outroVoiceSrc: outroTts.src,
     outroVoiceDurS: outroTts.dur || undefined,
     outroVoicePlaybackRate: outroPlaybackRate,
-    outroCaption: sanitiseForSpeech(narration.chunks[narration.chunks.length - 1].captionText),
+    outroCaption: sanitiseForSpeech(narration.outro.captionText),
     versionTag: getVersionTag(),
-    bodyChunks,
+    bodyVoiceSrc: bodyTts.src,
+    bodyVoiceDurS: bodyTts.dur || undefined,
+    bodyVoicePlaybackRate,
+    bodyCaption: sanitiseForSpeech(narration.body.captionText),
+    bodyBadges: bodyBadges.length > 0 ? bodyBadges : undefined,
     interactions: mappedInteractions.length > 0 ? mappedInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,
   };

@@ -6,15 +6,11 @@ import { Outro } from "./components/Outro";
 import { WordCaption } from "./components/WordCaption";
 import { ToolBadge } from "./components/ToolBadge";
 
-export interface BodyChunk {
+export interface BodyBadge {
   startS: number;
   durS: number;
-  text: string;
-  voiceSrc?: string;
-  voiceDurS?: number;
-  voicePlaybackRate?: number;
-  badgeLabel?: string;
-  badgeDetail?: string;
+  label: string;
+  detail?: string;
 }
 
 export interface SingleVideoInput {
@@ -35,10 +31,16 @@ export interface SingleVideoInput {
   outroVoicePlaybackRate?: number;
   outroCaption?: string;
   versionTag?: string;
-  /** Body narration timeline. Sorted, non-overlapping, sums to masterDurS.
-   *  Each chunk renders ONE Audio + ONE WordCaption Sequence + optional
-   *  ToolBadge — guaranteed never to stack with siblings. */
-  bodyChunks: BodyChunk[];
+  /** Single body narration. ONE Audio + ONE WordCaption span the entire
+   *  master so the narration cannot leave a mid-body silence gap by
+   *  construction. Pace is fit globally via bodyVoicePlaybackRate. */
+  bodyVoiceSrc?: string;
+  bodyVoiceDurS?: number;
+  bodyVoicePlaybackRate?: number;
+  bodyCaption?: string;
+  /** Optional overlay cards keyed to silent investigative moments. Each
+   *  badge mounts in its own Sequence at body-relative timestamps. */
+  bodyBadges?: BodyBadge[];
   /** Mouse + click stream (already mapped to master-timeline ms by the editor).
    *  `move` events drive the cursor overlay; `click` events drive both the
    *  cursor flash AND the targeted pan-zoom toward the click bbox. Coords are
@@ -95,7 +97,7 @@ export const SingleVideoReel: React.FC<SingleVideoInput> = (props) => {
         />
       </Sequence>
 
-      {/* Body — full trimmed recording with back-to-back narration chunks. */}
+      {/* Body — full trimmed recording with one continuous narration track. */}
       <Sequence from={props.introDurFrames} durationInFrames={masterFrames} layout="none">
         <SingleVideoBody input={props} />
       </Sequence>
@@ -341,32 +343,40 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
         )}
       </div>
 
-      {/* One Sequence per body chunk. Chunks are guaranteed non-overlapping
-          by the editor, so at any frame at most one Audio + one WordCaption
-          + at most one ToolBadge is mounted. No more caption stacking. */}
-      {input.bodyChunks.map((c, i) => {
-        const startFrame = Math.round(c.startS * fps);
-        const durFrames = Math.max(1, Math.round(c.durS * fps));
+      {/* ONE body voice + ONE caption track spanning the whole master.
+          A single audio file can't leave silence gaps mid-body the way
+          per-chunk audio could. WordCaption paces itself against the
+          audio's effective (post-playbackRate) duration so subtitles
+          stay locked to the spoken word. */}
+      {input.bodyVoiceSrc && (
+        <Audio
+          src={staticFile(input.bodyVoiceSrc)}
+          volume={1.1}
+          playbackRate={input.bodyVoicePlaybackRate ?? 1}
+        />
+      )}
+      {input.bodyCaption && (
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 240 }}>
+          <WordCaption
+            text={input.bodyCaption}
+            durationInFrames={masterFrames}
+            fps={fps}
+            accent="#00e5a0"
+            voiceDurS={input.bodyVoiceDurS ? input.bodyVoiceDurS / (input.bodyVoicePlaybackRate ?? 1) : undefined}
+            voiceStartDelayS={0.05}
+          />
+        </div>
+      )}
+
+      {/* Overlay badges for silent investigative moments. Each pinned to
+          its tool window's body-relative timestamp — independent of the
+          narration audio, so they never desync with the on-screen action. */}
+      {(input.bodyBadges ?? []).map((b, i) => {
+        const startFrame = Math.round(b.startS * fps);
+        const durFrames = Math.max(1, Math.round(b.durS * fps));
         return (
-          <Sequence key={`chunk-${i}`} from={startFrame} durationInFrames={durFrames} layout="none">
-            {c.voiceSrc && (
-              <Audio
-                src={staticFile(c.voiceSrc)}
-                volume={1.1}
-                playbackRate={c.voicePlaybackRate ?? 1}
-              />
-            )}
-            {c.badgeLabel && <ToolBadge label={c.badgeLabel} detail={c.badgeDetail} />}
-            <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 240 }}>
-              <WordCaption
-                text={c.text}
-                durationInFrames={durFrames}
-                fps={fps}
-                accent="#00e5a0"
-                voiceDurS={c.voiceDurS ? c.voiceDurS / (c.voicePlaybackRate ?? 1) : undefined}
-                voiceStartDelayS={0.05}
-              />
-            </div>
+          <Sequence key={`badge-${i}`} from={startFrame} durationInFrames={durFrames} layout="none">
+            <ToolBadge label={b.label} detail={b.detail} />
           </Sequence>
         );
       })}
