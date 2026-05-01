@@ -7,74 +7,127 @@
 <style>
   :root {
     --bg: #f3f4f7;
+    --bg-soft: #fafbfd;
     --card: #ffffff;
     --ink: #0e1116;
     --ink-2: #4b5260;
     --line: #e4e6ec;
     --accent: #6c5cff;
+    --accent-hover: #5a4bf0;
     --accent-2: #0bd8a6;
     --danger: #ef4b4b;
+    --danger-bg: #ffecec;
+    --badge-bg: #f0f2fa;
+    --badge-high-bg: #ffedea;
+    --badge-high-fg: #c83c1e;
+    --badge-low-bg: #eafaf3;
+    --badge-low-fg: #0a8560;
     --shadow: 0 12px 32px rgba(20, 22, 30, 0.08);
+    --login-gradient: linear-gradient(145deg, #eef1fb 0%, #fafbfd 100%);
+    --select-bg: #ffffff;
+    --spinner-track: #e8eaf2;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0c0e13;
+    --bg-soft: #11141b;
+    --card: #161a23;
+    --ink: #e9ecf3;
+    --ink-2: #8b93a4;
+    --line: #232838;
+    --accent: #8b7dff;
+    --accent-hover: #a094ff;
+    --accent-2: #2ee2b4;
+    --danger: #ff6b6b;
+    --danger-bg: rgba(239, 75, 75, 0.15);
+    --badge-bg: #1d2230;
+    --badge-high-bg: rgba(239, 75, 75, 0.18);
+    --badge-high-fg: #ff8a78;
+    --badge-low-bg: rgba(11, 216, 166, 0.15);
+    --badge-low-fg: #4fe3b8;
+    --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    --login-gradient: linear-gradient(145deg, #11141b 0%, #0c0e13 100%);
+    --select-bg: #1d2230;
+    --spinner-track: #232838;
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Helvetica, Arial, sans-serif; background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; }
+  html, body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Helvetica, Arial, sans-serif; background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; transition: background-color 180ms ease, color 180ms ease; }
   .app { max-width: 640px; margin: 48px auto; padding: 0 20px; }
-  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
   header h1 { font-size: 28px; margin: 0; letter-spacing: -0.02em; }
   header h1 span { color: var(--accent); }
   header small { color: var(--ink-2); }
+  .header-right { display: flex; align-items: center; gap: 12px; }
+  .theme-toggle { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--ink-2); cursor: pointer; transition: color 120ms, border-color 120ms, background 120ms, transform 80ms; }
+  .theme-toggle:hover { color: var(--accent); border-color: var(--accent); }
+  .theme-toggle:active { transform: scale(0.94); }
+  .theme-toggle svg { width: 18px; height: 18px; }
+  .theme-toggle .icon-sun { display: none; }
+  :root[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
+  :root[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); overflow: hidden; }
   .new-task { display: flex; gap: 10px; padding: 16px; border-bottom: 1px solid var(--line); }
-  .new-task input[type=text] { flex: 1; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 16px; outline: none; transition: border-color 120ms; }
+  .new-task input[type=text] { flex: 1; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 16px; outline: none; background: var(--card); color: var(--ink); transition: border-color 120ms; }
   .new-task input[type=text]:focus { border-color: var(--accent); }
-  .new-task select { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fff; }
+  .new-task select { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: var(--select-bg); color: var(--ink); }
   .new-task button { background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: 0 18px; font-weight: 700; cursor: pointer; transition: transform 80ms, background 120ms; }
-  .new-task button:hover { transform: translateY(-1px); background: #5a4bf0; }
-  .filters { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: #fafbfd; }
+  .new-task button:hover { transform: translateY(-1px); background: var(--accent-hover); }
+  .filters { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--bg-soft); }
   .filters button { background: transparent; border: 1px solid var(--line); color: var(--ink-2); border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
-  .filters button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .filters button.active { background: var(--ink); color: var(--card); border-color: var(--ink); }
   ul.tasks { list-style: none; margin: 0; padding: 0; }
   ul.tasks li { display: grid; grid-template-columns: 28px 1fr auto auto; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); transition: background 120ms; }
   ul.tasks li:last-child { border-bottom: 0; }
-  ul.tasks li:hover { background: #fafbfd; }
+  ul.tasks li:hover { background: var(--bg-soft); }
   ul.tasks li.done .title { text-decoration: line-through; color: var(--ink-2); }
   ul.tasks li.done { opacity: 0.7; }
   ul.tasks input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent-2); cursor: pointer; }
   .title { font-size: 15px; }
-  .badge { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 999px; background: #f0f2fa; color: var(--ink-2); }
-  .badge.high { background: #ffedea; color: #c83c1e; }
-  .badge.low { background: #eafaf3; color: #0a8560; }
+  .badge { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 999px; background: var(--badge-bg); color: var(--ink-2); }
+  .badge.high { background: var(--badge-high-bg); color: var(--badge-high-fg); }
+  .badge.low { background: var(--badge-low-bg); color: var(--badge-low-fg); }
   .del { background: transparent; border: 0; color: var(--ink-2); cursor: pointer; padding: 6px 8px; border-radius: 8px; }
-  .del:hover { background: #ffecec; color: var(--danger); }
+  .del:hover { background: var(--danger-bg); color: var(--danger); }
   .empty { padding: 40px 20px; text-align: center; color: var(--ink-2); font-size: 14px; }
-  footer.foot { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; font-size: 12px; color: var(--ink-2); background: #fafbfd; border-top: 1px solid var(--line); }
+  footer.foot { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; font-size: 12px; color: var(--ink-2); background: var(--bg-soft); border-top: 1px solid var(--line); }
   footer.foot button { background: transparent; border: 0; color: var(--ink-2); font-size: 12px; cursor: pointer; }
   footer.foot button:hover { color: var(--danger); text-decoration: underline; }
-  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 16px; border-radius: 999px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity 160ms, transform 160ms; }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--card); padding: 10px 16px; border-radius: 999px; font-size: 13px; opacity: 0; pointer-events: none; transition: opacity 160ms, transform 160ms; }
   .toast.show { opacity: 1; transform: translate(-50%, -8px); }
 
   /* --- Login gate --- */
-  .login-gate { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: linear-gradient(145deg, #eef1fb 0%, #fafbfd 100%); z-index: 100; }
-  .login-card { background: #fff; border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); padding: 28px 28px 22px; width: 320px; }
+  .login-gate { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--login-gradient); z-index: 100; }
+  .login-card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: var(--shadow); padding: 28px 28px 22px; width: 320px; }
   .login-card h2 { margin: 0 0 4px; font-size: 22px; }
   .login-card .sub { color: var(--ink-2); font-size: 13px; margin-bottom: 18px; }
   .login-card label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-2); display: block; margin: 12px 0 4px; }
-  .login-card input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none; transition: border-color 120ms; }
+  .login-card input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 14px; background: var(--card); color: var(--ink); outline: none; transition: border-color 120ms; }
   .login-card input:focus { border-color: var(--accent); }
   .login-card button { margin-top: 18px; width: 100%; background: var(--accent); color: #fff; border: 0; border-radius: 10px; padding: 12px; font-weight: 700; cursor: pointer; transition: transform 80ms, background 120ms; }
-  .login-card button:hover { transform: translateY(-1px); background: #5a4bf0; }
+  .login-card button:hover { transform: translateY(-1px); background: var(--accent-hover); }
   .login-hint { margin-top: 12px; font-size: 11px; color: var(--ink-2); text-align: center; }
 
   /* --- Loading overlay + spinners --- */
   .loading-overlay { position: fixed; inset: 0; background: rgba(10, 12, 18, 0.55); display: flex; align-items: center; justify-content: center; z-index: 200; backdrop-filter: blur(6px); }
-  .loading-card { background: #fff; border-radius: 14px; padding: 18px 22px; box-shadow: var(--shadow); display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--ink); }
-  .spinner { width: 18px; height: 18px; border: 2.5px solid #e8eaf2; border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
+  .loading-card { background: var(--card); border-radius: 14px; padding: 18px 22px; box-shadow: var(--shadow); display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--ink); }
+  .spinner { width: 18px; height: 18px; border: 2.5px solid var(--spinner-track); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
   @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 
   /* Inline spinner inside the Add button */
   .btn-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff; border-radius: 50%; animation: spin 0.55s linear infinite; vertical-align: -2px; margin-right: 4px; }
   .new-task button.loading { pointer-events: none; opacity: 0.85; }
 </style>
+<script>
+  // Apply theme before paint to avoid a light flash on dark loads. Reads
+  // stored preference first, falls back to the OS-level color scheme.
+  (function () {
+    try {
+      var stored = localStorage.getItem("taskpad-theme");
+      var theme = stored || (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    } catch (_) { /* localStorage may be unavailable */ }
+  })();
+</script>
 </head>
 <body>
 <!-- Login gate — shown on first load until the user signs in. -->
@@ -99,7 +152,18 @@
 <div class="app" id="main-app" style="display:none" data-testid="main-app">
   <header>
     <h1>Task<span>pad</span></h1>
-    <small id="counter" data-testid="counter">0 tasks</small>
+    <div class="header-right">
+      <small id="counter" data-testid="counter">0 tasks</small>
+      <button type="button" class="theme-toggle" id="theme-toggle" data-testid="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+        </svg>
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4" />
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+        </svg>
+      </button>
+    </div>
   </header>
 
   <div class="card">
@@ -242,6 +306,17 @@
       state.filter = b.dataset.filter;
       render();
     });
+  });
+
+  // Theme toggle. The pre-paint script in <head> already set data-theme;
+  // here we just flip and persist on click. We fall back gracefully if
+  // localStorage is unavailable (private browsing modes, etc).
+  document.getElementById("theme-toggle").addEventListener("click", () => {
+    const root = document.documentElement;
+    const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("taskpad-theme", next); } catch (_) {}
+    toast(next === "dark" ? "Dark mode on." : "Light mode on.");
   });
 
   $("#clear-done").addEventListener("click", () => {

@@ -36,3 +36,6 @@ Prefer `data-testid` attributes:
 - `sort-select` (option values: `newest`, `oldest`, `priority`, `alpha`)
 - `tasks` (ul), `task-<id>`, `toggle-<id>`, `del-<id>`
 - `stats`, `counter`, `clear-done`, `empty`, `no-match`, `toast`
+- `theme-toggle` — header button that flips between light and dark mode.
+  Theme is persisted in `localStorage["taskpad-theme"]` and applied on
+  the `<html data-theme="…">` attribute before first paint.
