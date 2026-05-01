@@ -234,10 +234,97 @@ const INTERACTION_RECORDER_INIT = `
   document.addEventListener('click', (e) => {
     if (e.clientX <= CORNER_PX && e.clientY <= CORNER_PX) return;
     try { window.__tikRecord && window.__tikRecord({ kind: 'click', x: e.clientX, y: e.clientY }); } catch {}
+    // Also record the clicked element's bounding rect — Remotion uses this
+    // alongside the post-click MutationObserver stream below to decide
+    // whether pan-zoom should ride (mutations stay inside the click bbox)
+    // or release (mutations landed OUTSIDE the click bbox, e.g. a toast
+    // appeared in the corner, a counter at the top updated).
+    try {
+      const t = e.target;
+      if (t && t.getBoundingClientRect && window.__tikRecordClickBbox) {
+        const r = t.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          window.__tikRecordClickBbox({ x: r.left, y: r.top, width: r.width, height: r.height });
+        }
+      }
+    } catch {}
   }, true);
   document.addEventListener('keydown', (e) => {
     try { window.__tikRecord && window.__tikRecord({ kind: 'key', x: 0, y: 0, key: e.key }); } catch {}
   }, true);
+})();
+`;
+
+/**
+ * MutationObserver page script — records the bounding rect of every
+ * meaningful DOM change so the editor can detect "the page updated
+ * somewhere OTHER than where you just clicked." That's the signal pan-
+ * zoom uses to decide ride vs release on each click gap.
+ *
+ * Filters that keep the stream useful instead of noisy:
+ *   - skip <script>, <style>, <meta>, <link> mutations (invisible)
+ *   - skip zero-size and fully off-screen rects
+ *   - throttle by node-position signature within a 200ms window so a
+ *     long type-into-input flurry doesn't write 60 mutations per second
+ *   - record on childList AND attributes (style/class/hidden/aria-*)
+ *     because real UI updates often change classes more than they
+ *     add nodes (e.g. "is-open", "is-success", visibility toggles)
+ */
+const MUTATION_RECORDER_INIT = `
+(() => {
+  function isInteresting(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const t = node.tagName;
+    if (!t) return false;
+    if (t === 'SCRIPT' || t === 'STYLE' || t === 'META' || t === 'LINK' || t === 'NOSCRIPT') return false;
+    return true;
+  }
+  function reportRect(node) {
+    try {
+      if (!isInteresting(node)) return;
+      const r = node.getBoundingClientRect();
+      if (r.width <= 1 || r.height <= 1) return;
+      if (r.bottom <= 0 || r.right <= 0) return;
+      if (r.left >= (window.innerWidth || 0) || r.top >= (window.innerHeight || 0)) return;
+      try {
+        window.__tikRecordMutation && window.__tikRecordMutation({
+          x: r.left, y: r.top, width: r.width, height: r.height,
+        });
+      } catch {}
+    } catch {}
+  }
+  // Coalesce same-position mutations within a 200ms window so we don't
+  // record a flurry per keystroke (input value attribute changes fire
+  // mutations on the same input bbox dozens of times per second).
+  const recent = new Map();
+  function recordThrottled(node) {
+    try {
+      const r = node.getBoundingClientRect();
+      const sig = node.tagName + ':' + Math.round(r.top) + ':' + Math.round(r.left);
+      const now = performance.now();
+      const last = recent.get(sig);
+      if (last && now - last < 200) return;
+      recent.set(sig, now);
+      reportRect(node);
+    } catch {}
+  }
+  function init() {
+    try {
+      new MutationObserver((muts) => {
+        for (const m of muts) {
+          for (const n of m.addedNodes) recordThrottled(n);
+          if (m.type === 'attributes' && m.target) recordThrottled(m.target);
+        }
+      }).observe(document.documentElement || document, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class', 'hidden', 'aria-hidden', 'aria-expanded', 'aria-busy', 'data-state', 'data-open'],
+      });
+    } catch {}
+  }
+  if (document.readyState !== 'loading') init();
+  else window.addEventListener('DOMContentLoaded', init);
 })();
 `;
 
@@ -390,7 +477,27 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   await context.exposeFunction("__tikRecord", (data: { kind: "move" | "click" | "key"; x: number; y: number; key?: string }) => {
     interactions.push({ ts: Math.max(0, Math.round(performance.now() - recordingStart)), ...data });
   });
+  // Click bbox stream — for each click event, the page also reports the
+  // clicked element's getBoundingClientRect(). The editor uses this with
+  // the mutations stream below to detect post-click DOM updates that
+  // landed OUTSIDE the clicked element (toast appears far from the
+  // button, counter at the top updates, items reorder elsewhere). When
+  // such off-target mutations are detected, pan-zoom releases for that
+  // gap so the viewer sees the full page instead of a held zoom on the
+  // click site.
+  const clickBboxes: Array<{ ts: number; x: number; y: number; width: number; height: number }> = [];
+  await context.exposeFunction("__tikRecordClickBbox", (data: { x: number; y: number; width: number; height: number }) => {
+    clickBboxes.push({ ts: Math.max(0, Math.round(performance.now() - recordingStart)), ...data });
+  });
+  // DOM mutation stream — every meaningful element mutation gets its
+  // bounding rect reported here. Throttled page-side so a long type-into-
+  // input flurry doesn't write 60 records per second.
+  const mutations: Array<{ ts: number; x: number; y: number; width: number; height: number }> = [];
+  await context.exposeFunction("__tikRecordMutation", (data: { x: number; y: number; width: number; height: number }) => {
+    mutations.push({ ts: Math.max(0, Math.round(performance.now() - recordingStart)), ...data });
+  });
   await context.addInitScript(INTERACTION_RECORDER_INIT);
+  await context.addInitScript(MUTATION_RECORDER_INIT);
   await context.addInitScript(BROKEN_IMAGE_FALLBACK);
   const page = await context.newPage();
 
@@ -659,6 +766,8 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     totalMs,
     toolWindows: toolWindows.length ? toolWindows : undefined,
     interactions: interactions.length ? interactions : undefined,
+    clickBboxes: clickBboxes.length ? clickBboxes : undefined,
+    mutations: mutations.length ? mutations : undefined,
   };
   await writeFile(artifacts.eventsJsonPath, JSON.stringify({ plan, events, startedAt, finishedAt, totalMs, toolWindows: artifacts.toolWindows }, null, 2));
   if (artifacts.interactions?.length) {
@@ -667,6 +776,9 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     for (const it of artifacts.interactions) byKind[it.kind] = (byKind[it.kind] ?? 0) + 1;
     const breakdown = Object.entries(byKind).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(" ");
     console.log(chalk.dim(`  interactions: ${artifacts.interactions.length} (${breakdown})`));
+  }
+  if (artifacts.clickBboxes?.length || artifacts.mutations?.length) {
+    console.log(chalk.dim(`  page changes: ${artifacts.clickBboxes?.length ?? 0} click bboxes · ${artifacts.mutations?.length ?? 0} dom mutations (used for off-target zoom-release detection)`));
   }
   if (artifacts.toolWindows?.length) {
     console.log(chalk.dim(`  tool windows: ${artifacts.toolWindows.length} (per-tool-call active spans for editor trim)`));

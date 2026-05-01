@@ -86,6 +86,19 @@ export interface RunArtifacts {
    *  render a cinematic cursor overlay and pan-zoom toward each click bbox. `move`
    *  is throttled to ~30Hz, `click` and `key` are unthrottled. */
   interactions?: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }>;
+  /** Bounding rect of the element clicked at each click event, in viewport
+   *  pixels (same coord space as `interactions`). Captured page-side from
+   *  `event.target.getBoundingClientRect()`. The editor uses these alongside
+   *  `mutations` below to detect post-click DOM updates that landed OUTSIDE
+   *  the clicked element — the signal that pan-zoom should release. */
+  clickBboxes?: Array<{ ts: number; x: number; y: number; width: number; height: number }>;
+  /** DOM mutations observed page-side via a MutationObserver, with each
+   *  mutation's bounding rect at observation time. The editor pairs these
+   *  with `clickBboxes` to find post-click off-target page changes that
+   *  warrant releasing the held pan-zoom (toast in corner, counter top-right
+   *  updates, etc.). Bursts of mutations within the same node group are
+   *  throttled page-side so we don't drown in keystroke-driven entries. */
+  mutations?: Array<{ ts: number; x: number; y: number; width: number; height: number }>;
 }
 
 export interface Config {

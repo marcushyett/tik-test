@@ -118,6 +118,14 @@ export interface SingleVideoInput {
   bodyChunks: BodyChunk[];
   /** Optional overlay badges keyed to silent investigative moments. */
   bodyBadges?: BodyBadge[];
+  /** Body-relative intervals where the pan-zoom should RELEASE to neutral
+   *  framing. Computed from page-side MutationObserver data: whenever a
+   *  click triggers DOM mutations OUTSIDE the clicked element's bbox
+   *  (e.g. toast appears in the corner, counter at the top updates), the
+   *  ride-mode held zoom would clip those changes off-frame. Each
+   *  interval covers the post-click window where off-target mutations
+   *  occurred so the viewer sees the full page during state changes. */
+  zoomReleaseIntervals?: Array<{ startS: number; durS: number }>;
   /** Mouse + click + keystroke stream, mapped from raw video timeline into
    *  master-timeline seconds (so timestamps line up with the trimmed video).
    *  Remotion renders a cinematic cursor overlay using `move`+`click` events
@@ -750,6 +758,105 @@ export async function editSingleVideo({
     bodyBadges.push({ startS, durS, label: badge.label, detail: badge.detail });
   }
 
+  // ── 10b. Compute zoom-release intervals: post-click periods where a DOM
+  //        mutation landed OUTSIDE the clicked element's bounding box. The
+  //        page-side MutationObserver records each mutation's rect; for
+  //        each click we find post-click mutations that aren't contained
+  //        inside the click target's bbox (with padding for shadows/focus
+  //        rings), and flag the corresponding window for release zoom.
+  //
+  //        Why: if you click a button at the bottom-left and a toast
+  //        appears top-right, ride-mode would hold the zoom on the button
+  //        and clip the toast off-frame. This signal forces a zoom-out
+  //        for the gap so the viewer sees both regions.
+  const RELEASE_PADDING_PX = 60;       // generous halo for drop shadows / focus rings
+  const POST_CLICK_WINDOW_MS = 3500;   // mutations attributed to a click within this window
+  const zoomReleaseIntervals: Array<{ startS: number; durS: number }> = [];
+  if (artifacts.clickBboxes && artifacts.mutations) {
+    const clicksWithBbox = artifacts.clickBboxes
+      .map((c) => {
+        const rawS = c.ts / 1000;
+        let bodyS: number | null = null;
+        for (const seg of plan) {
+          if (rawS >= seg.rawStartS && rawS <= seg.rawEndS + 1e-6) {
+            bodyS = seg.trimmedStartS + (rawS - seg.rawStartS) / seg.speed;
+            break;
+          }
+        }
+        return bodyS == null ? null : { ...c, bodyS };
+      })
+      .filter((c): c is NonNullable<typeof c> => c != null);
+    for (const click of clicksWithBbox) {
+      // Find any mutations in the post-click window that are OUTSIDE the
+      // click element's padded bbox. A single off-target mutation is enough
+      // to flag this gap for release.
+      const postWindowEnd = click.ts + POST_CLICK_WINDOW_MS;
+      const offTargetMutations = (artifacts.mutations ?? []).filter((m) => {
+        if (m.ts < click.ts || m.ts > postWindowEnd) return false;
+        const px = RELEASE_PADDING_PX;
+        const cx1 = click.x - px;
+        const cy1 = click.y - px;
+        const cx2 = click.x + click.width + px;
+        const cy2 = click.y + click.height + px;
+        const mx1 = m.x;
+        const my1 = m.y;
+        const mx2 = m.x + m.width;
+        const my2 = m.y + m.height;
+        // Mutation is "inside the click region" if its bbox is fully
+        // contained in the padded click bbox. Otherwise it's off-target.
+        const insideClick = mx1 >= cx1 && mx2 <= cx2 && my1 >= cy1 && my2 <= cy2;
+        return !insideClick;
+      });
+      if (offTargetMutations.length === 0) continue;
+      // The release interval covers from the click forward to whichever
+      // comes first: the last off-target mutation (+ small lag) or the
+      // post-click window boundary.
+      const firstOffTargetMs = offTargetMutations[0].ts;
+      const lastOffTargetMs = offTargetMutations[offTargetMutations.length - 1].ts;
+      const startMs = Math.min(firstOffTargetMs, click.ts + 200); // start just after the click
+      const endMs = Math.min(postWindowEnd, lastOffTargetMs + 600); // 600ms lag so we don't snap back too soon
+      const startBodyS = (() => {
+        let s: number | null = null;
+        for (const seg of plan) {
+          if (startMs / 1000 >= seg.rawStartS && startMs / 1000 <= seg.rawEndS + 1e-6) {
+            s = seg.trimmedStartS + (startMs / 1000 - seg.rawStartS) / seg.speed;
+            break;
+          }
+        }
+        return s;
+      })();
+      const endBodyS = (() => {
+        let s: number | null = null;
+        for (const seg of plan) {
+          if (endMs / 1000 >= seg.rawStartS && endMs / 1000 <= seg.rawEndS + 1e-6) {
+            s = seg.trimmedStartS + (endMs / 1000 - seg.rawStartS) / seg.speed;
+            break;
+          }
+        }
+        return s;
+      })();
+      if (startBodyS == null || endBodyS == null) continue;
+      const durS = Math.max(0.5, endBodyS - startBodyS);
+      zoomReleaseIntervals.push({ startS: startBodyS, durS });
+    }
+  }
+  // Merge overlapping intervals so the compositor doesn't re-evaluate the
+  // same gap multiple times.
+  zoomReleaseIntervals.sort((a, b) => a.startS - b.startS);
+  const mergedReleaseIntervals: typeof zoomReleaseIntervals = [];
+  for (const iv of zoomReleaseIntervals) {
+    const last = mergedReleaseIntervals[mergedReleaseIntervals.length - 1];
+    if (last && iv.startS <= last.startS + last.durS + 0.1) {
+      const newEnd = Math.max(last.startS + last.durS, iv.startS + iv.durS);
+      last.durS = newEnd - last.startS;
+    } else {
+      mergedReleaseIntervals.push({ ...iv });
+    }
+  }
+  if (mergedReleaseIntervals.length) {
+    console.log(chalk.dim(`  zoom-release intervals: ${mergedReleaseIntervals.length} (post-click off-target mutations detected)`));
+  }
+
   // ── 8. Intro / outro durations based on actual voice length.
   const introDurS = Math.max(INTRO_TARGET_S, introTts.dur + 0.5);
   // Outro holds for OUTRO_HOLD_S seconds after the voice ends so the
@@ -818,6 +925,7 @@ export async function editSingleVideo({
     versionTag: getVersionTag(),
     bodyChunks,
     bodyBadges: bodyBadges.length > 0 ? bodyBadges : undefined,
+    zoomReleaseIntervals: mergedReleaseIntervals.length > 0 ? mergedReleaseIntervals : undefined,
     interactions: remotionInteractions.length > 0 ? remotionInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,
   };
