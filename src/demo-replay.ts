@@ -66,14 +66,31 @@ export interface ReplayArtifacts {
   cameraPlan: NonNullable<RunArtifacts["cameraPlan"]>;
 }
 
-// Per-step pacing. Tuned for narration headroom: each click gets at least
-// ~2.4s on screen between approach and the next action, which is enough
-// for a 6-9 word narration line at natural speaking rate.
-const PRE_ACTION_DWELL_MS = 600;   // sit on the target so cursor settles before fire
-const POST_ACTION_DWELL_MS = 1500; // dwell after action so result is visible
-const TYPE_PER_CHAR_MS = 60;       // human-paced typing
-const GOAL_GAP_MS = 800;           // pause between goals
-const TAIL_DWELL_MS = 1500;        // last frame of the body holds for the editor
+// Per-step pacing — tuned to LOOK HUMAN, not optimal. The recording is for
+// a viewer who needs to follow what's happening, so every cursor approach
+// glides, every key press lingers, every result holds long enough to read.
+// Knobs:
+const MOUSE_GLIDE_STEPS = 22;       // explicit cursor steps from prev pos to target
+const MOUSE_GLIDE_SETTLE_MS = 140;  // pause once cursor lands on target
+const PRE_ACTION_DWELL_MS = 480;    // additional dwell on target before clicking
+const POST_ACTION_DWELL_MS = 1500;  // dwell after action so result is visible
+const TYPE_PER_CHAR_MS = 95;        // letter-by-letter typing — visibly human
+const POST_TYPE_PAUSE_MS = 320;     // pause before pressing Enter / clicking next
+const GOAL_GAP_MS = 800;            // pause between goals
+const TAIL_DWELL_MS = 1500;         // last frame of the body holds for the editor
+
+/** Glide the cursor from its current position to (x, y) over multiple
+ *  intermediate steps, then settle. Playwright's locator.click does its
+ *  own short move, but we want a visible cursor trail in the recording —
+ *  so we do an explicit slow move first. Returns true if the move
+ *  actually happened (false if Playwright threw, e.g. closed page). */
+async function glideTo(page: Page, x: number, y: number): Promise<boolean> {
+  try {
+    await page.mouse.move(x, y, { steps: MOUSE_GLIDE_STEPS });
+    await page.waitForTimeout(MOUSE_GLIDE_SETTLE_MS);
+    return true;
+  } catch { return false; }
+}
 
 export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> {
   const startedAt = new Date().toISOString();
@@ -430,13 +447,14 @@ async function runStep(page: Page, step: DemoStep, record: Recorder): Promise<vo
     case "click": {
       const loc = await firstResolvable(page, step);
       await loc.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
-      // Hover before click so the cursor overlay glides to the target before
-      // the flash fires — mirrors how a person would move toward a button.
-      await loc.hover({ timeout: 2000 }).catch(() => {});
-      await page.waitForTimeout(PRE_ACTION_DWELL_MS);
-      // Capture the bbox BEFORE the click so we know exactly where the
-      // animation should fire even if the element vanishes/changes after.
       const bbox = await loc.boundingBox().catch(() => null);
+      // Glide the cursor across the page in many small steps so the
+      // recording shows a real human-paced approach, not an instantaneous
+      // teleport. We move BEFORE locator.click so this glide is what
+      // actually plays out on screen (locator.click does its own short
+      // move at the end which is fine since we're already on target).
+      if (bbox) await glideTo(page, bbox.x + bbox.width / 2, bbox.y + bbox.height / 2);
+      await page.waitForTimeout(PRE_ACTION_DWELL_MS);
       await loc.click({ timeout: 5000 });
       if (bbox) record.click(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2, bbox);
       await page.waitForTimeout(POST_ACTION_DWELL_MS);
@@ -447,11 +465,16 @@ async function runStep(page: Page, step: DemoStep, record: Recorder): Promise<vo
       const loc = await firstResolvable(page, step);
       await loc.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
       const bbox = await loc.boundingBox().catch(() => null);
+      // Glide cursor onto the input first.
+      if (bbox) await glideTo(page, bbox.x + bbox.width / 2, bbox.y + bbox.height / 2);
       await loc.click({ timeout: 5000 });
       if (bbox) record.click(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2, bbox);
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(POST_TYPE_PAUSE_MS);
       // Clear first if the field already has content — keeps demo deterministic.
       try { await loc.fill(""); } catch {}
+      // Type letter-by-letter at human pace. pressSequentially fires real
+      // keydown/keypress/input events for each character, so the cursor
+      // overlay's keystroke recorder catches every one.
       await loc.pressSequentially(step.value, { delay: TYPE_PER_CHAR_MS });
       await page.waitForTimeout(POST_ACTION_DWELL_MS);
       return;
@@ -461,6 +484,8 @@ async function runStep(page: Page, step: DemoStep, record: Recorder): Promise<vo
       const loc = await firstResolvable(page, step);
       await loc.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
       const bbox = await loc.boundingBox().catch(() => null);
+      if (bbox) await glideTo(page, bbox.x + bbox.width / 2, bbox.y + bbox.height / 2);
+      await page.waitForTimeout(PRE_ACTION_DWELL_MS);
       await loc.selectOption(step.value, { timeout: 5000 });
       if (bbox) record.click(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2, bbox);
       await page.waitForTimeout(POST_ACTION_DWELL_MS);
@@ -498,12 +523,14 @@ async function replayLoginInteractions(
   while (i < sorted.length) {
     const ev = sorted[i];
     if (ev.kind === "click") {
-      // Move + click. Move first so the cursor overlay glides naturally.
+      // Glide to the click point — same many-step move as the demo replay
+      // uses so the cursor approach reads as natural, not as a teleport.
       try {
-        await page.mouse.move(ev.x, ev.y, { steps: 6 });
+        await page.mouse.move(ev.x, ev.y, { steps: MOUSE_GLIDE_STEPS });
+        await page.waitForTimeout(MOUSE_GLIDE_SETTLE_MS);
         await page.mouse.click(ev.x, ev.y);
       } catch {}
-      await page.waitForTimeout(220);
+      await page.waitForTimeout(280);
       i++;
     } else if (ev.kind === "key") {
       // Gather contiguous keys (no click in between).
@@ -523,16 +550,16 @@ async function replayLoginInteractions(
         if (isEnd || special) {
           if (k > runStart) {
             const word = keys.slice(runStart, k).join("");
-            try { await page.keyboard.type(word, { delay: 55 }); } catch {}
+            try { await page.keyboard.type(word, { delay: TYPE_PER_CHAR_MS }); } catch {}
           }
           if (!isEnd && special) {
             try { await page.keyboard.press(keys[k]); } catch {}
-            await page.waitForTimeout(120);
+            await page.waitForTimeout(160);
             runStart = k + 1;
           }
         }
       }
-      await page.waitForTimeout(220);
+      await page.waitForTimeout(280);
       i = j;
     } else {
       // skip "move" — page.mouse.click already does the cursor move

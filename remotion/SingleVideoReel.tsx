@@ -73,7 +73,13 @@ export interface SingleVideoInput {
    *  in VIEWPORT (page) pixels — Remotion maps them to canvas pixels via the
    *  recording's objectFit:contain math. */
   interactions?: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }>;
-  checklist?: Array<{ outcome: "success" | "failure" | "skipped"; label: string; note?: string }>;
+  checklist?: Array<{ outcome: "success" | "failure" | "skipped"; label: string; note?: string; goalId?: string }>;
+  /** Goal-level headings used to GROUP the granular checklist on the outro.
+   *  When provided AND items carry goalId, the outro renders one heading
+   *  per goal with its sub-checks underneath — matches the PR comment's
+   *  grouping so the viewer's mental model stays consistent across the
+   *  two surfaces. Order here is the order goals will appear in. */
+  goalGroups?: Array<{ id: string; label: string; outcome: "success" | "failure" | "skipped" }>;
 }
 
 export function computeSingleVideoDuration(input: SingleVideoInput, fps: number): number {
@@ -134,6 +140,7 @@ export const SingleVideoReel: React.FC<SingleVideoInput> = (props) => {
           title={props.title}
           stats={props.stats}
           checklist={props.checklist}
+          goalGroups={props.goalGroups}
           voiceSrc={props.outroVoiceSrc}
           voiceDurS={props.outroVoiceDurS}
           voicePlaybackRate={props.outroVoicePlaybackRate}

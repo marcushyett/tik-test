@@ -19,6 +19,12 @@ export interface ChecklistItem {
   outcome: "success" | "failure" | "skipped";
   label: string;
   note?: string;
+  /** ID of the goal this check belongs to (matches StepEvent.stepId).
+   *  Both the video outro and the PR comment GROUP rows by this so a
+   *  reviewer can see which beat each sub-check belongs to. Missing
+   *  goalIds are rendered under an "Unspecified" bucket as a safety
+   *  net (an LLM may occasionally drop the field). */
+  goalId?: string;
 }
 
 const PROMPT = `You are summarising what an automated QA agent actually checked while reviewing a pull request. The output is a CHECKLIST shown on the final frame of a short review video — a reviewer pauses on it and reads to learn what was tested, what worked, and what failed.
@@ -26,13 +32,14 @@ const PROMPT = `You are summarising what an automated QA agent actually checked 
 OUTPUT FORMAT — STRICT JSON, no markdown, no prose:
 {
   "items": [
-    { "outcome": "success" | "failure" | "skipped", "label": string, "note"?: string },
+    { "outcome": "success" | "failure" | "skipped", "label": string, "note"?: string, "goalId": string },
     ... 6 to 12 entries
   ]
 }
 
 RULES:
 - {{MIN_ITEMS}} to {{MAX_ITEMS}} items. Aim for the middle of that range — enough to feel substantive, few enough to scan in 5 seconds AND fit on a vertical 9:16 frame without scrolling.
+- "goalId" is REQUIRED on every item — it MUST exactly match one of the goal IDs listed under "Plan goals" below (e.g. "g1", "_login"). Both the video outro and the PR comment GROUP items by their goalId so the reviewer can see which beat each sub-check belongs to. Items without a valid goalId render under a generic bucket and look broken.
 - Each "label" is a specific CHECK that was performed: subject + verb form, ≤32 chars. Examples should be GENERIC subject+verb form ("Filter shows expected items", "Badge appears on first match", "Counter updates on action"). NOT goal-level summaries.
 - The agent verifies via a 4-tier hierarchy: (1) UI screenshot, (2) freeze-the-moment + screenshot, (3) programmatic fallback (DOM/network/storage; agent's OUTCOME starts with "verified programmatically:"), (4) skipped — needs human verification. Map each goal-level OUTCOME to a checklist row:
   • "success" — pick this if the agent's OUTCOME described screenshot evidence (tier 1/2) OR explicitly said "verified programmatically" (tier 3). Both are real verification — the tier-3 note tells the reviewer the evidence was DOM-level. For tier-3 successes, the row's 'note' SHOULD start with "via DOM:" so the reviewer can scan the difference at a glance.
@@ -69,8 +76,12 @@ function formatGoals(ctx: ChecklistContext): string {
   if (events.length === 0) return "(no goals)";
   return events.map((e, i) => {
     const lines = [
-      `${i + 1}. [${e.outcome.toUpperCase()}] ${e.description.replace(/\s+/g, " ").slice(0, 220)}`,
+      // Surface goalId explicitly so the LLM can reference it on each
+      // checklist item — exact-match attribution is non-negotiable for
+      // the grouped-by-goal rendering.
+      `${i + 1}. id="${e.stepId}" [${e.outcome.toUpperCase()}] ${e.description.replace(/\s+/g, " ").slice(0, 220)}`,
     ];
+    if (e.shortLabel) lines.push(`   GOAL HEADLINE: ${e.shortLabel}`);
     if (e.notes) lines.push(`   AGENT NOTE: ${e.notes.replace(/\s+/g, " ").slice(0, 200)}`);
     return lines.join("\n");
   }).join("\n");
@@ -130,7 +141,10 @@ function sanitise(items: any[]): ChecklistItem[] {
     const note = typeof raw.note === "string" && raw.note.trim()
       ? clipToWord(raw.note.replace(/\s+/g, " ").trim(), MAX_NOTE)
       : undefined;
-    out.push({ outcome, label, note });
+    const goalId = typeof raw.goalId === "string" && raw.goalId.trim()
+      ? raw.goalId.trim().slice(0, 64)
+      : undefined;
+    out.push({ outcome, label, note, goalId });
     if (out.length >= MAX_ITEMS) break;
   }
   // Failures first, then successes, then skipped — guarantees important

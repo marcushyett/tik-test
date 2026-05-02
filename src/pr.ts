@@ -632,13 +632,18 @@ interface CommentData {
   videoUrl: string;
   gifUrl?: string;
   plan: string;
-  events: Array<{ description: string; outcome: string; error?: string; importance: string; startMs: number; endMs: number }>;
+  // We carry through the goal-event fields needed to render the grouped
+  // checklist (`kind`, `stepId`, `shortLabel`) — the comment groups its
+  // checklist rows by goalId, mirroring the video outro's grouping.
+  events: Array<{ description: string; outcome: string; error?: string; importance: string; startMs: number; endMs: number; kind?: string; stepId?: string; shortLabel?: string }>;
   totalMs: number;
   runId?: string;
   /** LLM-synthesised pass/fail rows — embedded in the comment marker so the
    *  web viewer can render them in the drawer, and rendered as an emoji
-   *  table in the comment body so reviewers see the same data inline. */
-  checklist?: Array<{ outcome: "success" | "failure" | "skipped"; label: string; note?: string }>;
+   *  table in the comment body so reviewers see the same data inline.
+   *  `goalId` lets the renderer GROUP rows by which goal they belong to,
+   *  matching the video outro's structure. */
+  checklist?: Array<{ outcome: "success" | "failure" | "skipped"; label: string; note?: string; goalId?: string }>;
 }
 
 /**
@@ -679,32 +684,86 @@ function buildTikTestMarker(data: CommentData, meta: { prRef: string; ts: string
  * Render the LLM-synthesised checklist as a Markdown table. Emoji glyphs
  * render the outcomes inline (✅ pass, ❌ fail, ⏭️ skipped).
  */
-function buildChecklistMarkdown(items: NonNullable<CommentData["checklist"]>): string {
+function buildChecklistMarkdown(
+  items: NonNullable<CommentData["checklist"]>,
+  goals?: CommentData["events"],
+): string {
   const glyph = (o: string) => o === "failure" ? "❌" : o === "skipped" ? "⏭️" : "✅";
   const escape = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ");
-  const rows = items.map((it) => `| ${glyph(it.outcome)} | ${escape(it.label)} | ${it.note ? escape(it.note) : ""} |`).join("\n");
-  return [
-    `|   | Check | Notes |`,
-    `|---|-------|-------|`,
-    rows,
-    ``,
-  ].join("\n");
+  // Group items by goalId. Goal order = goal-event order so the comment
+  // reads top-to-bottom in the same sequence the viewer just watched.
+  // Items without a goalId fall into an "Unspecified" bucket so they
+  // never get silently dropped.
+  const goalOrder: Array<{ id: string; heading: string; outcome: string }> = (goals ?? [])
+    .filter((g): g is typeof g & { kind: string; stepId: string } => g.kind === "intent" && !!g.stepId)
+    .map((g) => ({
+      id: g.stepId,
+      heading: (g.shortLabel ?? g.description.replace(/\s+/g, " ").slice(0, 64)).trim() || g.stepId,
+      outcome: g.outcome,
+    }));
+  const itemsByGoal = new Map<string, typeof items>();
+  for (const it of items) {
+    const k = it.goalId ?? "_ungrouped";
+    if (!itemsByGoal.has(k)) itemsByGoal.set(k, []);
+    itemsByGoal.get(k)!.push(it);
+  }
+  const sections: string[] = [];
+  for (const g of goalOrder) {
+    const rows = itemsByGoal.get(g.id);
+    if (!rows || rows.length === 0) continue;
+    sections.push(
+      ``,
+      `**${glyph(g.outcome)} ${escape(g.heading)}**`,
+      ``,
+      `|   | Check | Notes |`,
+      `|---|-------|-------|`,
+      rows.map((it) => `| ${glyph(it.outcome)} | ${escape(it.label)} | ${it.note ? escape(it.note) : ""} |`).join("\n"),
+    );
+  }
+  // Catch-all for items the LLM didn't attribute. Only render when we
+  // actually have any — the goal-attributed sections above are the
+  // happy path.
+  const ungrouped = itemsByGoal.get("_ungrouped");
+  if (ungrouped && ungrouped.length > 0) {
+    sections.push(
+      ``,
+      `**Other**`,
+      ``,
+      `|   | Check | Notes |`,
+      `|---|-------|-------|`,
+      ungrouped.map((it) => `| ${glyph(it.outcome)} | ${escape(it.label)} | ${it.note ? escape(it.note) : ""} |`).join("\n"),
+    );
+  }
+  if (sections.length === 0) {
+    // No goal grouping at all — fall back to a single flat table.
+    return [
+      `|   | Check | Notes |`,
+      `|---|-------|-------|`,
+      items.map((it) => `| ${glyph(it.outcome)} | ${escape(it.label)} | ${it.note ? escape(it.note) : ""} |`).join("\n"),
+      ``,
+    ].join("\n");
+  }
+  return [...sections, ``].join("\n");
 }
 
 async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
   const failed = data.events.filter((e) => e.outcome === "failure");
   const skipped = data.events.filter((e) => e.outcome === "skipped");
   const passed = data.events.length - failed.length - skipped.length;
-  // Status line distinguishes three outcomes:
-  //   - all green (everything verified, no failures)
-  //   - N failed (real regressions found)
-  //   - "needs human verification on N" (no failures but some goals couldn't
-  //      be auto-tested — agent honestly emitted OUTCOME: skipped)
-  // Skipped goals do NOT trigger request-changes — see maybePostFormalReview.
-  const status = failed.length > 0
-    ? `${failed.length} step${failed.length === 1 ? "" : "s"} failed`
-    : skipped.length > 0
-    ? `${skipped.length} step${skipped.length === 1 ? "" : "s"} need human verification`
+  // The header summarises BOTH goal outcomes and the granular checklist
+  // (which the agent populated alongside its OUTCOME). Earlier the header
+  // only counted goal outcomes — so a 2/2 success-at-goal-level run with
+  // 4 ❌ checklist items rendered as "All green" while ❌s sat right
+  // below it. Mismatched headline + body is more confusing than helpful.
+  // Now: if ANY ❌ appears anywhere, the header reflects it.
+  const checklistFailed = (data.checklist ?? []).filter((c) => c.outcome === "failure").length;
+  const checklistSkipped = (data.checklist ?? []).filter((c) => c.outcome === "skipped").length;
+  const totalIssues = failed.length + checklistFailed;
+  const totalNeedsHuman = skipped.length + checklistSkipped;
+  const status = totalIssues > 0
+    ? `${totalIssues} ${totalIssues === 1 ? "issue" : "issues"} flagged`
+    : totalNeedsHuman > 0
+    ? `${totalNeedsHuman} ${totalNeedsHuman === 1 ? "item" : "items"} need human verification`
     : "All green";
 
   const preview = data.gifUrl
@@ -721,7 +780,7 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
   // Emoji checklist table — same data the video's outro shows, rendered
   // inline so a reviewer can scan it without playing the MP4.
   const checklistMd = data.checklist && data.checklist.length > 0
-    ? buildChecklistMarkdown(data.checklist)
+    ? buildChecklistMarkdown(data.checklist, data.events)
     : "";
 
   // Run timestamp surfaced in the rendered body (in addition to the
@@ -737,7 +796,7 @@ async function postPRComment(ref: PRRef, data: CommentData): Promise<void> {
     ``,
     `### tik-test review — ${status}`,
     ``,
-    `**${data.plan}** — ${passed}/${data.events.length} checks passed in ${(data.totalMs / 1000).toFixed(1)}s.`,
+    `**${data.plan}** — ${passed}/${data.events.length} goal${data.events.length === 1 ? "" : "s"} passed${checklistFailed > 0 ? `, ${checklistFailed} sub-check${checklistFailed === 1 ? "" : "s"} flagged` : ""} in ${(data.totalMs / 1000).toFixed(1)}s.`,
     ``,
     preview,
     ``,
@@ -786,21 +845,25 @@ async function postPRChecklistComment(
   const failed = data.events.filter((e) => e.outcome === "failure");
   const skipped = data.events.filter((e) => e.outcome === "skipped");
   const passed = data.events.length - failed.length - skipped.length;
-  const status = failed.length > 0
-    ? `${failed.length} step${failed.length === 1 ? "" : "s"} failed`
-    : skipped.length > 0
-    ? `${skipped.length} step${skipped.length === 1 ? "" : "s"} need human verification`
+  const checklistFailed = (data.checklist ?? []).filter((c) => c.outcome === "failure").length;
+  const checklistSkipped = (data.checklist ?? []).filter((c) => c.outcome === "skipped").length;
+  const totalIssues = failed.length + checklistFailed;
+  const totalNeedsHuman = skipped.length + checklistSkipped;
+  const status = totalIssues > 0
+    ? `${totalIssues} ${totalIssues === 1 ? "issue" : "issues"} flagged`
+    : totalNeedsHuman > 0
+    ? `${totalNeedsHuman} ${totalNeedsHuman === 1 ? "item" : "items"} need human verification`
     : "All green";
 
   const checklistMd = data.checklist && data.checklist.length > 0
-    ? buildChecklistMarkdown(data.checklist)
+    ? buildChecklistMarkdown(data.checklist, data.events)
     : "_No per-check breakdown available — checklist synthesis returned empty._\n";
 
   const runStamp = new Date().toISOString();
   const body = [
     `### tik-test review — ${status} (checks only)`,
     ``,
-    `**${data.plan}** — ${passed}/${data.events.length} checks passed in ${(data.totalMs / 1000).toFixed(1)}s.`,
+    `**${data.plan}** — ${passed}/${data.events.length} goal${data.events.length === 1 ? "" : "s"} passed${checklistFailed > 0 ? `, ${checklistFailed} sub-check${checklistFailed === 1 ? "" : "s"} flagged` : ""} in ${(data.totalMs / 1000).toFixed(1)}s.`,
     ``,
     checklistMd,
     `---`,

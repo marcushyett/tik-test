@@ -84,11 +84,14 @@ export interface BodyBadge {
 
 /** One row on the outro checklist. Replaces the abstract pass/fail
  *  blocks with the actual goals the agent ran, scannable by a reviewer
- *  in seconds. `note` is shown on a second line (smaller) when present. */
+ *  in seconds. `note` is shown on a second line (smaller) when present.
+ *  `goalId` lets the outro AND the PR comment GROUP rows by which goal
+ *  they belong to — same data, two surfaces. */
 export interface ChecklistItem {
   outcome: "success" | "failure" | "skipped";
   label: string;
   note?: string;
+  goalId?: string;
 }
 
 export interface SingleVideoInput {
@@ -143,6 +146,12 @@ export interface SingleVideoInput {
   interactions?: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }>;
   /** Per-goal results rendered as a vertical checklist on the outro. */
   checklist?: ChecklistItem[];
+  /** Goal-level headings that drive the outro's GROUPING — one heading
+   *  per goal, ordered so the viewer reads them in the same sequence the
+   *  agent ran them. The Outro component uses these to bucket `checklist`
+   *  rows by their `goalId` and render a heading above each bucket.
+   *  Mirrors the grouping the PR comment uses (src/pr.ts buildChecklistMarkdown). */
+  goalGroups?: Array<{ id: string; label: string; outcome: "success" | "failure" | "skipped" }>;
 }
 
 /**
@@ -414,9 +423,9 @@ async function renderTrimmedMaster(rawMp4: string, outMp4: string, plan: TrimSeg
 
 export interface SingleVideoEditResult {
   outPath: string;
-  /** The LLM-synthesised outro checklist used in the video — exposed so
-   *  the PR-comment poster can render the same table in Markdown and so
-   *  the web viewer can render it natively in the drawer. */
+  /** Granular per-check list with each item carrying a `goalId` so the
+   *  video outro AND the PR comment can render them grouped by goal.
+   *  Same data shape both places — they just present it differently. */
   checklist: ChecklistItem[];
 }
 
@@ -882,16 +891,19 @@ export async function editSingleVideo({
   const skipped = artifacts.events.filter((e) => e.outcome === "skipped").length;
   const stats = { passed, failed, skipped, total: artifacts.events.length, durS: artifacts.totalMs / 1000 };
 
-  // Outro checklist. PREFERRED: the Claude-generated 6-12 row list
-  // (synthesised from goals + agent action history — that's what the
-  // reviewer actually wants to see). FALLBACK: one row per goal, if
-  // generateChecklist returned null (transient CLI failure / unparseable
-  // output) — we never want to ship an outro with no checklist at all.
+  // Outro checklist. PREFERRED: the Claude-generated granular list
+  // (synthesised from goals + agent action history) — but each row now
+  // carries a `goalId` so both the video outro AND the PR comment can
+  // render the items GROUPED BY GOAL. That keeps every sub-check the
+  // agent actually ran visible while making it crystal-clear which
+  // beat they belong to. FALLBACK: one row per goal, if synthesis
+  // returned null — still valid output, just less detail.
   let checklist: ChecklistItem[] = [];
   const llmList = await checklistPromise;
   if (llmList && llmList.length > 0) {
     checklist = llmList;
-    console.log(chalk.dim(`  checklist: ${llmList.length} llm-synthesised items`));
+    const grouped = checklist.reduce<Record<string, number>>((a, c) => { const k = c.goalId ?? "_ungrouped"; a[k] = (a[k] ?? 0) + 1; return a; }, {});
+    console.log(chalk.dim(`  checklist: ${llmList.length} llm-synthesised items across ${Object.keys(grouped).length} goal group${Object.keys(grouped).length === 1 ? "" : "s"}`));
   } else {
     const goalEvents = artifacts.events.filter((e) => e.kind === "intent");
     const ranked = [...goalEvents].sort((a, b) => {
@@ -903,6 +915,7 @@ export async function editSingleVideo({
       outcome: e.outcome,
       label: (e.shortLabel ?? e.description).replace(/\s+/g, " ").slice(0, 36).trim(),
       note: e.shortNote?.replace(/\s+/g, " ").slice(0, 64).trim() || undefined,
+      goalId: e.stepId,
     }));
     console.log(chalk.dim(`  checklist: ${checklist.length} fallback goal-level items`));
   }
@@ -991,6 +1004,17 @@ export async function editSingleVideo({
     zoomReleaseIntervals: mergedReleaseIntervals.length > 0 ? mergedReleaseIntervals : undefined,
     interactions: remotionInteractions.length > 0 ? remotionInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,
+    // Goal-level headings for the outro's grouping — derived from the
+    // same intent events the checklist's goalIds reference. We only
+    // surface this when at least one checklist row carries a goalId
+    // (otherwise the outro silently falls back to a flat list).
+    goalGroups: goalEvents.length > 0 && checklist.some((c) => !!c.goalId)
+      ? goalEvents.map((e) => ({
+          id: e.stepId,
+          label: (e.shortLabel ?? e.description ?? "").replace(/\s+/g, " ").trim().slice(0, 48) || "Goal",
+          outcome: e.outcome,
+        }))
+      : undefined,
   };
   await writeFile(path.join(runDir, "reel-input.json"), JSON.stringify(input, null, 2));
 
