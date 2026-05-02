@@ -40,9 +40,18 @@ export const Outro: React.FC<Props> = ({ title, stats, checklist, goalGroups, vo
   // so a reviewer pausing at the end can read every pass/fail row.
   const opacity = spring({ frame, fps, from: 0, to: 1, config: { damping: 20 } });
 
-  const ok = stats.failed === 0;
+  // Combined health: a sub-check failure is just as much a "red" as a
+  // goal failure. Earlier the badge read "All green" while the checklist
+  // below it had a red row — same inconsistency the PR comment used to
+  // ship before its header was rewired. Now the pill mirrors the PR
+  // comment's combined count.
+  const checklistFailed = (checklist ?? []).filter((c) => c.outcome === "failure").length;
+  const totalFailed = stats.failed + checklistFailed;
+  const ok = totalFailed === 0;
   const accent = ok ? "#00e5a0" : "#ff4757";
-  const status = ok ? "All green" : "Issues found";
+  const status = ok
+    ? "All green"
+    : totalFailed === 1 ? "1 issue flagged" : `${totalFailed} issues flagged`;
 
   return (
     <AbsoluteFill style={{ opacity }}>
