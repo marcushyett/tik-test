@@ -171,6 +171,10 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
 
   const events: StepEvent[] = [];
   const toolWindows: NonNullable<RunArtifacts["toolWindows"]> = [];
+  // App container rect snapshotted right before page teardown — primary
+  // input to the content-bbox computation below. Click-union is the
+  // fallback for apps that don't have a clean main container.
+  let appContainerRect: { x: number; y: number; width: number; height: number } | null = null;
   // Camera plan — one entry per demo step. The agent's `camera` directive
   // on each step drives mode (tight / wide / follow); focus comes from the
   // step's click bbox if it's tight (else inherits the most recent click
@@ -346,6 +350,44 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
 
     await page.waitForTimeout(TAIL_DWELL_MS);
   } finally {
+    // Snapshot the app's main container rect BEFORE we tear down the page.
+    // This is the primary signal for content-aware base framing — used
+    // ahead of the click-union heuristic in computeContentBbox below.
+    try {
+      appContainerRect = await page.evaluate(() => {
+        // Probe in priority order — most specific framework conventions
+        // first, then semantic / structural, then full body.
+        const selectors = [
+          "main",
+          "[role='main']",
+          "#root > *:not(script):not(style)",
+          "#app > *:not(script):not(style)",
+          "#__next > *:not(script):not(style)",
+          ".app",
+          ".container",
+          "body > div:first-of-type",
+        ];
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        for (const sel of selectors) {
+          const el = document.querySelector(sel);
+          if (!el) continue;
+          const r = el.getBoundingClientRect();
+          // Clamp to viewport (a tall scrolling page reports its full
+          // intrinsic height, but only viewport-sized chunk is visible).
+          const x1 = Math.max(0, r.x);
+          const y1 = Math.max(0, r.y);
+          const x2 = Math.min(vw, r.x + r.width);
+          const y2 = Math.min(vh, r.y + r.height);
+          const w = x2 - x1;
+          const h = y2 - y1;
+          // Reject degenerate / off-screen elements.
+          if (w < 50 || h < 50) continue;
+          return { x: Math.round(x1), y: Math.round(y1), width: Math.round(w), height: Math.round(h) };
+        }
+        return null;
+      }).catch(() => null);
+    } catch { appContainerRect = null; }
     await page.close();
     await context.close();
     await browser.close();
@@ -383,11 +425,14 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
   // shown letterboxed with empty background. Falls through to undefined
   // when we have <3 distinct rects to union — too little signal to
   // pick a base framing reliably.
-  const contentBbox = computeContentBbox(clickBboxes, mutations, opts.viewport);
+  const contentBbox = computeContentBbox(appContainerRect, clickBboxes, mutations, opts.viewport);
   if (contentBbox) {
     const fillW = ((contentBbox.width / opts.viewport.width) * 100).toFixed(0);
     const fillH = ((contentBbox.height / opts.viewport.height) * 100).toFixed(0);
-    console.log(chalk.dim(`  content bbox: ${contentBbox.width}×${contentBbox.height} at (${contentBbox.x},${contentBbox.y}) — fills ${fillW}%×${fillH}% of viewport`));
+    const source = appContainerRect ? "app container" : "click+mutation union";
+    console.log(chalk.dim(`  content bbox: ${contentBbox.width}×${contentBbox.height} at (${contentBbox.x},${contentBbox.y}) — fills ${fillW}%×${fillH}% of viewport (source: ${source})`));
+  } else {
+    console.log(chalk.dim(`  content bbox: none (full-bleed app or insufficient signal — no auto-zoom)`));
   }
 
   return {
@@ -406,36 +451,56 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
 }
 
 /**
- * Compute the union of click + mutation rects observed during the run,
- * with sensible padding, clamped to the viewport. Used by the editor /
- * compositor to pick a BASE camera framing — instead of always showing
- * the full recording (which on desktop apps with centered cards leaves
- * 70% of the canvas as empty background), we frame the actual active
- * region.
+ * Pick the BASE camera framing rect for the recording. Two-tier signal:
  *
- * Returns undefined when we have <3 distinct rects to union (too little
- * signal — fall back to full-page framing). Click bboxes are weighted
- * higher than mutations; mutations alone are noisy because animations
- * fire mutations across the whole page.
+ *   1. APP CONTAINER RECT (preferred). Snapshotted via page.evaluate
+ *      before teardown, by probing common app-root selectors (`main`,
+ *      `[role=main]`, `#root > *`, `#app > *`, etc.). This is the most
+ *      semantically correct signal — it's where the app actually
+ *      RENDERS, regardless of where the user clicks.
+ *   2. CLICK + MUTATION UNION (fallback). The previous heuristic — used
+ *      when no clean app container can be found. Less robust because
+ *      a full-bleed app whose user only clicks in a corner produces a
+ *      misleadingly small union and gets unnecessarily zoomed.
  *
- * Padding is generous (10% of viewport in each direction) so a tight
- * union of clicked targets doesn't crop adjacent visual context like
- * the page header above the action area.
+ * Either way, if the chosen rect already covers ≥85% of the viewport,
+ * we return undefined so the compositor sits at zoom=1.0 (no auto-zoom
+ * needed for already-full-bleed apps).
  */
 function computeContentBbox(
+  appContainerRect: { x: number; y: number; width: number; height: number } | null,
   clickBboxes: NonNullable<RunArtifacts["clickBboxes"]>,
   mutations: NonNullable<RunArtifacts["mutations"]>,
   viewport: { width: number; height: number },
 ): { x: number; y: number; width: number; height: number } | undefined {
-  // Prefer click bboxes alone — those are pure user-action targets and
-  // won't include far-flung animation noise. Fall back to including
-  // mutations if we don't have enough clicks.
+  // Helper — clamp a rect to viewport bounds. Returns null if degenerate.
+  const clamp = (r: { x: number; y: number; width: number; height: number }) => {
+    const x1 = Math.max(0, r.x);
+    const y1 = Math.max(0, r.y);
+    const x2 = Math.min(viewport.width, r.x + r.width);
+    const y2 = Math.min(viewport.height, r.y + r.height);
+    const w = Math.round(x2 - x1);
+    const h = Math.round(y2 - y1);
+    if (w < 50 || h < 50) return null;
+    return { x: Math.round(x1), y: Math.round(y1), width: w, height: h };
+  };
+  const isFullBleed = (r: { width: number; height: number }) =>
+    r.width >= viewport.width * 0.85 && r.height >= viewport.height * 0.85;
+
+  // ── Tier 1: app container rect.
+  if (appContainerRect) {
+    const clamped = clamp(appContainerRect);
+    if (clamped) {
+      if (isFullBleed(clamped)) return undefined;  // skip auto-zoom
+      return clamped;
+    }
+  }
+
+  // ── Tier 2: click + mutation union (legacy fallback).
   let rects = clickBboxes.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height }));
   if (rects.length < 3) {
     rects = rects.concat(mutations.map((m) => ({ x: m.x, y: m.y, width: m.width, height: m.height })));
   }
-  // De-duplicate near-identical rects (multiple clicks on same target
-  // produce identical bboxes; we want unique signals, not weight).
   const dedupe = new Set<string>();
   const unique = rects.filter((r) => {
     const k = `${Math.round(r.x)}-${Math.round(r.y)}-${Math.round(r.width)}-${Math.round(r.height)}`;
@@ -444,7 +509,6 @@ function computeContentBbox(
     return true;
   });
   if (unique.length < 3) return undefined;
-
   let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
   for (const r of unique) {
     if (r.width <= 0 || r.height <= 0) continue;
@@ -454,20 +518,14 @@ function computeContentBbox(
     if (r.y + r.height > y2) y2 = r.y + r.height;
   }
   if (!isFinite(x1)) return undefined;
-  // Padding: 10% of viewport in each direction. Clamps below to viewport.
+  // Generous padding — 10% of viewport — so we don't crop the page
+  // header / sidebar adjacent to the click cluster.
   const padX = viewport.width * 0.1;
   const padY = viewport.height * 0.1;
-  x1 = Math.max(0, x1 - padX);
-  y1 = Math.max(0, y1 - padY);
-  x2 = Math.min(viewport.width, x2 + padX);
-  y2 = Math.min(viewport.height, y2 + padY);
-  const width = Math.round(x2 - x1);
-  const height = Math.round(y2 - y1);
-  // If the bbox already covers ~the entire viewport, don't bother — base
-  // framing is identical to no-base. (Common for already-mobile or
-  // full-bleed apps.)
-  if (width >= viewport.width * 0.85 && height >= viewport.height * 0.85) return undefined;
-  return { x: Math.round(x1), y: Math.round(y1), width, height };
+  const clamped = clamp({ x: x1 - padX, y: y1 - padY, width: (x2 - x1) + 2 * padX, height: (y2 - y1) + 2 * padY });
+  if (!clamped) return undefined;
+  if (isFullBleed(clamped)) return undefined;
+  return clamped;
 }
 
 /** Try each candidate locator in priority order; the first that resolves
