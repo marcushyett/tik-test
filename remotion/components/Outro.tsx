@@ -6,19 +6,31 @@ interface ChecklistItem {
   outcome: "success" | "failure" | "skipped";
   label: string;
   note?: string;
+  goalId?: string;
+}
+
+interface GoalGroup {
+  id: string;
+  label: string;
+  outcome: "success" | "failure" | "skipped";
 }
 
 interface Props {
   title: string;
   stats: { passed: number; failed: number; skipped: number; total: number; durS: number };
   checklist?: ChecklistItem[];
+  /** Goal-level headings used to group the granular checklist on the
+   *  outro. When provided AND items carry goalId, the outro renders one
+   *  heading per goal with its sub-checks underneath — matches the PR
+   *  comment's grouping so the viewer's mental model stays consistent. */
+  goalGroups?: GoalGroup[];
   voiceSrc?: string;
   voiceDurS?: number;
   voicePlaybackRate?: number;
   captionText?: string;
 }
 
-export const Outro: React.FC<Props> = ({ title, stats, checklist, voiceSrc, voiceDurS, voicePlaybackRate, captionText }) => {
+export const Outro: React.FC<Props> = ({ title, stats, checklist, goalGroups, voiceSrc, voiceDurS, voicePlaybackRate, captionText }) => {
   const frame = useCurrentFrame();
   const { fps, durationInFrames } = useVideoConfig();
 
@@ -28,9 +40,18 @@ export const Outro: React.FC<Props> = ({ title, stats, checklist, voiceSrc, voic
   // so a reviewer pausing at the end can read every pass/fail row.
   const opacity = spring({ frame, fps, from: 0, to: 1, config: { damping: 20 } });
 
-  const ok = stats.failed === 0;
+  // Combined health: a sub-check failure is just as much a "red" as a
+  // goal failure. Earlier the badge read "All green" while the checklist
+  // below it had a red row — same inconsistency the PR comment used to
+  // ship before its header was rewired. Now the pill mirrors the PR
+  // comment's combined count.
+  const checklistFailed = (checklist ?? []).filter((c) => c.outcome === "failure").length;
+  const totalFailed = stats.failed + checklistFailed;
+  const ok = totalFailed === 0;
   const accent = ok ? "#00e5a0" : "#ff4757";
-  const status = ok ? "All green" : "Issues found";
+  const status = ok
+    ? "All green"
+    : totalFailed === 1 ? "1 issue flagged" : `${totalFailed} issues flagged`;
 
   return (
     <AbsoluteFill style={{ opacity }}>
@@ -50,7 +71,7 @@ export const Outro: React.FC<Props> = ({ title, stats, checklist, voiceSrc, voic
           </div>
           <div style={{ fontSize: outroTitleFontSize(title), fontWeight: 900, marginTop: 22, letterSpacing: "-0.02em", lineHeight: 1.05, maxWidth: 460, marginLeft: "auto", marginRight: "auto" }}>{title}</div>
           {checklist && checklist.length > 0 ? (
-            <Checklist items={checklist} />
+            <Checklist items={checklist} goalGroups={goalGroups} />
           ) : (
             <div style={{ display: "flex", gap: 14, justifyContent: "center", marginTop: 32 }}>
               <Block label="passed" value={stats.passed} color="#00e5a0" />
@@ -92,7 +113,7 @@ function outroTitleFontSize(title: string): number {
  * count so up to 10 fit inside the safe band without colliding with
  * captions or going off-screen.
  */
-const Checklist: React.FC<{ items: ChecklistItem[] }> = ({ items }) => {
+const Checklist: React.FC<{ items: ChecklistItem[]; goalGroups?: GoalGroup[] }> = ({ items, goalGroups }) => {
   const dense = items.length > 7;
   const labelPx = dense ? 14 : 16;
   const notePx = dense ? 11 : 13;
@@ -100,62 +121,125 @@ const Checklist: React.FC<{ items: ChecklistItem[] }> = ({ items }) => {
   const padX = dense ? 10 : 12;
   const gap = dense ? 6 : 8;
   const glyph = dense ? 18 : 20;
+
+  // Bucket items by their goalId. Items without one fall into a catch-
+  // all so they're never silently dropped (an LLM may forget the field).
+  const byGoal = new Map<string, ChecklistItem[]>();
+  for (const it of items) {
+    const k = it.goalId ?? "_ungrouped";
+    if (!byGoal.has(k)) byGoal.set(k, []);
+    byGoal.get(k)!.push(it);
+  }
+
+  // Build the rendered sections in goal order. If we have no groups info
+  // OR no items have goalIds, fall back to a flat list — same look as
+  // before this feature, no regression for older artifacts.
+  const groups = goalGroups ?? [];
+  const haveAnyGoalId = items.some((i) => !!i.goalId);
+  const sections: Array<{ key: string; group: GoalGroup | null; items: ChecklistItem[] }> = [];
+  if (groups.length > 0 && haveAnyGoalId) {
+    for (const g of groups) {
+      const rows = byGoal.get(g.id);
+      if (rows && rows.length > 0) sections.push({ key: g.id, group: g, items: rows });
+    }
+    const ungrouped = byGoal.get("_ungrouped");
+    if (ungrouped && ungrouped.length > 0) sections.push({ key: "_ungrouped", group: null, items: ungrouped });
+  } else {
+    sections.push({ key: "_flat", group: null, items });
+  }
+
   return (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
-        gap,
+        gap: gap * 2,
         marginTop: dense ? 16 : 20,
-        maxWidth: 460,
+        maxWidth: 480,
         marginLeft: "auto",
         marginRight: "auto",
         textAlign: "left",
       }}
     >
-      {items.map((item, i) => {
-        const isFail = item.outcome === "failure";
-        const isSkip = item.outcome === "skipped";
-        const glyphColor = isFail ? "#ff5d5d" : isSkip ? "#94a3b8" : "#00e5a0";
-        return (
-          <div
-            key={i}
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: dense ? 9 : 11,
-              padding: `${padY}px ${padX}px`,
-              borderRadius: 10,
-              background: "rgba(255,255,255,0.04)",
-              border: `1px solid ${isFail ? "rgba(255,93,93,0.28)" : "rgba(255,255,255,0.08)"}`,
-            }}
-          >
-            <div
-              style={{
-                flexShrink: 0,
-                marginTop: 1,
-                width: glyph, height: glyph, borderRadius: 999,
-                background: glyphColor,
-                color: "#0a0a0a",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontWeight: 900, fontSize: glyph * 0.62, lineHeight: 1,
-              }}
-            >
-              {isFail ? "✗" : isSkip ? "–" : "✓"}
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: labelPx, fontWeight: 700, color: "#ffffff", lineHeight: 1.2, letterSpacing: "-0.005em" }}>
-                {item.label}
-              </div>
-              {item.note && (
-                <div style={{ fontSize: notePx, color: isFail ? "#ffb0b0" : "#9aa4b2", lineHeight: 1.3, marginTop: 2, fontWeight: 500 }}>
-                  {item.note}
+      {sections.map((sec) => (
+        <div key={sec.key} style={{ display: "flex", flexDirection: "column", gap }}>
+          {sec.group && <GoalHeading group={sec.group} dense={dense} />}
+          {sec.items.map((item, i) => {
+            const isFail = item.outcome === "failure";
+            const isSkip = item.outcome === "skipped";
+            const glyphColor = isFail ? "#ff5d5d" : isSkip ? "#94a3b8" : "#00e5a0";
+            return (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: dense ? 9 : 11,
+                  padding: `${padY}px ${padX}px`,
+                  borderRadius: 10,
+                  background: "rgba(255,255,255,0.04)",
+                  border: `1px solid ${isFail ? "rgba(255,93,93,0.28)" : "rgba(255,255,255,0.08)"}`,
+                  marginLeft: sec.group ? (dense ? 12 : 16) : 0,
+                }}
+              >
+                <div
+                  style={{
+                    flexShrink: 0,
+                    marginTop: 1,
+                    width: glyph, height: glyph, borderRadius: 999,
+                    background: glyphColor,
+                    color: "#0a0a0a",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontWeight: 900, fontSize: glyph * 0.62, lineHeight: 1,
+                  }}
+                >
+                  {isFail ? "✗" : isSkip ? "–" : "✓"}
                 </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: labelPx, fontWeight: 700, color: "#ffffff", lineHeight: 1.2, letterSpacing: "-0.005em" }}>
+                    {item.label}
+                  </div>
+                  {item.note && (
+                    <div style={{ fontSize: notePx, color: isFail ? "#ffb0b0" : "#9aa4b2", lineHeight: 1.3, marginTop: 2, fontWeight: 500 }}>
+                      {item.note}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const GoalHeading: React.FC<{ group: GoalGroup; dense: boolean }> = ({ group, dense }) => {
+  const isFail = group.outcome === "failure";
+  const isSkip = group.outcome === "skipped";
+  const accent = isFail ? "#ff5d5d" : isSkip ? "#94a3b8" : "#00e5a0";
+  const glyphSize = dense ? 16 : 18;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+      <div
+        style={{
+          flexShrink: 0,
+          width: glyphSize, height: glyphSize, borderRadius: 999,
+          background: accent,
+          color: "#0a0a0a",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontWeight: 900, fontSize: glyphSize * 0.62, lineHeight: 1,
+        }}
+      >
+        {isFail ? "✗" : isSkip ? "–" : "✓"}
+      </div>
+      <div style={{
+        fontSize: dense ? 15 : 17,
+        fontWeight: 800,
+        color: "#ffffff",
+        letterSpacing: "-0.005em",
+        textTransform: "none",
+      }}>{group.label}</div>
     </div>
   );
 };

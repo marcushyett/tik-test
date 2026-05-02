@@ -49,9 +49,51 @@ export function describeBackend(b: TTSBackend): string {
 export async function synth(backend: TTSBackend, text: string, outPath: string): Promise<void> {
   if (!backend) throw new Error("TTS disabled");
   if (backend.kind === "say") {
-    return synthSay(backend.voice, text, outPath);
+    await synthSay(backend.voice, text, outPath);
+  } else {
+    await synthOpenAI(backend, text, outPath);
   }
-  return synthOpenAI(backend, text, outPath);
+  // Strip leading silence — both macOS `say` and OpenAI TTS ship 80-200ms
+  // of dead air before the first phoneme, and the WordCaption component
+  // assumes the voice begins at voiceStartDelayS≈0.05s. Without this trim
+  // every chunk's caption highlight runs ahead of the spoken word by the
+  // length of the leading silence — small per beat, very visible cumulatively.
+  // We keep a 50ms head pad inside silenceremove so the very first plosive
+  // doesn't get clipped.
+  await trimLeadingSilence(outPath);
+}
+
+/**
+ * Replace `outPath` with a copy that has its leading silence removed.
+ * Uses ffmpeg's silenceremove filter with conservative thresholds:
+ *   - start_periods=1: only the first silence is removed (keep mid-clip pauses)
+ *   - start_duration=0.05: silences <50ms are kept (preserves the first plosive)
+ *   - start_threshold=-30dB: noise floor; tuned for both macOS `say` and OpenAI TTS
+ * Skips the trim silently when ffmpeg fails for any reason — better to
+ * play un-trimmed audio than to lose narration entirely.
+ */
+async function trimLeadingSilence(outPath: string): Promise<void> {
+  const ext = outPath.toLowerCase().endsWith(".wav") ? "wav" : "mp3";
+  const tmpPath = outPath.replace(/(\.[^.]+)$/, ".trim$1");
+  try {
+    await runFfmpeg([
+      "-y",
+      "-i", outPath,
+      "-af", "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-30dB",
+      ...(ext === "wav" ? ["-c:a", "pcm_s16le"] : ["-c:a", "libmp3lame", "-q:a", "2"]),
+      tmpPath,
+    ]);
+    // Atomic-ish replace: rename onto the original. If rename fails the
+    // original is still in place.
+    const { rename, unlink } = await import("node:fs/promises");
+    await unlink(outPath).catch(() => {});
+    await rename(tmpPath, outPath);
+  } catch {
+    // Swallow — non-fatal. Caller expects outPath to exist with audio,
+    // which it still does from the original synth.
+    const { unlink } = await import("node:fs/promises");
+    await unlink(tmpPath).catch(() => {});
+  }
 }
 
 function synthSay(voice: string, text: string, outPath: string): Promise<void> {

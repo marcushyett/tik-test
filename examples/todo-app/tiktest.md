@@ -7,8 +7,10 @@ email plus the password `hunter2`, then a main view with three things:
 - A new-task form (text input + priority dropdown + Add button).
 - A filter bar (All / Active / Done / High priority / Today) plus a
   search input and a sort dropdown.
-- A list of tasks with checkboxes, priority badges, and per-row delete
-  buttons. Footer shows counts plus a "Clear completed" button.
+- A list of tasks with checkboxes, priority badges, per-row pin and
+  delete buttons, and clickable inline-editable titles. Pinned tasks
+  always sort to the top. Footer shows counts plus a "Clear completed"
+  button.
 
 ## Login
 
@@ -34,5 +36,6 @@ Prefer `data-testid` attributes:
   `[data-filter="active"]`, `[data-filter="done"]`,
   `[data-filter="high"]`
 - `sort-select` (option values: `newest`, `oldest`, `priority`, `alpha`)
-- `tasks` (ul), `task-<id>`, `toggle-<id>`, `del-<id>`
+- `tasks` (ul), `task-<id>`, `toggle-<id>`, `pin-<id>`, `del-<id>`,
+  `title-<id>` (click to edit), `title-edit-<id>` (the inline input)
 - `stats`, `counter`, `clear-done`, `empty`, `no-match`, `toast`

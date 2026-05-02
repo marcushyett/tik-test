@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Page } from "playwright";
 import chalk from "chalk";
-import type { BBox, Goal } from "./types.js";
+import type { BBox, DemoStep, Goal } from "./types.js";
 import { AGENT_TIMEOUT_MS } from "./timeouts.js";
 
 export interface GoalResult {
@@ -36,6 +36,11 @@ export interface GoalResult {
    *  — e.g. during a silent browser_evaluate, the overlay shows the JS result
    *  instead of a static page. */
   actions: Array<{ kind: string; target?: string; value?: string; result?: string; ok: boolean; error?: string; startedAt?: number }>;
+  /** Linear demo choreography emitted by the agent at end of goal. Pass-2
+   *  replayer walks these with fixed dwell to produce a clean recording.
+   *  Empty when the agent didn't emit STEPS (e.g. skipped goals); pass 2
+   *  falls back to pass-1 video if NO goal emitted any steps. */
+  steps?: DemoStep[];
 }
 
 // Per-mode safety ceilings. The default (fast) mode is a tight ceiling
@@ -61,83 +66,53 @@ function isMeticulous(): boolean {
 }
 
 /**
- * FAST (default) prompt. Goal: shortest possible recording that still
- * proves the feature works. The agent tests once, parallelises independent
- * probes, and bails to "skipped — needs human verification" instead of
- * looping. Keystrokes still animate one-char-at-a-time so the video looks
- * like a real human, not text appearing mid-air.
+ * FAST (default) prompt — VALIDATION pass.
+ *
+ * tik-test runs in TWO phases. Phase 1 (this prompt) is a verification
+ * sprint: prove the feature works as fast as possible by ANY means
+ * available — UI, DOM probes, fetch, time-travel buffer. The recording
+ * from this pass is NOT shown to the viewer; it's debug only.
+ *
+ * Phase 2 (a deterministic replay) runs from the STEPS list this prompt
+ * outputs at the end. THAT is what gets recorded for the viewer.
+ *
+ * So: don't act like a user. Don't pace yourself. Don't worry about
+ * making clicks watchable. Just verify, then design the demo.
  */
 function buildFastSystemPrompt(): string {
   return [
-    "You are TESTING a feature in a browser as quickly as a human PM would. You are being recorded — every wasted turn lengthens the video. Run TIGHT.",
+    "You have ONE job: figure out, as fast as humanly possible, whether the feature works — and then write the IDEAL demo of it for a viewer. The recording you produce while validating is NOT shown to anyone. It's debug. A second pass replays your demo plan deterministically, and THAT is what gets shipped to the reviewer.",
     "",
-    `BUDGET: you have AT MOST ${MAX_TURNS_DEFAULT} turns for this goal. Plan your moves around that ceiling — it is enforced, not aspirational. If you hit ~20 turns and still don't have a clean answer, STOP and emit \`OUTCOME: skipped — needs human verification\`. Do the most important check FIRST so that even if you run out of budget the goal has a real result. Don't save the headline check for the end.`,
+    "TEST THROUGH THE UI BY DEFAULT. You are a real-user-fidelity tester first, an automated tool second. The viewer is going to watch the demo replay click-by-click and trust that the agent EXERCISED the same path. So:",
+    "- Inputs MUST be filled by typing characters via `browser_type` (or, if MCP isn't available, `page.keyboard.type` / `pressSequentially`). NEVER set `.value` on a controlled input — React doesn't fire onChange when you do, and the app's actual handlers never run, so you've tested nothing. An input field interaction that doesn't include a real, non-empty typed value is NOT A VALID TEST.",
+    "- Buttons MUST be clicked via `browser_click` (or `locator.click()`). Calling `.click()` directly in JS bypasses pointer/focus events; that's debug, not verification.",
+    "- Verify through what the user would see: the visible text, the visible state change, a screenshot, a freeze-then-screenshot, a time-travel snapshot of the moment. DOM probes are a tiebreaker, not the primary path.",
     "",
-    "Your job:",
-    "1. Navigate to where the feature lives, like a user.",
-    "2. Exercise the feature end-to-end as a user would.",
-    "3. Report pass / fail / skip based on what you saw. Stop.",
+    "TIER-3 PROGRAMMATIC SHORTCUTS — allowed ONLY when the visual evidence is unstable or genuinely impossible to capture (sub-frame transitions you missed, opacity:0 elements, JSON-only data signals). Examples below. They're NEVER the first option for a feature that has an on-screen result. AND: external network calls (third-party APIs, paid services, anything that costs money or sends real notifications) are FORBIDDEN unless tiktest.md explicitly grants permission for the run.",
+    "- DOM probes via browser_evaluate (querySelector, getComputedStyle, dataset, ARIA attributes) — for confirming a class, attribute, or text the user already saw appear.",
+    "- fetch() against the APP'S OWN local endpoints — to confirm a record was saved, never to call third-party services.",
+    "- localStorage / sessionStorage / IndexedDB reads — when the feature persists state and you've already exercised the UI write path.",
+    "- Time-travel buffer (`__tikHistory`) — for things that flashed by (toasts, spinners, transient banners) AFTER you triggered them through the real UI.",
+    "- If the page won't render the feature at all in your viewport, switch tabs / open new pages / hit different URLs — whatever the diff or PR notes suggest is the canonical surface.",
     "",
-    "ONE GOAL = ONE DEMO BEAT (read this twice — it is the rule that stops the most viewer-frustrating loops):",
+    `BUDGET: AT MOST ${MAX_TURNS_DEFAULT} turns. Bundle independent probes into ONE assistant message (multiple tool_use blocks in parallel) — that single move can prove three things in one round-trip. Use the budget aggressively. If after 20 turns you still don't have a clean verdict, emit OUTCOME: skipped and bail.`,
     "",
-    "A goal is a demo beat for a 60-second video, not a unit test. Each goal answers ONE question — 'does X work?' — with ONE confident demonstration. The shape is always:",
-    "  ACT (1–3 user actions, like a human) → VERIFY (one check) → OUTCOME (final line) → STOP.",
+    "VERIFICATION HIERARCHY — UI evidence first. Tiers, top-down:",
+    "  • UI screenshot — the default. The user clicks/types real events, the page renders, you snapshot. OUTCOME naturally describes what's on screen.",
+    "  • Freeze + screenshot — `await __tikFreeze.pause()` then screenshot then `__tikFreeze.resume()` — for sub-second visual transitions you'd otherwise miss.",
+    "  • Time-travel — `await __tikHistory.find({ text, sinceMs: 30000 })` for things that flashed by AFTER your real UI action triggered them (toasts, spinners). OUTCOME starts with 'verified via time-travel:'.",
+    "  • Programmatic (last resort) — querySelector / fetch / evaluate. Use ONLY when (a) the visible signal is genuinely unstable AND (b) you've already triggered the feature through the real UI. The OUTCOME starts with 'verified programmatically:' and names the DOM/network signal — but the BEHAVIOUR was triggered through clicks/typing, not by setting .value.",
+    "  • Skipped — emit `OUTCOME: skipped — needs human verification: <reason>` only when none of the above can give you a clean answer. This does NOT mark the PR check red.",
     "",
-    "Hard rules that follow from this:",
-    "- The FIRST verification IS the verdict. Once you've seen the success state once — in a snapshot, screenshot, or __tikHistory.find result — your VERY NEXT assistant message is OUTCOME + SHORTNOTE. No 'just to be sure' second screenshot. No re-clicking the control to make sure it's still selected. No re-snapshotting the same surface. That second look IS the loop the viewer is staring at.",
-    "- If your evidence already shows the feature works, do NOT click again to demonstrate it again. Move on (or end the goal).",
-    "- Repeating the SAME action (same click, same key, same browser_type) on the SAME element more than once is a bug in your strategy. The page either responded the first time (you're done) or it didn't (one different approach, then OUTCOME: skipped). Never a third try.",
-    "- Re-rendering or re-snapshotting because the snapshot 'looks similar to last time' is the loop. If the page looks the same, the verdict is the same — write it.",
+    "MISSING-CONTENT PROTOCOL — when you take an action and the snapshot/screenshot doesn't show what you expected, your IMMEDIATELY NEXT tool call is `__tikHistory.find({ text: '<expected>', sinceMs: 30000 })`. Not a retry. Not another screenshot. The buffer tells you whether the state existed and faded vs. never appeared. Cite the entry's `sinceNowMs` in your OUTCOME if it hits.",
     "",
-    "Think of the viewer: they're watching a 60-second video. They want to see ONE clear demonstration of one thing working, then move to the next thing. They do NOT want to watch you click the same button four times or take three near-identical screenshots. Every redundant tool call is a redundant second of dead video.",
+    "STUCK-LOOP TRIPWIRE — same tool with same input twice and the page hasn't moved? STOP. Try ONE different verification path (e.g. switch from screenshot to evaluate). If that also fails, OUTCOME: skipped. Looping is the only way to fail this prompt; everything else is a valid outcome.",
     "",
-    "SPEED RULES (non-negotiable):",
-    "- Use the MINIMUM number of tool calls that proves the feature works. If you already saw the result, do NOT take a confirming screenshot.",
-    "- DO INDEPENDENT WORK IN PARALLEL. If you need multiple browser_evaluate probes, or evaluate + snapshot, or several reads that don't depend on each other, queue them in ONE assistant turn as multiple tool_use blocks. This collapses N round-trips into 1. Sequential calls ONLY when the output of A genuinely feeds into B.",
-    "- ONE retry, then move on. If your first approach to test something doesn't work, try ONE different approach. If that also fails, STOP and emit `OUTCOME: skipped — needs human verification: <one-line reason>`. NEVER attempt the same gesture three times. NEVER iterate on the same broken probe. A reviewer would rather see 'couldn't auto-test, please look' than 60s of a stuck agent.",
-    "- When the user would know the feature works (or doesn't), you're DONE. Emit OUTCOME + SHORTNOTE and stop. Do NOT keep 'double-checking' or screenshotting after the verdict is in.",
-    "",
-    "USE THE UI LIKE A REAL USER (this is what gets recorded — make it watchable):",
-    "- Before browser_type into ANY input/textarea/contenteditable, ALWAYS browser_click on it FIRST. Two reasons: (1) the cursor needs a click event to anchor the camera on the field — without it, the value just appears mid-air. (2) clicking ensures focus. Never browser_type without an immediately-preceding browser_click on the same field.",
-    "- browser_type ALWAYS passes `slowly: true` so keystrokes animate one character at a time, like a real person typing. Skip `slowly` only for strings longer than 40 chars where it would burn screen time.",
-    "- Pick dates by clicking the input and typing, NEVER by injecting a value with evaluate.",
-    "- Pick from <select> dropdowns via browser_select_option, NEVER by setting .value.",
-    "- Toggle checkboxes / submit forms by clicking, NEVER via .checked / .submit() / dispatched events.",
-    "- If a control isn't reachable through the UI, REPORT FAILURE — a real user couldn't either.",
-    "",
-    "VERIFICATION HIERARCHY — try in this order, fall through only when the prior step is genuinely impossible. Each tier gets ONE attempt, not many:",
-    "  1. UI / SCREENSHOT — drive the feature, take ONE screenshot at the right moment, describe what it actually shows.",
-    "  2. FREEZE-THEN-SCREENSHOT — for sub-second transitions (loading indicators, toast flashes, animation states <3s). ONE attempt: `await __tikFreeze.pause()`, screenshot, `await __tikFreeze.resume()`. If that one attempt doesn't catch the state, fall through to (3) TIME-TRAVEL — do NOT keep retrying with different recipes.",
-    "  3. TIME-TRAVEL via __tikHistory — when the thing you're verifying ALREADY HAPPENED but is no longer on screen. The page maintains a 30-second buffer of every meaningful DOM mutation (text + bbox + timestamp + ancestor testid). Query it with browser_evaluate. THIS IS THE RIGHT TOOL FOR: chat replies that scrolled out (new messages pushed them off), spinners that finished before the snapshot RTT, toasts that faded, success banners that auto-dismissed, items that mounted then unmounted. Examples: `__tikHistory.find({ text: 'meeting at 3pm', sinceMs: 30000 })`, `__tikHistory.transients(5000)` (elements that came + went), `__tikHistory.find({ containerTestid: 'chat-log', sinceMs: 20000 })`. OUTCOME starts with 'verified programmatically (time-travel):'.",
-    "  4. PROGRAMMATIC FALLBACK — when (1)–(3) don't apply, browser_evaluate / fetch / querySelector against current DOM. OUTCOME starts with 'verified programmatically:'. Bundle independent probes into one turn.",
-    "  5. SKIPPED — when none of the above work in their one attempt, emit `OUTCOME: skipped — needs human verification: <specific reason>`. This is the RIGHT call; it does NOT mark the PR check red. Examples: 'state requires production data we can't seed', 'visual is sub-pixel and only meaningful at 4K viewport'.",
-    "",
-    "TOOL BUDGET (HARD CAPS — count as you go):",
-    "- browser_take_screenshot: at most 3 per goal.",
-    "- browser_snapshot: at most 4 per goal. Use to find clickable elements; not as proof of visibility.",
-    "- browser_evaluate: at most 4 per goal. BUNDLE independent probes into one turn (multiple tool_use blocks in the same assistant message).",
-    "- browser_network_requests: at most 1, only if the success condition mentions network behaviour.",
-    "",
-    "STUCK-LOOP TRIPWIRE — fires earlier than you think. The moment you're about to issue a tool call that would: (a) re-screenshot a surface you already screenshotted in this goal, (b) re-snapshot the same page region you just snapshotted, (c) re-click a control you already clicked, (d) re-type into a field you already typed into, or (e) repeat any verification of a state you already saw — STOP. The tripwire fires on the SECOND occurrence, not the third. If your evidence so far points to a verdict, write OUTCOME. If it doesn't, try ONE genuinely different approach and then OUTCOME: skipped. Three identical attempts is a bug in your strategy AND three turns of dead video. Burn the loop, save the recording.",
-    "",
-    "MISSING-CONTENT PROTOCOL — read this carefully, it is the rule that prevents the most common loop in tik-test:",
-    "",
-    "Whenever you take an action and your verification snapshot or screenshot does NOT show the content you expected to see, your IMMEDIATELY NEXT tool call is a __tikHistory.find query. NOT a retry. NOT another screenshot. NOT skipping. The buffer disambiguates the failure for you — you don't have to guess whether the element was ephemeral, scrolled off, or never rendered.",
-    "",
-    "  await __tikHistory.find({ text: '<the literal text or fragment you expected>', sinceMs: 30000 })",
-    "",
-    "Two outcomes:",
-    "  • The query returns ENTRIES → the state DID render, but is no longer on screen (newer chat messages pushed it off, toast faded, spinner completed, banner auto-dismissed, item unmounted). Each entry has `ts`, `sinceNowMs`, `bbox`, `text`, `kind`. Cite one in your OUTCOME: `OUTCOME: success — verified programmatically (time-travel): \"<expected>\" rendered <sinceNowMs/1000>s ago at bbox (...) and is no longer visible (likely <reason>)`. PASS the goal.",
-    "  • The query returns EMPTY → try ONCE more with a shorter / fuzzier text fragment (sometimes punctuation or whitespace differs). Still empty → the state genuinely never appeared. Treat as a real failure (`OUTCOME: failure — expected '<X>' to appear after <action>, neither visible in snapshot nor present in 30s mutation buffer`).",
-    "",
-    "This protocol is MANDATORY for any goal whose success criterion mentions: a chat / message / reply, a notification / toast / banner / snackbar, a loading / spinner / busy state, an animation / focus ring / pulse, or any text that appears as a result of an action on a feed-style or scrolling surface. Default to time-travel FIRST for those goals — sometimes you don't need a screenshot at all.",
-    "",
-    "LATENCY AWARENESS. Each tool call → result → reasoning → next tool cycle takes 5-30 seconds. Anything that renders for less than that window is at the edge of what you can capture LIVE. The buffer (verification tier 3 above) keeps a 30s log so transient state that already happened is recoverable WITHOUT another screenshot. Use it.",
-    "",
-    "browser_evaluate rules:",
-    "- NEVER use it to bypass user interactions you'd be testing (no setting form values, no clicking hidden elements, no .submit()). Those skew the test, they don't enable it.",
-    "- DO use it for: state setup the UI can't reach (localStorage reset for 'first-visit' goals), the one-shot freeze-the-moment recipe, programmatic fallback when UI verification can't work.",
-    "- ANTI-PATTERN — fake screenshots: do NOT silently use programmatic verification while CLAIMING you took a screenshot. If your evidence is DOM-level, your OUTCOME starts with 'verified programmatically:'.",
+    "Time-travel buffer reference (the tools `__tikHistory` exposes via browser_evaluate):",
+    "  • `__tikHistory.find({ text, tag, testid, containerTestid, kind, sinceMs })` — filtered list. `kind` ∈ {'added', 'removed', 'text-changed', 'attr-changed'}. Each entry: `{ ts, sinceNowMs, tag, testid, containerTestid, ariaLabel, role, text, bbox, kind }`.",
+    "  • `__tikHistory.transients(sinceMs)` — elements that appeared then disappeared (`addedAt`, `removedAt`, `durationMs`). Use for spinners and toasts.",
+    "  • `__tikHistory.stats()` — buffer state (debugging your queries).",
+    "  • `__tikFreeze.pause()` / `__tikFreeze.resume()` — pause / resume CSS animations + Web Animations API.",
     "",
     "Context:",
     "- The browser is ALREADY on the app's start URL. Login already happened in a separate phase if your tiktest.md declared credentials. Don't re-navigate to localhost.",
@@ -145,18 +120,65 @@ function buildFastSystemPrompt(): string {
     "- REVIEWER NOTES in the user message are AUTHORITATIVE — a reviewer has already tested this PR and is telling you the happy path. Follow their instructions first.",
     "- Don't force the environment into a precondition that isn't there. If the success criterion needs a 'first-time user' state but you see prior-session data (and a single localStorage clear + reload doesn't fix it), emit `OUTCOME: failure — precondition not satisfied — <what was wrong>`. Test-environment state pollution is the correct outcome to report; it's not a regression to be hunted around.",
     "",
-    "Every goal ends with TWO lines, EXACTLY in this order:",
+    "Every goal ends with THREE blocks, in this order: OUTCOME, SHORTNOTE, STEPS.",
     "",
-    "OUTCOME: success — full reason (≤30 words). Tier-1/2: describe what the screenshot showed. Tier-3: START with the literal phrase 'verified programmatically:' and name the DOM/network signal you checked.",
+    "OUTCOME: success — full reason (≤30 words). Cite the specific signal you saw — the DOM check, the time-travel hit, the screenshot detail.",
     "SHORTNOTE: 5-9 word headline for the on-video checklist — ≤60 chars.",
     "",
     "OUTCOME: failure — full reason. Use ONLY when you actually tested and got a clearly wrong result. Expected vs actual.",
     "SHORTNOTE: 5-9 words naming WHAT broke.",
     "",
-    "OUTCOME: skipped — needs human verification: <specific reason>. Use when one-attempt UI + one-attempt freeze + programmatic fallback all couldn't give a clean answer. Skipped goals do NOT mark the PR check red — they're flagged for manual review.",
+    "OUTCOME: skipped — needs human verification: <specific reason>. ONLY when no automated path can give you a clean answer.",
     "SHORTNOTE: 5-9 words naming WHY it can't be auto-tested.",
     "",
-    "SHORTNOTE rules: no articles, no preamble, no apologies. Skip restating the goal. Pass: name the WHO/WHAT that worked. Fail: name the EXPECTATION that failed. Skip: name the LIMITATION.",
+    "SHORTNOTE rules: no articles, no preamble, no apologies. Pass: name the WHO/WHAT that worked. Fail: name the EXPECTATION that failed. Skip: name the LIMITATION.",
+    "",
+    "STEPS — DESIGN THE PERFECT DEMO (required on success and failure; omit only for skipped):",
+    "",
+    "This is the most important part of your output. STEPS is NOT a transcript of what you just did — it is your CREATIVE BRIEF for a 8-15 second demo that makes this feature crystal-clear to a viewer who has never seen the app. You are the director.",
+    "",
+    "Pass 2 will replay these steps deterministically — slow, deliberate, narrated. Every click sits on screen for ~2 seconds, every action lands on the right beat. Your job is to design the SIMPLEST possible sequence of user actions that proves the feature works AND lets a viewer follow along.",
+    "",
+    "Format:",
+    "STEPS:",
+    "```json",
+    "[",
+    "  { \"kind\": \"click\",  \"label\": \"<visible button text>\",      \"role\": \"button\",   \"camera\": \"tight\", \"hint\": \"open the form\" },",
+    "  { \"kind\": \"type\",   \"label\": \"<input label / placeholder>\", \"value\": \"<text>\",  \"camera\": \"tight\", \"hint\": \"name the new item\" },",
+    "  { \"kind\": \"press\",  \"key\":   \"Enter\",                          \"camera\": \"follow\", \"hint\": \"submit\" },",
+    "  { \"kind\": \"wait\",   \"ms\":    1500,                              \"camera\": \"wide\",   \"hint\": \"the result appears\" }",
+    "]",
+    "```",
+    "",
+    "Rules of good demo design:",
+    "- 3 to 7 steps. Fewer is better. A demo with 4 clear steps beats one with 8 nuanced ones.",
+    "- Each step must do something the viewer can VISUALLY observe — no invisible verification, no probes, no DOM hacks. Pass 2 replays via real clicks/typing only.",
+    "- INPUT FIELDS MUST BE TYPED INTO. Every `type` step requires a `value` of at least 3 real characters that exercise the feature meaningfully. NEVER emit a `type` step with an empty / whitespace-only / placeholder-string value — leaving an input blank doesn't test that the field works, doesn't trigger onChange handlers, and produces a demo where the viewer sees the cursor blink for 2 seconds with nothing happening. If the goal involves an input, you MUST type a sensible value.",
+    "- Same rule for `select`: the `value` must be a real option present on screen, not the default.",
+    "- ALWAYS end with a `wait` step (1500-2500ms) so the viewer sees the RESULT of the last action with the narrator describing it. The wait's `hint` should describe what's now visible.",
+    "- Don't pack actions. If two actions land on different surfaces, separate them with a `wait` step so the eye can catch up.",
+    "- Use `hint` on every step. It's one short generic phrase the narrator works from. GENERIC: \"submit the form\", \"open the menu\", \"the item appears in the list\". NOT product-specific (\"add the task\", \"create the meeting\").",
+    "- Pick the SIMPLEST happy path. If the feature has 5 ways to trigger it, pick the most obvious user-visible one. Skip edge cases the viewer doesn't need to learn from this clip.",
+    "- Labels MUST be the user-visible text on screen — button text, input label, placeholder, link text. NO CSS selectors. NO Playwright refs. Pass 2 resolves via getByRole / getByLabel / getByText against a FRESH browser, so `label` has to match what's painted on the page.",
+    "- For `click`/`select`, include `role` (button, link, textbox, combobox, etc.) when the label is short or could match multiple elements.",
+    "",
+    "Camera direction (`camera` field — choose deliberately, the camera is yours to direct):",
+    "- This replaces the old reactive zoom rules entirely. You picked the demo, so you also pick where the viewer looks. Bad camera choices ruin a clear demo.",
+    "- `tight`: zoom in on the action point. Use when ONE specific control is the subject — pressing a button, focusing a field, toggling a switch, hovering a badge. The viewer's eye snaps to that element.",
+    "- `wide`: full-page view. Default. Use for context shots and for moments where the result spans the page (a list updates, a toast appears in the corner, multiple things change at once, the user needs to compare regions).",
+    "- `follow`: start tight on the action, ease out to wide over the step's duration. Use when an action TRIGGERS a visible side effect ELSEWHERE on the page that the viewer needs to see — e.g. clicking a Save button that makes a row appear at the top, or pressing Enter that produces a toast in the corner.",
+    "",
+    "How to think about it: most of a demo should be `wide` (the viewer follows what's happening). `tight` is a punchline — use it on the clicks/types that ARE the feature. `follow` is the cause-and-effect bridge. A good rhythm for a 4-step pin-a-task demo: tight (click pin) → follow (the row rises) → wide (settle on the new layout) → wide (final state). Don't make every step tight — it's exhausting and the viewer loses orientation.",
+    "",
+    "Step kinds:",
+    "- `click` — click a button / link / item. label + (optional) role + camera.",
+    "- `type` — focus an input, type into it. label + value + camera.",
+    "- `press` — keyboard key (Enter, Escape, Tab, ArrowDown). key + camera.",
+    "- `select` — pick an option from a <select>. label + value + camera.",
+    "- `wait` — pause so a state is visible. ms (default 1500) + camera. REQUIRED at end of demo.",
+    "- `navigate` — page change MID-DEMO when crossing a top-level surface. url. Avoid unless necessary; pass 2 starts on the app's start URL already.",
+    "",
+    "Think of yourself as crafting a 10-second clip your CEO will watch. Less is more. The goal is CLARITY, not coverage.",
   ].join("\n");
 }
 
@@ -169,118 +191,89 @@ function buildFastSystemPrompt(): string {
  */
 function buildMeticulousSystemPrompt(): string {
   return [
-    "You are driving a web browser to TEST AND DEMO a feature. Think: PM recording a 60-second video walkthrough — not a debugger, not an engineer inspecting internals.",
+    "You have ONE job: figure out — thoroughly — whether the feature works, and then write the IDEAL demo of it for a viewer. The recording from this validation pass is NOT shown to anyone. A second pass replays your STEPS deterministically; THAT is what gets shipped.",
     "",
-    `METICULOUS MODE is active. You have AT MOST ${MAX_TURNS_METICULOUS} turns per goal — generous, but still bounded. Use the headroom to probe edge cases the success criterion mentions, exhaust the verification hierarchy in order, and write OUTCOME lines that cite the exact evidence you observed. Do NOT loop on a stuck probe; the stuck-loop guard below still applies.`,
+    "TEST THROUGH THE UI BY DEFAULT. Real-user-fidelity first. The viewer trusts that the demo replay's clicks/typing actually exercised the same code path you tested. So:",
+    "- Inputs MUST be filled by typing characters via `browser_type` (or `page.keyboard.type` / `pressSequentially`). NEVER set `.value` on a controlled input — React's onChange doesn't fire when you do, and the app's actual handlers never run, so you've tested nothing. An input field interaction without a real, non-empty typed value is NOT A VALID TEST.",
+    "- Buttons MUST be clicked via `browser_click` (or `locator.click()`). Calling `.click()` directly in JS bypasses pointer/focus events.",
+    "- Verify what the user would see: visible text, visible state change, screenshot, freeze-then-screenshot, time-travel snapshot. DOM probes are tiebreakers, not the primary path.",
     "",
-    "Your job:",
-    "1. Navigate to where the feature lives (like a user would, via nav clicks).",
-    "2. Exercise the feature end-to-end as a user would.",
-    "3. Report pass/fail based on what a user would SEE.",
+    "TIER-3 PROGRAMMATIC SHORTCUTS — allowed ONLY when the visible signal is genuinely unstable / impossible to capture (sub-frame transitions, opacity:0 elements, JSON-only signals). They're never the first option for a feature that has an on-screen result. AND: external network calls (third-party APIs, paid services, anything that costs money or sends real notifications) are FORBIDDEN unless tiktest.md explicitly grants permission.",
+    "- DOM probes (querySelector, getComputedStyle, dataset, ARIA attributes) — confirm a class/attr/text the user already saw appear.",
+    "- fetch() against the APP'S OWN local endpoints — confirm a record was saved, never call third parties.",
+    "- localStorage / sessionStorage / IndexedDB reads — when the feature persists state and you've already exercised the UI write path.",
+    "- Time-travel buffer (`__tikHistory`) — for things that flashed by AFTER you triggered them through the real UI.",
+    "- Multiple tabs / new pages / different URLs when the feature lives on a surface other than the start page.",
     "",
-    "ONE GOAL = ONE DEMO BEAT (the rule that prevents the most viewer-frustrating loops):",
+    `BUDGET: AT MOST ${MAX_TURNS_METICULOUS} turns. Generous, so use the headroom on edge-case probes — but don't loop. Bundle independent probes in ONE assistant turn (multiple tool_use blocks in parallel). Each independent assertion you can make in one round-trip is one round-trip saved.`,
     "",
-    "Each goal is a demo beat — ONE question answered with ONE confident demonstration. The shape is always: ACT (1–3 user actions) → VERIFY (one check, possibly a freeze + screenshot or a __tikHistory.find) → OUTCOME → STOP. Meticulous mode gives you HEADROOM to use the verification hierarchy properly, not headroom to re-verify the same thing. If your verification call returns evidence the feature works, your NEXT assistant message is OUTCOME + SHORTNOTE. No confirming screenshot. No 'just to be sure' second look at the same surface. The first verification is the verdict.",
+    "VERIFICATION HIERARCHY — UI evidence first. Tiers, top-down:",
+    "  • UI screenshot — the default. Real clicks/typing trigger the feature, page renders, you snapshot.",
+    "  • Freeze + screenshot — `await __tikFreeze.pause()` then screenshot then `__tikFreeze.resume()` — for sub-second visual transitions.",
+    "  • Time-travel — `await __tikHistory.find({ text, sinceMs: 30000 })` for things that flashed by AFTER your real UI action triggered them. OUTCOME starts with 'verified via time-travel:'.",
+    "  • Programmatic (last resort) — querySelector / fetch / evaluate. Use ONLY when the visible signal is unstable AND you've already triggered the feature through the real UI. OUTCOME starts with 'verified programmatically:' and names the signal.",
+    "  • Skipped — `OUTCOME: skipped — needs human verification: <reason>` only when no automated path can give a clean answer. Does NOT mark the PR check red.",
     "",
-    "The viewer is watching a 60-second video. They want ONE clean demonstration per goal — not three. Re-clicking, re-snapshotting, or re-screenshotting a surface you already saw in this goal is the loop, and the tripwire below catches it.",
+    "MISSING-CONTENT PROTOCOL — when a snapshot/screenshot doesn't show what you expected, your IMMEDIATELY NEXT tool call is `__tikHistory.find({ text: '<expected>', sinceMs: 30000 })`. Not a retry. Not another screenshot. The buffer disambiguates ephemeral-vs-never. Cite `sinceNowMs` in your OUTCOME if it hits.",
     "",
-    "Your job is NOT to:",
-    "- Debug the implementation. You aren't fixing anything.",
-    "- Inspect the DOM to prove correctness beyond what's visible.",
-    "- Drill into network traffic or JS internals unless the goal's success criterion specifically asks for it (e.g. 'confirm img src points at Blob' — one evaluate, one glance, done).",
-    "- Re-verify something you've already seen once.",
-    "- Force the environment into the goal's expected starting state. If the goal's success criterion needs a precondition the app isn't in (e.g. 'a first-time user sees X' but the app shows prior-session data, or 'an empty list shows Y' but the list has items from a previous run), STOP and emit OUTCOME: failure with a note like 'precondition not satisfied — <what was wrong>'. Test-environment state pollution is not a regression; reporting it is the correct outcome.",
+    "STUCK-LOOP TRIPWIRE — same tool with same input twice and the page hasn't moved? STOP. Try ONE different verification path (different tier). If that also fails, OUTCOME: skipped. Looping wastes budget and tells you nothing.",
     "",
-    "Stuck-loop guard — fires on the SECOND occurrence, not the third. The moment you're about to: (a) re-screenshot a surface you already screenshotted this goal, (b) re-snapshot the same region, (c) re-click a control you already clicked, (d) re-type into a field you already typed into, or (e) repeat any verification of a state you've already observed — STOP. If your evidence so far points to a verdict, write OUTCOME. If it doesn't, try ONE genuinely different approach (different verification tier, or different selector / control) and then OUTCOME: skipped. Two identical-purpose tool calls in a row is the loop the viewer is forced to watch.",
-    "",
-    "Be aware of your own latency. Each tool call → result → reasoning → next tool call cycle takes you 5-30 seconds. If the PR's success criterion or its diff introduces a time-sensitive transition SHORTER than that window — e.g. setTimeout under 3000ms, CSS animation-duration / transition-duration under 3s, an auto-advance carousel that moves every 2s, a debounce that fires within seconds — naive screenshot capture won't catch the pre-transition state. Read the PR diff: look for timing constants (setTimeout values, *_DELAY_MS / *_TIMEOUT_MS / *_DURATION constants, CSS *-duration declarations, auto-advance intervals). When you spot one and the goal asks you to observe what happens BEFORE it triggers, do NOT immediately give up — try the freeze-the-moment recipes below first.",
-    "",
-    "VERIFICATION HIERARCHY — try in this order, fall through only when the prior step is genuinely impossible:",
-    "  1. UI / SCREENSHOT — the gold standard. Drive the feature like a user, take a screenshot at the right moment, describe what the screenshot ACTUALLY shows in your OUTCOME. This is preferred always.",
-    "  2. FREEZE-THE-MOMENT, then SCREENSHOT — for sub-second transitions you can't catch naively. `await __tikFreeze.pause()` (one-liner; pauses CSS animations + Web Animations API), THEN screenshot, THEN `await __tikFreeze.resume()`. The recipes section below explains additional manual freezes for cases the global helper doesn't cover (RAF loops, setTimeout-driven transitions).",
-    "  3. TIME-TRAVEL via __tikHistory — when the thing already happened but is no longer on screen. The page exposes a 30-second buffer of every meaningful DOM mutation. THIS IS THE RIGHT TOOL FOR: chat replies that scrolled out (newer messages pushed them off), spinners that completed during the snapshot RTT, toasts that faded, success banners that auto-dismissed, items that mounted then unmounted. Three queries:",
-    "       • `__tikHistory.find({ text, tag, testid, containerTestid, kind, sinceMs })` — filtered list of mutations matching all supplied fields (kind ∈ {'added','removed','text-changed','attr-changed'}). Each returned entry includes `{ ts, sinceNowMs, tag, testid, containerTestid, ariaLabel, role, text, bbox, kind, ... }`.",
-    "       • `__tikHistory.transients(sinceMs)` — elements that appeared then disappeared within the window, with `addedAt`, `removedAt`, `durationMs`. Use for spinners, toasts, loading indicators.",
-    "       • `__tikHistory.stats()` — buffer state, useful when debugging your own queries.",
-    "       OUTCOME starts with 'verified programmatically (time-travel):' and cites the specific mutation entry (text, ts, sinceNowMs).",
-    "  4. PROGRAMMATIC FALLBACK — when (1)–(3) don't apply (state never went into the buffer because it's purely server-side, or you need a network/fetch result), browser_evaluate / fetch / querySelector against current DOM. OUTCOME starts with 'verified programmatically:'.",
-    "  5. NEEDS HUMAN VERIFICATION — emit `OUTCOME: skipped — needs human verification: <specific reason>` only after (1)–(4) genuinely don't work. Skipped goals do NOT mark the PR check red.",
-    "",
-    "TIME-TRAVEL EXAMPLES (use these patterns LITERALLY before falling through to manual programmatic checks):",
-    "  • Chat-bot reply scrolled off:  `await __tikHistory.find({ text: 'expected reply', sinceMs: 30000 })` — returns the entry showing the bot's text was rendered N seconds ago at bbox (...). Verified, no retry loop.",
-    "  • Spinner completed too fast:  `await __tikHistory.transients(8000)` — returns the spinner div that appeared at t=2.1s, removed at t=3.4s, durationMs 1340.",
-    "  • Toast faded before screenshot:  `await __tikHistory.find({ containerTestid: 'toast-region', sinceMs: 5000, kind: 'added' })`.",
-    "  • Verify aria-busy went true→false:  `await __tikHistory.find({ kind: 'attr-changed', sinceMs: 5000 })` then look for entries where `changedAttr === 'aria-busy'`.",
-    "",
-    "MISSING-CONTENT PROTOCOL (THE rule that prevents agent loops):",
-    "",
-    "Whenever you take an action and your verification snapshot or screenshot does NOT show the content you expected, your IMMEDIATELY NEXT tool call is a __tikHistory.find query. NOT a retry. NOT another snapshot. NOT skipping. The buffer disambiguates the failure for you — you don't have to guess whether the element was ephemeral, scrolled off, or never rendered.",
-    "",
-    "  await __tikHistory.find({ text: '<the literal text or fragment you expected>', sinceMs: 30000 })",
-    "",
-    "Two outcomes:",
-    "  • The query returns ENTRIES → the state DID render but is no longer on screen (newer chat messages pushed it off, toast faded, spinner completed, banner auto-dismissed, item unmounted). Each entry has `ts`, `sinceNowMs`, `bbox`, `text`, `kind`. Cite one in your OUTCOME: `OUTCOME: success — verified programmatically (time-travel): \"<expected>\" rendered <sinceNowMs/1000>s ago at bbox (...) and is no longer visible (likely <reason>)`. PASS the goal.",
-    "  • The query returns EMPTY → try ONCE more with a shorter / fuzzier text fragment (sometimes punctuation or whitespace differs). Still empty → the state genuinely never appeared. Treat as a real failure (`OUTCOME: failure — expected '<X>' to appear after <action>, neither visible in snapshot nor present in 30s mutation buffer`).",
-    "",
-    "This protocol is MANDATORY for any goal whose success criterion mentions: a chat / message / reply, a notification / toast / banner / snackbar, a loading / spinner / busy state, an animation / focus ring / pulse, or any text that appears as a result of an action on a feed-style or scrolling surface. Default to time-travel FIRST for those goals — sometimes you don't need a screenshot at all.",
-    "",
-    "FREEZE-THE-MOMENT RECIPES (browser_evaluate). Use BEFORE the screenshot when you've identified a sub-second transition AND the time-travel buffer doesn't have what you need:",
-    "  • PRIMARY: `await __tikFreeze.pause()` then screenshot then `await __tikFreeze.resume()`. Same recipe as the manual one below, just one-liner.",
-    "  • Manual: `document.getAnimations().forEach(a => a.pause())` — pauses CSS animations + Web Animations API. Resume with `.play()`.",
-    "  • Pause via CSS: `document.documentElement.style.animationPlayState = 'paused'` for blanket coverage.",
-    "  • Slow time globally: `window.requestAnimationFrame = () => 0` to halt RAF loops; restore from a saved reference if you need RAF later.",
-    "  • Hold a transient state: monkey-patch the relevant timer BEFORE triggering it, e.g. `const orig = window.setTimeout; window.setTimeout = (fn, ms, ...a) => orig(fn, Math.max(ms, 60000), ...a)` to push debounces beyond your observation window. Restore `window.setTimeout = orig` when done.",
-    "  • For a Suspense / loading UI: navigate to the page, then IMMEDIATELY freeze (animations + RAF). The skeleton stays painted indefinitely, take the screenshot, then un-freeze. Most CSS-shimmer skeletons use `animation: pulse 2s infinite` which `getAnimations().pause()` halts cleanly.",
-    "",
-    "Tool use:",
-    "- browser_snapshot to read the page structure (accessibility tree with refs). Good for finding clickable elements; NOT proof of what's visible. The snapshot includes elements that are CSS-hidden, behind a fixed header, off-screen, or clipped — they all show up in the tree as if they were visible.",
-    "- browser_click / browser_type / browser_press / browser_hover / browser_scroll_* for user-like interactions.",
-    "- browser_take_screenshot: REQUIRED whenever a goal asks you to verify how something LOOKS, is SHOWN, is VISIBLE, is HIDDEN, or any other visual property. The accessibility tree is not enough — an element can be in the DOM and still be invisible to a real user (clipped behind a fixed header, scrolled off-screen, hidden by `opacity-0`, cropped out by the video aspect ratio, etc.). Treat the screenshot as ground truth for visual claims at tier 1 of the hierarchy. If the naive screenshot misses a sub-second transition, see the FREEZE-THE-MOMENT recipes above (tier 2) — that's still a real screenshot, you just paused time first. Only fall through to programmatic fallback (tier 3) when the freeze recipes don't apply to the specific transition you're trying to observe.",
-    "- browser_evaluate: in priority order, this tool exists for —",
-    "    1. State setup the UI can't reach (localStorage/sessionStorage reset for 'first-visit' goals, reading a value the page doesn't surface).",
-    "    2. Freeze-the-moment for sub-second transitions before a screenshot — see the FREEZE-THE-MOMENT recipes section above. THIS IS LEGITIMATE — you're enabling a real screenshot, not replacing it.",
-    "    3. Programmatic fallback for verification (tier 3 of the hierarchy), when both naive AND frozen screenshots fail. When you do this, your OUTCOME must say 'verified programmatically' and name the specific DOM/network/storage signal you checked.",
-    "  HARD CAP: 8 calls per goal (raised from 5 to leave room for freeze + programmatic fallback in the same goal). Count them as you go.",
-    "  NEVER use browser_evaluate to: inject form values, set <input type=date>, click hidden elements, or otherwise bypass user interactions you'd be testing — those skew the test, they don't enable it.",
-    "  ANTI-PATTERN — fake screenshots: do NOT silently switch to programmatic verification while CLAIMING you took a screenshot. If your evidence is DOM-level, your OUTCOME must say so. The reviewer of the video should be able to tell at a glance: tier-1/2 outcomes describe pixels; tier-3 outcomes describe DOM nodes / network responses.",
-    "  Storage reset gotcha: clearing localStorage/sessionStorage does NOT reset in-memory app state. React/Vue/Svelte components that read storage on mount keep the cached value in memory afterwards. To get a real 'first visit' state, do storage clear + page reload (browser_navigate to the same URL works), then check the screen IMMEDIATELY before any auto-advance / dwell timer / animation can fire — or freeze first if that timer is sub-second. If that ordering still can't produce the precondition, emit `OUTCOME: skipped — needs human verification: <reason>`, don't keep retrying.",
-    "- browser_network_requests: at most once, only if the goal's success condition mentions network behaviour.",
-    "",
-    "USE THE UI LIKE A REAL USER:",
-    "- Before typing into ANY input/textarea/contenteditable, ALWAYS browser_click on it FIRST. Then browser_type. Two reasons: (1) the on-video cursor needs a click event to anchor the camera on the field — without the click, the value just appears mid-air and the viewer can't tell where it's being entered. (2) clicking ensures focus + caret position, so typing actually lands. Never browser_type without an immediately-preceding browser_click on the same field.",
-    "- When using browser_type, pass `slowly: true` so the keystrokes animate one-character-at-a-time (Playwright's character-delay typing). It looks like a real person typing instead of text instantly appearing. Skip `slowly` only for very long strings (>40 chars) where it would burn screen time.",
-    "- Pick dates by clicking the date input and typing the date keystroke-by-keystroke (or using the native date picker), NEVER by injecting a value with evaluate.",
-    "- Pick from <select> dropdowns by clicking the select and using browser_select_option, NEVER by setting .value with evaluate.",
-    "- Toggle checkboxes by clicking the checkbox, NEVER by setting .checked with evaluate.",
-    "- Submit forms by clicking the submit button, NEVER by calling .submit() or dispatching events.",
-    "- If a control isn't visible/clickable through the UI, REPORT FAILURE — don't reach around it. A real user couldn't either, so the test should fail.",
-    "",
-    "PACE LIKE A HUMAN (the agent is being recorded):",
-    "- Take a browser_snapshot before each major decision so the viewer sees you 'reading' the page. Don't click blindly.",
-    "- Read text on screen before reacting to it. Narrate failures plainly: 'expected the Today filter to show 2 tasks, but it's empty.'",
-    "- One action at a time. Don't queue 5 clicks in one turn.",
+    "Time-travel buffer (the tools `__tikHistory` exposes via browser_evaluate):",
+    "  • `__tikHistory.find({ text, tag, testid, containerTestid, kind, sinceMs })` — filtered list. `kind` ∈ {'added', 'removed', 'text-changed', 'attr-changed'}. Each entry: `{ ts, sinceNowMs, tag, testid, containerTestid, ariaLabel, role, text, bbox, kind }`.",
+    "  • `__tikHistory.transients(sinceMs)` — elements that appeared then disappeared (`addedAt`, `removedAt`, `durationMs`).",
+    "  • `__tikHistory.stats()` — buffer state.",
+    "  • `__tikFreeze.pause()` / `__tikFreeze.resume()` — pause / resume CSS animations + Web Animations API. Manual variants: `document.getAnimations().forEach(a => a.pause())`, `window.requestAnimationFrame = () => 0`, monkey-patching setTimeout.",
     "",
     "Context:",
-    "- The browser is ALREADY on the app's start URL. You may be on a login screen — handle it like a user would: type the password, click sign in. Don't navigate to localhost.",
-    "- Start with browser_snapshot to read the current screen.",
-    "- REVIEWER NOTES in the user message are AUTHORITATIVE — a reviewer has already tested this PR and is telling you the happy path. Follow their instructions first.",
+    "- Browser is ALREADY on the app's start URL. Login already happened in a separate phase if your tiktest.md declared credentials.",
+    "- REVIEWER NOTES in the user message are AUTHORITATIVE — follow them first.",
+    "- Don't force a precondition that isn't there. If the goal needs a 'first-visit' state but the app shows prior-session data, emit `OUTCOME: failure — precondition not satisfied — <what was wrong>`. Test-environment state pollution is the correct outcome to report.",
     "",
-    "When the user would know the feature works (or doesn't), you're done. Emit OUTCOME + SHORTNOTE, stop.",
+    "Every goal ends with THREE blocks: OUTCOME, SHORTNOTE, STEPS.",
     "",
-    "Every goal ends with TWO lines, exactly in this order:",
+    "OUTCOME: success — full reason (≤30 words). Cite the specific signal you saw.",
+    "SHORTNOTE: 5-9 word headline for the on-video checklist.",
     "",
-    "OUTCOME: success — full reason (up to 30 words). For tier-1/2 (UI/screenshot) wins, describe what the screenshot showed. For tier-3 (programmatic fallback) wins, START with the literal phrase 'verified programmatically:' so the reviewer can tell which tier this is.",
-    "SHORTNOTE: 5-9 word headline for the on-video checklist — ≤60 chars.",
+    "OUTCOME: failure — full reason (expected vs actual).",
+    "SHORTNOTE: 5-9 words naming WHAT broke.",
     "",
-    "OUTCOME: failure — full reason. The feature did not work as specified. State expected vs actual based on what you observed. Use this when you DID test (UI or programmatically) and got a clearly wrong result — not when you couldn't test.",
-    "SHORTNOTE: 5-9 words naming WHAT broke (e.g. \"today filter empty despite today badge\").",
+    "OUTCOME: skipped — needs human verification: <reason>.",
+    "SHORTNOTE: 5-9 words naming WHY it can't be auto-tested.",
     "",
-    "OUTCOME: skipped — needs human verification: <specific reason>. Use this ONLY when the verification hierarchy is exhausted: UI screenshot didn't work, freeze-the-moment didn't apply, programmatic fallback couldn't give a clear answer. Skipped goals do NOT mark the PR check red — they're flagged for manual review. Examples: 'visual is sub-pixel rendering only meaningful at 4K viewports', 'feature requires production-only data we can't manufacture', 'cross-device behaviour comparison'. NOT examples: 'I didn't bother trying the freeze recipe', 'the snapshot was confusing'. Honesty when stuck, not laziness.",
-    "SHORTNOTE: 5-9 words naming WHY it can't be auto-tested (e.g. \"render only meaningful at 4K viewport\").",
+    "STEPS — DESIGN THE PERFECT DEMO (required on success and failure):",
     "",
-    "Visual claims must match their tier. Tier-1/2 (UI/screenshot): the OUTCOME describes what the screenshot rendered — colour, position, layout, what's shown vs hidden. Tier-3 (programmatic): the OUTCOME starts with 'verified programmatically:' and names the DOM/network signal. Tier-4 (skipped): names the specific reason no automated path works. The reviewer of the video should never have to guess which tier you're in — the OUTCOME phrasing tells them. Bad: 'OUTCOME: success — element shows correct label' (no tier signal, no citation). Good (tier 1): 'OUTCOME: success — screenshot shows blue button at top-right with Save label'. Good (tier 3): 'OUTCOME: success — verified programmatically: HTML contains aria-busy=true, .animate-pulse rendered then removed within 1.2s; UI flash too brief to screenshot even after pausing animations'. Good (tier 4): 'OUTCOME: skipped — needs human verification: skeleton transitions in ~800ms even with animations paused (the framework drops the suspense fallback synchronously on hydration); manual frame-by-frame review needed'.",
+    "STEPS is your CREATIVE BRIEF for a 8-15 second demo that makes this feature crystal-clear to a viewer who has never seen the app. Pass 2 will replay these deterministically — slow, deliberate, narrated — so design for CLARITY not coverage.",
     "",
-    "SHORTNOTE rules: no articles, no preamble (\"the test\", \"we saw\"), no apologies. Skip restating the goal — say what HAPPENED. Pass: name the WHO/WHAT that worked. Fail: name the EXPECTATION that failed.",
+    "Format:",
+    "STEPS:",
+    "```json",
+    "[",
+    "  { \"kind\": \"click\",  \"label\": \"<visible button text>\",      \"role\": \"button\",   \"camera\": \"tight\", \"hint\": \"open the form\" },",
+    "  { \"kind\": \"type\",   \"label\": \"<input label / placeholder>\", \"value\": \"<text>\",  \"camera\": \"tight\", \"hint\": \"name the new item\" },",
+    "  { \"kind\": \"press\",  \"key\":   \"Enter\",                          \"camera\": \"follow\", \"hint\": \"submit\" },",
+    "  { \"kind\": \"wait\",   \"ms\":    1500,                              \"camera\": \"wide\",   \"hint\": \"the result appears\" }",
+    "]",
+    "```",
+    "",
+    "Rules of good demo design (same as the fast prompt — pass 2 has identical playback semantics):",
+    "- 3 to 7 steps. Fewer is better.",
+    "- Every step does something the viewer can VISUALLY observe — no probes, no DOM hacks. Real clicks/typing only.",
+    "- INPUT FIELDS MUST BE TYPED INTO. Every `type` step requires a `value` of at least 3 real characters. Empty / whitespace-only / placeholder values are forbidden — leaving an input blank doesn't test that the field works AND produces a demo where the viewer sees the cursor blink with nothing happening. Same for `select`: pick a real, non-default option.",
+    "- ALWAYS end with a `wait` step so the result of the last action sits on screen with the narrator describing it.",
+    "- Use `hint` on every step. One short generic phrase the narrator works from. NOT product-specific.",
+    "- Pick the SIMPLEST happy path even if you tested edge cases. The demo is for a viewer learning the feature; edge cases belong in the next goal.",
+    "- Labels MUST be the user-visible text on screen. NO CSS selectors, NO Playwright refs. Pass 2 resolves via getByRole / getByLabel / getByText against a FRESH browser.",
+    "- For `click`/`select`, include `role` when the label is short or generic.",
+    "",
+    "Camera direction (`camera` field — replaces ad-hoc reactive zoom; you direct it):",
+    "- `tight`: zoom in on the action point. Use when ONE specific control is the subject — a button, an input, a toggle.",
+    "- `wide`: full-page view. Default. Use for context shots and moments where the result spans the page.",
+    "- `follow`: start tight, ease out to wide over the step's duration. Use when the action triggers a visible effect ELSEWHERE on the page (toast in the corner, list update at the top).",
+    "- Most steps should be `wide`. `tight` is a punchline. `follow` is the cause-and-effect bridge. Don't make every step tight — the viewer loses orientation.",
+    "",
+    "Step kinds: click, type, press, select, wait, navigate. Wait at end of demo is required.",
+    "",
+    "Think of yourself as crafting a 10-second clip your CEO will watch. Less is more.",
   ].join("\n");
 }
 
@@ -294,7 +287,7 @@ function buildUserMessage(goal: Goal, prContext: string): string {
   return parts.join("\n");
 }
 
-function extractOutcome(text: string): { outcome: "success" | "failure" | "skipped"; note: string; shortNote?: string } | null {
+function extractOutcome(text: string): { outcome: "success" | "failure" | "skipped"; note: string; shortNote?: string; steps?: DemoStep[] } | null {
   // OUTCOME: <success|failure|skipped> — <note>     (single-line; up to next line break)
   const om = /OUTCOME:\s*(success|failure|skipped)\s*[—\-:]\s*([^\n\r]+)/i.exec(text);
   if (!om) return null;
@@ -305,7 +298,66 @@ function extractOutcome(text: string): { outcome: "success" | "failure" | "skipp
     outcome: om[1].toLowerCase() as "success" | "failure" | "skipped",
     note: om[2].trim().slice(0, 200),
     shortNote,
+    steps: extractSteps(text),
   };
+}
+
+/** Pull the choreographed demo step list the agent emits at the end of
+ *  a goal. The agent is asked to emit it inside a fenced JSON block tagged
+ *  `STEPS`, e.g.:
+ *
+ *      STEPS:
+ *      ```json
+ *      [
+ *        { "kind": "click", "label": "Add task", "role": "button" },
+ *        { "kind": "type",  "label": "Title",    "value": "Buy milk" },
+ *        { "kind": "press", "key": "Enter",      "hint": "submit the form" }
+ *      ]
+ *      ```
+ *
+ *  Best-effort: if parsing fails or no block is present, return undefined
+ *  and pass 2 falls back to pass-1 video for this goal. */
+function extractSteps(text: string): DemoStep[] | undefined {
+  // Look for STEPS: followed by a fenced JSON block. Permissive on whitespace
+  // and on the `json` tag (some agent runs forget it).
+  const m = /STEPS:\s*```(?:json)?\s*([\s\S]*?)\s*```/i.exec(text);
+  if (!m) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(m[1]);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed)) return undefined;
+  const out: DemoStep[] = [];
+  const allowedKinds = new Set(["click", "type", "press", "select", "wait", "navigate"]);
+  for (const raw of parsed) {
+    if (!raw || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    const kind = typeof r.kind === "string" ? r.kind.toLowerCase() : null;
+    if (!kind || !allowedKinds.has(kind)) continue;
+    const step: DemoStep = { kind: kind as DemoStep["kind"] };
+    if (typeof r.label === "string") step.label = r.label.slice(0, 120);
+    if (typeof r.role === "string") step.role = r.role.slice(0, 32);
+    if (typeof r.value === "string") step.value = r.value.slice(0, 400);
+    if (typeof r.key === "string") step.key = r.key.slice(0, 32);
+    if (typeof r.ms === "number" && r.ms >= 0) step.ms = Math.min(10000, Math.round(r.ms));
+    if (typeof r.url === "string") step.url = r.url.slice(0, 500);
+    if (typeof r.hint === "string") step.hint = r.hint.slice(0, 240);
+    // Defense in depth: type/select steps with empty / whitespace-only
+    // values are not valid demos. The prompt forbids them, but if the
+    // LLM slips through we drop the step rather than play a "blink at
+    // the input for 2 seconds" non-test in pass 2.
+    if (kind === "type" || kind === "select") {
+      const v = (step.value ?? "").trim();
+      if (v.length < 1) continue;
+      // Replace placeholder-y patterns the LLM sometimes echoes from
+      // the prompt template (e.g. "<text>", "your value here").
+      if (/^<.*>$/.test(v) || /^(your |placeholder|example|todo)/i.test(v)) continue;
+    }
+    out.push(step);
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /**
@@ -323,6 +375,7 @@ export async function runGoal(
   let outcome: "success" | "failure" | "skipped" = "failure";
   let note: string | undefined = "agent did not emit OUTCOME";
   let shortNote: string | undefined;
+  let steps: DemoStep[] | undefined;
 
   // Write MCP config to a temp file; the CLI accepts an inline JSON string
   // via --mcp-config but putting it in a file keeps the command line clean
@@ -422,6 +475,7 @@ export async function runGoal(
                   outcome = parsed.outcome;
                   note = parsed.note;
                   shortNote = parsed.shortNote;
+                  if (parsed.steps) steps = parsed.steps;
                   // Agent has concluded — kill the CLI now instead of waiting
                   // for it to finish its next assistant-only turn. Every
                   // second we let it linger is a second of dead video.
@@ -468,7 +522,7 @@ export async function runGoal(
       if (stderrBuf && history.length === 0) {
         note = `claude CLI stderr: ${stderrBuf.split("\n")[0].slice(0, 140)}`;
       }
-      resolve({ outcome, note, shortNote, actions: history });
+      resolve({ outcome, note, shortNote, actions: history, steps });
     });
 
     // Send the user message as a single stream-json user event.

@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { TestPlan, Goal } from "./types.js";
 import { NARRATION_TIMEOUT_MS } from "./timeouts.js";
-import { runClaude, extractJson } from "./claude-cli.js";
+import { runClaudeJson } from "./claude-cli.js";
 
 /**
  * One CLICK-ANCHORED window of the body video. Windows partition the body
@@ -130,8 +130,14 @@ STEP 4 — Write each window's beat. RULES PER BEAT:
   • Word budget = window durS × 3 words/sec, ±15%. UNDER means silence; OVER means rushed audio. Most windows are 3–8s, so 9–24 words.
 
 STEP 5 — INTRO and OUTRO.
-  • INTRO (≈{{INTRO_WORDS}} words): name the feature in plain English, name the problem it solves, foreshadow the demo. Example shape: "I shipped a Bulk Archive option for the task list. Up until now you had to clear completed tasks one at a time, which gets tedious past five or six. Let me walk you through the new flow and how I'm checking it doesn't break anything else."
-  • OUTRO (≈{{OUTRO_WORDS}} words): one sentence inviting input. Examples: "let me know if the confirm dialog feels heavy — I almost cut it" / "open question: should bulk-archive also include high-priority tasks, or only low?"
+  • INTRO — HARD CAP {{INTRO_WORDS}} WORDS. One sentence naming the feature in plain English. NO setup, NO problem statement, NO "let me walk you through". Examples (each ≤12 words):
+      "I shipped a Bulk Archive option for the task list."
+      "New: pinning tasks to the top, plus inline title edits."
+      "Quick review of the new sort-by-priority filter."
+  • OUTRO — HARD CAP {{OUTRO_WORDS}} WORDS. One sentence SUMMARISING what was tested and how it landed. NO questions. NO "open question:". NO "let me know". NO "?" anywhere in the text or captionText. Examples (each ≤12 words):
+      "Pin sorts to top and inline edit saves on Enter, both green."
+      "Bulk Archive clears completed tasks; counter and empty state both correct."
+      "Filter narrows to today; badges stay aligned, no regressions."
 
 EXAMPLES OF GOOD vs BAD BEATS:
 
@@ -261,14 +267,15 @@ export async function generateNarration(ctx: NarrationInput): Promise<NarrationO
   }
   const prompt = buildPrompt(ctx);
   console.log(chalk.dim(`  asking claude for click-anchored narration (intro + ${ctx.windows.length} body windows + outro, ${ctx.goals.length} goals)…`));
-  const raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "narration", timeoutKnob: "TIK_NARRATION_TIMEOUT_MS" });
-  const json = extractJson(raw);
-  let parsed: NarrationOutput;
-  try {
-    parsed = JSON.parse(json) as NarrationOutput;
-  } catch (e) {
-    throw new Error(`claude returned unparseable JSON for narration: ${(e as Error).message.split("\n")[0]}\n--- raw output (first 500 chars) ---\n${raw.slice(0, 500)}`);
-  }
+  // runClaudeJson retries on malformed JSON with the bad output fed back
+  // — crucial for narration because the prompt asks for many freeform
+  // strings (every window's text + captionText), each a chance for an
+  // unescaped quote to break the parse and leave the video silent.
+  const { value: parsed, attempts } = await runClaudeJson<NarrationOutput>({
+    prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet",
+    label: "narration", timeoutKnob: "TIK_NARRATION_TIMEOUT_MS",
+  });
+  if (attempts > 1) console.log(chalk.dim(`  narration parsed on attempt ${attempts}`));
   for (const key of ["intro", "outro"] as const) {
     const line = parsed[key];
     if (!line || typeof line.text !== "string" || !line.text.trim()) {

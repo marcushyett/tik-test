@@ -2,7 +2,7 @@ import chalk from "chalk";
 import type { Config, TestPlan } from "./types.js";
 import { configToPromptContext } from "./config.js";
 import { MAX_GOALS, PLAN_TIMEOUT_MS } from "./timeouts.js";
-import { runClaude, extractJson } from "./claude-cli.js";
+import { runClaudeJson } from "./claude-cli.js";
 
 const PLAN_PROMPT = `You are generating a GOAL-BASED test plan for a web app. An autonomous AI agent will execute each goal by driving the browser — clicking, typing, reading the page — and decide HOW to achieve it based on what's actually on-screen. You DO NOT write selectors, URLs, or click sequences. You write GOALS and CONTEXT. Trust the agent.
 
@@ -84,14 +84,15 @@ export async function generatePlan(cfg: Config): Promise<TestPlan> {
     .replace("{{MAX_SECONDARY_GOALS}}", String(Math.max(0, MAX_GOALS - 1)))
     .replace("{{CONTEXT}}", configToPromptContext(cfg));
   console.log(chalk.dim("  calling claude CLI to generate test plan…"));
-  const raw = await runClaude({ prompt, timeoutMs: PLAN_TIMEOUT_MS, label: "plan", timeoutKnob: "TIK_PLAN_TIMEOUT_MS" });
-  const json = extractJson(raw);
-  let plan: TestPlan;
-  try {
-    plan = JSON.parse(json) as TestPlan;
-  } catch (e) {
-    throw new Error(`Failed to parse claude plan output: ${(e as Error).message}\n---\n${raw.slice(0, 500)}`);
-  }
+  // runClaudeJson retries on parse failure with the bad output as feedback.
+  // The plan generator's response is large and freeform-rich (goal
+  // descriptions, success criteria), so a single unescaped quote used to
+  // tank the entire run — now we get one or two automatic recoveries
+  // before throwing.
+  const { value: plan, attempts } = await runClaudeJson<TestPlan>({
+    prompt, timeoutMs: PLAN_TIMEOUT_MS, label: "plan", timeoutKnob: "TIK_PLAN_TIMEOUT_MS",
+  });
+  if (attempts > 1) console.log(chalk.dim(`  plan parsed on attempt ${attempts}`));
   return normalize(plan, cfg);
 }
 

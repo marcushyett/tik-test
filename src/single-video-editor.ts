@@ -1,5 +1,5 @@
 import { mkdir, writeFile, rm } from "node:fs/promises";
-import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
 import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.js";
 import { generateNarration, type NarrationWindow } from "./timed-narration.js";
 import { generateChecklist } from "./checklist.js";
+import { clipToWord } from "./text.js";
 import {
   MIN_CHUNK_S, MAX_BODY_SCENES, TRIM_MERGE_S,
   INTRO_TARGET_S, OUTRO_TARGET_S, OUTRO_HOLD_S,
@@ -32,18 +33,17 @@ const FPS = 24;
 let cachedVersionTag: string | null = null;
 function getVersionTag(): string {
   if (cachedVersionTag) return cachedVersionTag;
-  let pkgVer = "0.1.0";
+  // ESM-safe path resolution. The built output is ESM (tsconfig "module":
+  // "ESNext"), so `__dirname` is undefined here — using it threw silently
+  // and the version badge fell back to a hardcoded default. fileURLToPath
+  // works in both ESM and the tsx dev runner.
+  let pkgVer = "0.0.0-unknown";
   try {
-    const pkgPath = path.resolve(__dirname, "..", "package.json");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    pkgVer = JSON.parse(require("node:fs").readFileSync(pkgPath, "utf8")).version ?? pkgVer;
+    const here = fileURLToPath(import.meta.url);
+    const pkgPath = path.resolve(path.dirname(here), "..", "package.json");
+    pkgVer = JSON.parse(readFileSync(pkgPath, "utf8")).version ?? pkgVer;
   } catch {}
-  let sha = "";
-  try {
-    sha = execSync("git rev-parse --short=7 HEAD", { cwd: path.resolve(__dirname, ".."), stdio: ["ignore", "pipe", "ignore"] })
-      .toString().trim();
-  } catch {}
-  cachedVersionTag = sha ? `v${pkgVer} · ${sha}` : `v${pkgVer}`;
+  cachedVersionTag = `v${pkgVer}`;
   return cachedVersionTag;
 }
 
@@ -85,11 +85,14 @@ export interface BodyBadge {
 
 /** One row on the outro checklist. Replaces the abstract pass/fail
  *  blocks with the actual goals the agent ran, scannable by a reviewer
- *  in seconds. `note` is shown on a second line (smaller) when present. */
+ *  in seconds. `note` is shown on a second line (smaller) when present.
+ *  `goalId` lets the outro AND the PR comment GROUP rows by which goal
+ *  they belong to — same data, two surfaces. */
 export interface ChecklistItem {
   outcome: "success" | "failure" | "skipped";
   label: string;
   note?: string;
+  goalId?: string;
 }
 
 export interface SingleVideoInput {
@@ -121,6 +124,13 @@ export interface SingleVideoInput {
   /** Animated check / cross / dash stamps timed to the moment each goal
    *  was decided by the agent. Body-relative seconds. */
   verificationStamps?: Array<{ atS: number; outcome: "success" | "failure" | "skipped"; label: string }>;
+  /** Agent-planned camera plan — one entry per demo step in body-relative
+   *  seconds. The Remotion compositor reads this instead of the reactive
+   *  click-driven pan-zoom rules: each entry's `mode` (tight / wide /
+   *  follow) drives zoom, optional focus is in viewport pixels (same
+   *  coord space as `interactions`). When this is provided pan-zoom is
+   *  ENTIRELY agent-directed; legacy rules only run if it's empty. */
+  cameraPlan?: Array<{ startS: number; durS: number; mode: "tight" | "wide" | "follow"; focusX?: number; focusY?: number }>;
   /** Body-relative intervals where the pan-zoom should RELEASE to neutral
    *  framing. Computed from page-side MutationObserver data: whenever a
    *  click triggers DOM mutations OUTSIDE the clicked element's bbox
@@ -137,6 +147,12 @@ export interface SingleVideoInput {
   interactions?: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }>;
   /** Per-goal results rendered as a vertical checklist on the outro. */
   checklist?: ChecklistItem[];
+  /** Goal-level headings that drive the outro's GROUPING — one heading
+   *  per goal, ordered so the viewer reads them in the same sequence the
+   *  agent ran them. The Outro component uses these to bucket `checklist`
+   *  rows by their `goalId` and render a heading above each bucket.
+   *  Mirrors the grouping the PR comment uses (src/pr.ts buildChecklistMarkdown). */
+  goalGroups?: Array<{ id: string; label: string; outcome: "success" | "failure" | "skipped" }>;
 }
 
 /**
@@ -152,6 +168,19 @@ export interface SingleVideoInput {
  *               extends to cover the dead air naturally.
  */
 function classifyTool(kind: string): "silent" | "visible" | "skip" {
+  // Pass-2 demo-replay tool windows: classify the visible step kinds as
+  // "visible" so they (a) anchor narration windows next to the action,
+  // and (b) keep the trim plan from collapsing them as idle. Without
+  // this, every replay_* kind fell through to the default "skip" bucket,
+  // which silently broke audio/caption sync — the trim plan compressed
+  // the goal-action stretches as if they were dead air, while login
+  // clicks (also no tool window) DID get used as narration anchors via
+  // page-side __tikRecord. Net effect: narration distributed across
+  // login windows + early dwells, then goal visuals played 5-10s late.
+  if (kind.startsWith("replay_")) {
+    if (kind === "replay_wait" || kind === "replay_navigate" || kind.endsWith("_skipped")) return "skip";
+    return "visible";
+  }
   switch (kind) {
     case "browser_evaluate":
     case "browser_network_requests":
@@ -408,9 +437,9 @@ async function renderTrimmedMaster(rawMp4: string, outMp4: string, plan: TrimSeg
 
 export interface SingleVideoEditResult {
   outPath: string;
-  /** The LLM-synthesised outro checklist used in the video — exposed so
-   *  the PR-comment poster can render the same table in Markdown and so
-   *  the web viewer can render it natively in the drawer. */
+  /** Granular per-check list with each item carrying a `goalId` so the
+   *  video outro AND the PR comment can render them grouped by goal.
+   *  Same data shape both places — they just present it differently. */
   checklist: ChecklistItem[];
 }
 
@@ -592,9 +621,25 @@ export async function editSingleVideo({
   //      timing is FIXED to the click that opens or closes the window, so
   //      the spoken word is anchored to the meaningful visual moment.
   const MIN_WINDOW_DUR_S = 1.5;
-  const clicks = mappedInteractions
+  // EXCLUDE pre-goal clicks from narration anchors. The login replay
+  // (and any pre-goal setup) generates real DOM clicks that page-side
+  // __tikRecord captures, so they end up in `interactions`. Without
+  // this filter they become narration anchors, splitting the LLM's
+  // narration budget across login + transition windows. The narrator
+  // then writes goal-action narration that PLAYS DURING the login
+  // visuals — the 5-10s caption-vs-video desync the user reports.
+  // First-goal start in body-relative seconds = the cutoff.
+  const goalEvents = artifacts.events.filter((e) => e.kind === "intent");
+  const firstGoalStartBodyS = goalEvents.length > 0
+    ? Math.max(0, rawToTrimmed(goalEvents[0].startMs / 1000, plan) - 0.2)
+    : 0;
+  const allClicks = mappedInteractions
     .filter((ev) => ev.kind === "click")
     .sort((a, b) => a.tsS - b.tsS);
+  const clicks = allClicks.filter((c) => c.tsS >= firstGoalStartBodyS);
+  if (allClicks.length !== clicks.length) {
+    console.log(chalk.dim(`  excluded ${allClicks.length - clicks.length} pre-goal click(s) from narration anchors (login + transition)`));
+  }
   // Match each click to its nearest "visible-action" tool window by time
   // proximity so we can include the clicked element's description in the
   // window context. This is what makes the difference between the narrator
@@ -876,16 +921,19 @@ export async function editSingleVideo({
   const skipped = artifacts.events.filter((e) => e.outcome === "skipped").length;
   const stats = { passed, failed, skipped, total: artifacts.events.length, durS: artifacts.totalMs / 1000 };
 
-  // Outro checklist. PREFERRED: the Claude-generated 6-12 row list
-  // (synthesised from goals + agent action history — that's what the
-  // reviewer actually wants to see). FALLBACK: one row per goal, if
-  // generateChecklist returned null (transient CLI failure / unparseable
-  // output) — we never want to ship an outro with no checklist at all.
+  // Outro checklist. PREFERRED: the Claude-generated granular list
+  // (synthesised from goals + agent action history) — but each row now
+  // carries a `goalId` so both the video outro AND the PR comment can
+  // render the items GROUPED BY GOAL. That keeps every sub-check the
+  // agent actually ran visible while making it crystal-clear which
+  // beat they belong to. FALLBACK: one row per goal, if synthesis
+  // returned null — still valid output, just less detail.
   let checklist: ChecklistItem[] = [];
   const llmList = await checklistPromise;
   if (llmList && llmList.length > 0) {
     checklist = llmList;
-    console.log(chalk.dim(`  checklist: ${llmList.length} llm-synthesised items`));
+    const grouped = checklist.reduce<Record<string, number>>((a, c) => { const k = c.goalId ?? "_ungrouped"; a[k] = (a[k] ?? 0) + 1; return a; }, {});
+    console.log(chalk.dim(`  checklist: ${llmList.length} llm-synthesised items across ${Object.keys(grouped).length} goal group${Object.keys(grouped).length === 1 ? "" : "s"}`));
   } else {
     const goalEvents = artifacts.events.filter((e) => e.kind === "intent");
     const ranked = [...goalEvents].sort((a, b) => {
@@ -895,8 +943,9 @@ export async function editSingleVideo({
     });
     checklist = ranked.slice(0, 6).map((e) => ({
       outcome: e.outcome,
-      label: (e.shortLabel ?? e.description).replace(/\s+/g, " ").slice(0, 36).trim(),
-      note: e.shortNote?.replace(/\s+/g, " ").slice(0, 64).trim() || undefined,
+      label: clipToWord((e.shortLabel ?? e.description).replace(/\s+/g, " ").trim(), 40),
+      note: e.shortNote ? clipToWord(e.shortNote.replace(/\s+/g, " ").trim(), 80) : undefined,
+      goalId: e.stepId,
     }));
     console.log(chalk.dim(`  checklist: ${checklist.length} fallback goal-level items`));
   }
@@ -917,7 +966,6 @@ export async function editSingleVideo({
   // each other.
   const STAMP_DUR_S = 1.8;
   const STAMP_GAP_S = 0.25;
-  const goalEvents = artifacts.events.filter((e) => e.kind === "intent");
   const stampCandidates = goalEvents
     .map((e) => {
       const rawEndS = e.endMs / 1000;
@@ -925,7 +973,7 @@ export async function editSingleVideo({
       // Pull stamps slightly INSIDE the body so the entrance animation
       // isn't clipped by the master end. Also nudge off the very start.
       bodyS = Math.max(0.1, Math.min(masterDurS - 0.1, bodyS));
-      const label = (e.shortLabel ?? e.description ?? "").replace(/\s+/g, " ").trim().slice(0, 48);
+      const label = clipToWord((e.shortLabel ?? e.description ?? "").replace(/\s+/g, " ").trim(), 48);
       return label ? { atS: bodyS, outcome: e.outcome, label } : null;
     })
     .filter((x): x is { atS: number; outcome: typeof goalEvents[number]["outcome"]; label: string } => !!x)
@@ -939,6 +987,23 @@ export async function editSingleVideo({
     verificationStamps.push({ atS, outcome: c.outcome, label: c.label });
     lastEndS = atS + STAMP_DUR_S;
   }
+  // Convert the raw-ms cameraPlan from the runner into body-relative
+  // seconds. Drop entries whose window doesn't intersect the trim plan
+  // (those are pure dead air the editor cropped out anyway).
+  const cameraPlanBody: Array<{ startS: number; durS: number; mode: "tight" | "wide" | "follow"; focusX?: number; focusY?: number }> = [];
+  for (const entry of artifacts.cameraPlan ?? []) {
+    const startBodyS = rawToTrimmed(entry.startMs / 1000, plan);
+    const endBodyS = rawToTrimmed(entry.endMs / 1000, plan);
+    const durS = Math.max(0.05, endBodyS - startBodyS);
+    if (startBodyS >= masterDurS - 0.05) continue;
+    cameraPlanBody.push({ startS: Math.max(0, startBodyS), durS, mode: entry.mode, focusX: entry.focusX, focusY: entry.focusY });
+  }
+  cameraPlanBody.sort((a, b) => a.startS - b.startS);
+  if (cameraPlanBody.length > 0) {
+    const counts = cameraPlanBody.reduce<Record<string, number>>((a, e) => { a[e.mode] = (a[e.mode] ?? 0) + 1; return a; }, {});
+    console.log(chalk.dim(`  camera plan (body-relative): ${cameraPlanBody.length} entries (${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ")})`));
+  }
+
   if (verificationStamps.length > 0) {
     console.log(chalk.dim(`  verification stamps: ${verificationStamps.length} (${verificationStamps.filter(s => s.outcome === "success").length} pass / ${verificationStamps.filter(s => s.outcome === "failure").length} fail / ${verificationStamps.filter(s => s.outcome === "skipped").length} skip)`));
   }
@@ -964,9 +1029,21 @@ export async function editSingleVideo({
     bodyChunks,
     bodyBadges: bodyBadges.length > 0 ? bodyBadges : undefined,
     verificationStamps: verificationStamps.length > 0 ? verificationStamps : undefined,
+    cameraPlan: cameraPlanBody.length > 0 ? cameraPlanBody : undefined,
     zoomReleaseIntervals: mergedReleaseIntervals.length > 0 ? mergedReleaseIntervals : undefined,
     interactions: remotionInteractions.length > 0 ? remotionInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,
+    // Goal-level headings for the outro's grouping — derived from the
+    // same intent events the checklist's goalIds reference. We only
+    // surface this when at least one checklist row carries a goalId
+    // (otherwise the outro silently falls back to a flat list).
+    goalGroups: goalEvents.length > 0 && checklist.some((c) => !!c.goalId)
+      ? goalEvents.map((e) => ({
+          id: e.stepId,
+          label: clipToWord((e.shortLabel ?? e.description ?? "").replace(/\s+/g, " ").trim(), 48) || "Goal",
+          outcome: e.outcome,
+        }))
+      : undefined,
   };
   await writeFile(path.join(runDir, "reel-input.json"), JSON.stringify(input, null, 2));
 
