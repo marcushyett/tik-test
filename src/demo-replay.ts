@@ -223,6 +223,14 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
       // inherits the previous click as its focus point.
       let lastClickCx: number | null = null;
       let lastClickCy: number | null = null;
+      // ── Input-focus camera lock.
+      // Once the user starts typing into a field, the viewer's eye is
+      // locked on that field — we should NOT pull back to wide while the
+      // text appears. The lock holds across subsequent waits / presses
+      // (Enter to submit, etc.) and only releases on the next click,
+      // which by definition shifts focus elsewhere. Coords come from the
+      // type step's click (we always click the input first).
+      let typingLock: { x: number; y: number } | null = null;
 
       for (const step of goal.steps) {
         const stepStartMs = Math.max(0, Math.round(performance.now() - recordingStart));
@@ -259,22 +267,33 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
           lastClickCx = stepClickCx;
           lastClickCy = stepClickCy;
         }
-        // Build the camera plan entry for this step's window. Default to
-        // wide when the agent didn't pick a mode — most of the demo should
-        // be full-page so the viewer follows what's happening.
+        // Update the typing lock based on what we just executed.
+        // - `type`: enter / extend the lock at the input's coords.
+        // - `click`: shift focus → release the lock.
+        // - `press` / `wait` / `select` / `navigate`: leave it alone.
+        if (step.kind === "type" && stepClickCx !== null && stepClickCy !== null) {
+          typingLock = { x: stepClickCx, y: stepClickCy };
+        } else if (step.kind === "click") {
+          typingLock = null;
+        }
+        // Build the camera plan entry. Default to wide; agent's `camera`
+        // wins. BUT while the typing lock is active, force tight on the
+        // focused input regardless of what the agent picked — viewers
+        // should never lose sight of the field whose content is changing.
         const stepEndMs = Math.max(stepStartMs + 50, Math.round(performance.now() - recordingStart));
-        const mode: "tight" | "wide" | "follow" = step.camera ?? "wide";
+        let mode: "tight" | "wide" | "follow" = step.camera ?? "wide";
+        if (typingLock) mode = "tight";
         const entry: { startMs: number; endMs: number; mode: typeof mode; focusX?: number; focusY?: number } = {
           startMs: stepStartMs,
           endMs: stepEndMs,
           mode,
         };
         if (mode === "tight" || mode === "follow") {
-          // Prefer this step's own click bbox; fall back to the last click
-          // we saw (so a wait-after-click step inherits the action point).
-          const fx = stepClickCx ?? lastClickCx;
-          const fy = stepClickCy ?? lastClickCy;
-          if (fx !== null && fy !== null) {
+          // Prefer the typing lock if active (the input's location), then
+          // this step's own click, then the most recent click anywhere.
+          const fx = typingLock?.x ?? stepClickCx ?? lastClickCx;
+          const fy = typingLock?.y ?? stepClickCy ?? lastClickCy;
+          if (fx !== null && fx !== undefined && fy !== null && fy !== undefined) {
             entry.focusX = fx;
             entry.focusY = fy;
           }

@@ -1,5 +1,5 @@
 import { mkdir, writeFile, rm } from "node:fs/promises";
-import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -32,18 +32,17 @@ const FPS = 24;
 let cachedVersionTag: string | null = null;
 function getVersionTag(): string {
   if (cachedVersionTag) return cachedVersionTag;
-  let pkgVer = "0.1.0";
+  // ESM-safe path resolution. The built output is ESM (tsconfig "module":
+  // "ESNext"), so `__dirname` is undefined here — using it threw silently
+  // and the version badge fell back to a hardcoded default. fileURLToPath
+  // works in both ESM and the tsx dev runner.
+  let pkgVer = "0.0.0-unknown";
   try {
-    const pkgPath = path.resolve(__dirname, "..", "package.json");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    pkgVer = JSON.parse(require("node:fs").readFileSync(pkgPath, "utf8")).version ?? pkgVer;
+    const here = fileURLToPath(import.meta.url);
+    const pkgPath = path.resolve(path.dirname(here), "..", "package.json");
+    pkgVer = JSON.parse(readFileSync(pkgPath, "utf8")).version ?? pkgVer;
   } catch {}
-  let sha = "";
-  try {
-    sha = execSync("git rev-parse --short=7 HEAD", { cwd: path.resolve(__dirname, ".."), stdio: ["ignore", "pipe", "ignore"] })
-      .toString().trim();
-  } catch {}
-  cachedVersionTag = sha ? `v${pkgVer} · ${sha}` : `v${pkgVer}`;
+  cachedVersionTag = `v${pkgVer}`;
   return cachedVersionTag;
 }
 
