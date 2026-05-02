@@ -129,8 +129,13 @@ function buildPrompt(ctx: ChecklistContext): string {
 
 const MIN_ITEMS = CHECKLIST_MIN_ITEMS;
 const MAX_ITEMS = CHECKLIST_MAX_ITEMS;
-const MAX_LABEL = 36;
-const MAX_NOTE = 64;
+const MAX_LABEL = 40;
+// Notes are conversational plain-English now ("Added a new task, pinned it,
+// and watched it rise to first place"). 64 chars cut almost every note
+// mid-sentence with "…". 120 fits a typical 12-word sentence comfortably
+// while still constraining a runaway LLM. The PR comment table column
+// stretches to fit; on the outro the note wraps to a second line.
+const MAX_NOTE = 120;
 
 function sanitise(items: any[]): ChecklistItem[] {
   const out: ChecklistItem[] = [];
