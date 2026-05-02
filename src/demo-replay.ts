@@ -36,6 +36,12 @@ export interface GoalReplay {
 
 export interface ReplayOptions {
   goals: GoalReplay[];
+  /** STEPS emitted by the pre-test sign-in agent. Replayed on pass-2's
+   *  fresh browser whenever the start URL lands on a login screen — the
+   *  storageState carryover only covers cookies + localStorage, so apps
+   *  whose auth lives in-memory (or behind a session cookie that wasn't
+   *  set during pass 1) need a fresh login before the goal demos run. */
+  loginSteps?: DemoStep[];
   runDir: string;
   startUrl: string;
   viewport: { width: number; height: number };
@@ -143,6 +149,57 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
     await page.goto(opts.startUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
     // Brief settle time so the initial frame isn't blank.
     await page.waitForTimeout(800);
+
+    // ── LOGIN DETECTION.
+    // The storageState carryover from pass 1 covers cookies + localStorage,
+    // but NOT in-memory auth flags. Apps whose login state lives only in a
+    // React component's useState (the taskpad demo, plenty of dev-mode
+    // login gates, "any password works" demos) come up as login forms in
+    // pass 2's fresh browser. If we see a visible password input within
+    // 1.5s of pageload, replay the login STEPS the pre-test sign-in agent
+    // emitted in pass 1 — same labels, same flow. Generic for any app
+    // whose tiktest.md declares credentials.
+    const passwordInput = page.locator('input[type="password"]');
+    let onLogin = false;
+    try { onLogin = await passwordInput.first().isVisible({ timeout: 1500 }); } catch {}
+    if (onLogin) {
+      if (opts.loginSteps?.length) {
+        console.log(chalk.dim(`     login screen detected — replaying ${opts.loginSteps.length} login step${opts.loginSteps.length === 1 ? "" : "s"}`));
+        const loginRecorder = {
+          click: (cx: number, cy: number, bbox?: { x: number; y: number; width: number; height: number }) => {
+            const ts = Math.max(0, Math.round(performance.now() - recordingStart));
+            interactions.push({ ts, kind: "click", x: cx, y: cy });
+            if (bbox) clickBboxes.push({ ts, x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height });
+          },
+          key: (key: string) => {
+            interactions.push({
+              ts: Math.max(0, Math.round(performance.now() - recordingStart)),
+              kind: "key",
+              x: 0,
+              y: 0,
+              key,
+            });
+          },
+        };
+        for (const step of opts.loginSteps) {
+          try { await runStep(page, step, loginRecorder); } catch (e) {
+            console.log(chalk.yellow(`     login step skipped: ${describeStep(step)} — ${(e as Error).message.split("\n")[0].slice(0, 100)}`));
+          }
+        }
+        // After login, give the app time to switch surfaces (some apps
+        // animate the gate out, mount the main view, fetch initial data).
+        await page.waitForTimeout(1200);
+        // Sanity check: did we get past the login form? If a password
+        // input is STILL visible we're going to fail every locator below
+        // anyway — log and proceed (the goal demos will skip cleanly).
+        try {
+          const stillOnLogin = await passwordInput.first().isVisible({ timeout: 800 });
+          if (stillOnLogin) console.log(chalk.yellow(`     login replay completed but a password input is still visible — goal demos may fail`));
+        } catch {}
+      } else {
+        console.log(chalk.yellow(`     login screen detected but no login STEPS were captured in pass 1 — goal demos will likely fail`));
+      }
+    }
 
     for (let gi = 0; gi < opts.goals.length; gi++) {
       const goal = opts.goals[gi];

@@ -698,6 +698,12 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   // Persisted storageState from the end of pass 1 — captures any login that
   // happened during the pre-test sign-in goal so pass 2 starts authenticated.
   let pass1StoragePath: string | undefined;
+  // Login STEPS emitted by the pre-test sign-in agent. Pass 2 replays these
+  // when its fresh browser lands on a login screen — the storageState
+  // carryover only covers cookies + localStorage, so apps that store auth
+  // in-memory (or behind a session-cookie that didn't get set) need a
+  // re-login at replay time.
+  let pass1LoginSteps: import("./types.js").DemoStep[] | undefined;
   const logLine = (label: string, step: { description: string }, extra = "") => {
     const pad = String(events.length + 1).padStart(2, "0");
     console.log(`  ${chalk.dim(pad)} ${label} ${chalk.bold(step.description)}${extra ? chalk.dim("  " + extra) : ""}`);
@@ -784,6 +790,10 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
           console.log(chalk.yellow(`  ! login phase reported failure but continuing — goals may still work if no auth required: ${loginResult.note?.slice(0, 100)}${diag}`));
         } else {
           console.log(chalk.dim(`  ✓ pre-test sign-in: ${loginResult.note?.slice(0, 80)}`));
+        }
+        if (loginResult.steps?.length) {
+          pass1LoginSteps = loginResult.steps;
+          console.log(chalk.dim(`  ✓ login STEPS captured for pass 2 replay (${loginResult.steps.length} steps)`));
         }
       } catch (e) {
         console.log(chalk.yellow(`  ! login phase crashed but continuing: ${(e as Error).message.split("\n")[0]}`));
@@ -999,6 +1009,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     try {
       const replay = await replayDemo({
         goals: goalReplays,
+        loginSteps: pass1LoginSteps,
         runDir,
         startUrl: plan.startUrl,
         viewport,
