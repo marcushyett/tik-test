@@ -762,9 +762,10 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       const loginGoal: Goal = {
         id: "_login",
         intent:
-          "If the current page shows a sign-in / login / authentication screen, sign in using the credentials in the CONTEXT below, then stop. " +
-          "If the page is already past auth (you can see the app's main content), do nothing and emit OUTCOME: success — already authenticated. " +
-          "DO NOT explore the app, DO NOT test any feature, DO NOT click around. Sign in only." +
+          "If the current page shows a sign-in / login / authentication screen, sign in using the credentials in the CONTEXT below. " +
+          "If the page is already past auth (you can see the app's main content), do nothing and emit OUTCOME: success — already authenticated, with EMPTY STEPS array (no login replay needed). " +
+          "DO NOT explore the app, DO NOT test any feature beyond the login itself. " +
+          "STEPS REQUIREMENT (this overrides the 'design the perfect demo' framing): if you DID sign in, your STEPS list MUST contain the exact actions a fresh browser needs to repeat the same login — the email-input action, the password-input action, the submit click, and a final wait. Use the user-visible label of each field ('Email', 'Password', 'Sign in', etc) — pass 2 will resolve them via getByLabel / getByRole. Skipping STEPS for the login goal will leave pass 2's fresh browser stuck on the login screen." +
           expectedBtnHint,
         shortLabel: "Sign in",
         importance: "high",
