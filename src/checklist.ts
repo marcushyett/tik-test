@@ -88,7 +88,14 @@ function formatGoals(ctx: ChecklistContext): string {
 }
 
 function formatActions(ctx: ChecklistContext): string {
-  const tw = ctx.artifacts.toolWindows ?? [];
+  // Filter out PASS-2 demo-replay tool windows (kind starts with "replay_").
+  // Those are CHOREOGRAPHY for the recording, not new test signal — every
+  // step they describe was already verified in pass 1, and the LLM kept
+  // turning replay locator timeouts (a recording-engine glitch, not a
+  // product bug) into spurious "X check failed" rows in the user's PR
+  // comment. The pass-1 agent's verification notes (already in GOALS via
+  // shortNote / notes) are the authoritative signal for what was tested.
+  const tw = (ctx.artifacts.toolWindows ?? []).filter((t) => !t.kind.startsWith("replay_"));
   if (tw.length === 0) return "(no tool windows)";
   // Cap rows so the prompt stays bounded — anything past the first 60
   // tool calls is rarely load-bearing for the checklist (the agent

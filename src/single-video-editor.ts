@@ -167,6 +167,19 @@ export interface SingleVideoInput {
  *               extends to cover the dead air naturally.
  */
 function classifyTool(kind: string): "silent" | "visible" | "skip" {
+  // Pass-2 demo-replay tool windows: classify the visible step kinds as
+  // "visible" so they (a) anchor narration windows next to the action,
+  // and (b) keep the trim plan from collapsing them as idle. Without
+  // this, every replay_* kind fell through to the default "skip" bucket,
+  // which silently broke audio/caption sync — the trim plan compressed
+  // the goal-action stretches as if they were dead air, while login
+  // clicks (also no tool window) DID get used as narration anchors via
+  // page-side __tikRecord. Net effect: narration distributed across
+  // login windows + early dwells, then goal visuals played 5-10s late.
+  if (kind.startsWith("replay_")) {
+    if (kind === "replay_wait" || kind === "replay_navigate" || kind.endsWith("_skipped")) return "skip";
+    return "visible";
+  }
   switch (kind) {
     case "browser_evaluate":
     case "browser_network_requests":
@@ -607,9 +620,25 @@ export async function editSingleVideo({
   //      timing is FIXED to the click that opens or closes the window, so
   //      the spoken word is anchored to the meaningful visual moment.
   const MIN_WINDOW_DUR_S = 1.5;
-  const clicks = mappedInteractions
+  // EXCLUDE pre-goal clicks from narration anchors. The login replay
+  // (and any pre-goal setup) generates real DOM clicks that page-side
+  // __tikRecord captures, so they end up in `interactions`. Without
+  // this filter they become narration anchors, splitting the LLM's
+  // narration budget across login + transition windows. The narrator
+  // then writes goal-action narration that PLAYS DURING the login
+  // visuals — the 5-10s caption-vs-video desync the user reports.
+  // First-goal start in body-relative seconds = the cutoff.
+  const goalEvents = artifacts.events.filter((e) => e.kind === "intent");
+  const firstGoalStartBodyS = goalEvents.length > 0
+    ? Math.max(0, rawToTrimmed(goalEvents[0].startMs / 1000, plan) - 0.2)
+    : 0;
+  const allClicks = mappedInteractions
     .filter((ev) => ev.kind === "click")
     .sort((a, b) => a.tsS - b.tsS);
+  const clicks = allClicks.filter((c) => c.tsS >= firstGoalStartBodyS);
+  if (allClicks.length !== clicks.length) {
+    console.log(chalk.dim(`  excluded ${allClicks.length - clicks.length} pre-goal click(s) from narration anchors (login + transition)`));
+  }
   // Match each click to its nearest "visible-action" tool window by time
   // proximity so we can include the clicked element's description in the
   // window context. This is what makes the difference between the narrator
@@ -936,7 +965,6 @@ export async function editSingleVideo({
   // each other.
   const STAMP_DUR_S = 1.8;
   const STAMP_GAP_S = 0.25;
-  const goalEvents = artifacts.events.filter((e) => e.kind === "intent");
   const stampCandidates = goalEvents
     .map((e) => {
       const rawEndS = e.endMs / 1000;
