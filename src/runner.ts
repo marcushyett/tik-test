@@ -5,6 +5,7 @@ import chalk from "chalk";
 import type { Goal, RunArtifacts, StepEvent, TestPlan } from "./types.js";
 import { findFeature, isFeaturePageReady, snapshot } from "./feature-finder.js";
 import { runGoal } from "./goal-agent.js";
+import { replayDemo, type GoalReplay } from "./demo-replay.js";
 
 /**
  * Wait for all visible <img> elements on the page to finish loading (or fail
@@ -146,7 +147,7 @@ export interface RunOptions {
  * we can't fix the upstream data from here — but at least the recorded
  * video can show a clean "preview unavailable" card instead of a blank.
  */
-const BROKEN_IMAGE_FALLBACK = `
+export const BROKEN_IMAGE_FALLBACK = `
 (() => {
   const PLACEHOLDER =
     'data:image/svg+xml;charset=utf-8,' +
@@ -215,7 +216,7 @@ const BROKEN_IMAGE_FALLBACK = `
  * cursor with click flashes, (c) targeted pan-zoom toward click bboxes
  * needs the same coord stream anyway.
  */
-const INTERACTION_RECORDER_INIT = `
+export const INTERACTION_RECORDER_INIT = `
 (() => {
   // Drop synthesized / programmatic clicks at (0,0) or in the top-left corner.
   // These are dispatched by frameworks during page bootstrap (focus
@@ -270,7 +271,7 @@ const INTERACTION_RECORDER_INIT = `
  *     because real UI updates often change classes more than they
  *     add nodes (e.g. "is-open", "is-success", visibility toggles)
  */
-const MUTATION_RECORDER_INIT = `
+export const MUTATION_RECORDER_INIT = `
 (() => {
   function isInteresting(node) {
     if (!node || node.nodeType !== 1) return false;
@@ -690,6 +691,13 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   const page = await context.newPage();
 
   const events: StepEvent[] = [];
+  // Pass-2 replay material — populated as each pass-1 goal completes if the
+  // agent emitted STEPS. After pass 1 finishes we hand this to demo-replay
+  // for a deterministic, paced re-run that becomes the actual final video.
+  const goalReplays: GoalReplay[] = [];
+  // Persisted storageState from the end of pass 1 — captures any login that
+  // happened during the pre-test sign-in goal so pass 2 starts authenticated.
+  let pass1StoragePath: string | undefined;
   const logLine = (label: string, step: { description: string }, extra = "") => {
     const pad = String(events.length + 1).padStart(2, "0");
     console.log(`  ${chalk.dim(pad)} ${label} ${chalk.bold(step.description)}${extra ? chalk.dim("  " + extra) : ""}`);
@@ -890,6 +898,8 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
           JSON.stringify({ goal, outcome: result.outcome, note: result.note, actions: result.actions }, null, 2),
         );
       } catch {}
+      const shortLabel = goal.shortLabel?.trim() || goal.intent.replace(/\s+/g, " ").slice(0, 32);
+      const shortNote = result.shortNote?.trim() || result.note?.replace(/\s+/g, " ").slice(0, 60);
       events.push({
         stepId: goal.id,
         description: goal.intent,
@@ -905,11 +915,28 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
         // back to a 60-char truncation of the long note if the agent
         // skipped SHORTNOTE. Both fallbacks are safety nets — the planner
         // / agent prompts demand these fields.
-        shortLabel: goal.shortLabel?.trim() || goal.intent.replace(/\s+/g, " ").slice(0, 32),
-        shortNote: result.shortNote?.trim() || result.note?.replace(/\s+/g, " ").slice(0, 60),
+        shortLabel,
+        shortNote,
         screenshotPath,
         bbox: result.bbox,
       });
+      // Stash the agent's choreographed demo for pass 2 — but only for
+      // outcomes the viewer should actually see replayed. Skipped goals
+      // have no useful happy path to demonstrate; pass 2 silently drops
+      // them so the final video stays focused on what actually works
+      // (success) or what's clearly broken (failure).
+      if (result.steps?.length && result.outcome !== "skipped") {
+        goalReplays.push({
+          goalId: goal.id,
+          description: goal.intent,
+          importance: goal.importance ?? "normal",
+          shortLabel,
+          shortNote,
+          outcome: result.outcome,
+          note: result.note,
+          steps: result.steps,
+        });
+      }
       if (result.outcome === "success") {
         logLine(chalk.green("✓"), { id: goal.id, kind: "intent", description: goal.intent, importance: goal.importance } as any, result.note ?? "");
       } else if (result.outcome === "skipped") {
@@ -926,6 +953,16 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     // Tail dwell for editor to hold on the final goal's result.
     await page.waitForTimeout(1500);
   } finally {
+    // Snapshot the post-pass-1 storageState (cookies + localStorage) BEFORE
+    // closing the context. Pass 2 reuses this so any login that happened
+    // during pass 1 carries over — without it, pass 2 would land on the
+    // login page and find none of the labelled elements.
+    try {
+      pass1StoragePath = path.join(runDir, "pass1-storage.json");
+      await context.storageState({ path: pass1StoragePath });
+    } catch {
+      pass1StoragePath = undefined;
+    }
     // Close page first to flush video
     await page.close();
     await context.close();
@@ -940,22 +977,69 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   const rawVideoPath = path.join(runDir, "raw.webm");
   await rename(path.join(videoDir, vid), rawVideoPath);
 
+  // ── PASS 2 — DETERMINISTIC DEMO REPLAY.
+  //
+  // Pass 1 (above) is exploratory: the agent clicks fast, retries probes,
+  // double-checks, sometimes loops. The recording shows all of that and
+  // narration falls behind because there's no breathing room between
+  // actions. Pass 2 takes the agent's STEPS output (a clean linear demo
+  // PER goal — its own summary of what to show, with labels copied from
+  // what it actually saw on screen) and replays them with fixed dwell
+  // between actions. This recording is what becomes the final video.
+  //
+  // Falls back to pass-1 video if the agent didn't emit any STEPS (e.g.
+  // every goal was skipped) or pass 2 itself fails for any reason.
+  let finalVideoPath = rawVideoPath;
+  let finalEvents = events;
+  let finalToolWindows = toolWindows;
+  let finalInteractions = interactions;
+  let finalClickBboxes = clickBboxes;
+  let finalMutations = mutations;
+  if (goalReplays.length > 0) {
+    try {
+      const replay = await replayDemo({
+        goals: goalReplays,
+        runDir,
+        startUrl: plan.startUrl,
+        viewport,
+        headed: !!headed,
+        // Prefer the storageState we captured at the end of pass 1 (which
+        // includes any in-test login). Fall back to the externally-supplied
+        // one (CI runs with prebuilt auth) and finally to undefined (no auth).
+        storageStatePath: pass1StoragePath ?? storageStatePath,
+        cookies,
+        extraHTTPHeaders,
+      });
+      finalVideoPath = replay.rawVideoPath;
+      finalEvents = replay.events;
+      finalToolWindows = replay.toolWindows;
+      finalInteractions = replay.interactions;
+      finalClickBboxes = replay.clickBboxes;
+      finalMutations = replay.mutations;
+      console.log(chalk.green(`  pass 2 replay used as final video (pass-1 recording kept at ${path.basename(rawVideoPath)} for debugging)`));
+    } catch (e) {
+      console.log(chalk.yellow(`  pass 2 replay failed (${(e as Error).message.split("\n")[0]}); falling back to pass-1 video`));
+    }
+  } else {
+    console.log(chalk.dim(`  pass 2 skipped: no agent emitted STEPS (the prompt asks for them; older agent runs may not). Using pass-1 video.`));
+  }
+
   const finishedAt = new Date().toISOString();
   const totalMs = Math.round(performance.now() - runStart);
 
   const artifacts: RunArtifacts = {
     runDir,
-    rawVideoPath,
+    rawVideoPath: finalVideoPath,
     eventsJsonPath: path.join(runDir, "events.json"),
-    events,
+    events: finalEvents,
     plan,
     startedAt,
     finishedAt,
     totalMs,
-    toolWindows: toolWindows.length ? toolWindows : undefined,
-    interactions: interactions.length ? interactions : undefined,
-    clickBboxes: clickBboxes.length ? clickBboxes : undefined,
-    mutations: mutations.length ? mutations : undefined,
+    toolWindows: finalToolWindows.length ? finalToolWindows : undefined,
+    interactions: finalInteractions.length ? finalInteractions : undefined,
+    clickBboxes: finalClickBboxes.length ? finalClickBboxes : undefined,
+    mutations: finalMutations.length ? finalMutations : undefined,
   };
   await writeFile(artifacts.eventsJsonPath, JSON.stringify({ plan, events, startedAt, finishedAt, totalMs, toolWindows: artifacts.toolWindows }, null, 2));
   if (artifacts.interactions?.length) {

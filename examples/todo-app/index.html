@@ -34,17 +34,22 @@
   .filters button { background: transparent; border: 1px solid var(--line); color: var(--ink-2); border-radius: 999px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
   .filters button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
   ul.tasks { list-style: none; margin: 0; padding: 0; }
-  ul.tasks li { display: grid; grid-template-columns: 28px 1fr auto auto; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); transition: background 120ms; }
+  ul.tasks li { display: grid; grid-template-columns: 28px 1fr auto auto auto; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line); transition: background 120ms; }
   ul.tasks li:last-child { border-bottom: 0; }
   ul.tasks li:hover { background: #fafbfd; }
   ul.tasks li.done .title { text-decoration: line-through; color: var(--ink-2); }
   ul.tasks li.done { opacity: 0.7; }
   ul.tasks input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent-2); cursor: pointer; }
-  .title { font-size: 15px; }
+  .title { font-size: 15px; cursor: text; padding: 2px 4px; border-radius: 6px; transition: background 100ms; }
+  .title:hover { background: #f0f2fa; }
+  .title-edit { font-size: 15px; border: 1px solid var(--accent); border-radius: 6px; padding: 2px 6px; outline: none; font-family: inherit; width: 100%; }
   .badge { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 999px; background: #f0f2fa; color: var(--ink-2); }
   .badge.high { background: #ffedea; color: #c83c1e; }
   .badge.low { background: #eafaf3; color: #0a8560; }
-  .del { background: transparent; border: 0; color: var(--ink-2); cursor: pointer; padding: 6px 8px; border-radius: 8px; }
+  .pin, .del { background: transparent; border: 0; color: var(--ink-2); cursor: pointer; padding: 6px 8px; border-radius: 8px; font-size: 14px; }
+  .pin:hover { background: #fff7e0; color: #c98a00; }
+  .pin.pinned { color: #c98a00; }
+  ul.tasks li.pinned { background: linear-gradient(to right, #fffbef 0%, transparent 60%); border-left: 3px solid #f5c84a; }
   .del:hover { background: #ffecec; color: var(--danger); }
   .empty { padding: 40px 20px; text-align: center; color: var(--ink-2); font-size: 14px; }
   footer.foot { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; font-size: 12px; color: var(--ink-2); background: #fafbfd; border-top: 1px solid var(--line); }
@@ -153,11 +158,17 @@
     // classic "two things on the same page, wrong one wired up" regression.
     else if (state.filter === "high") items = items.filter((t) => t.priority === "low");
 
+    // Pinned tasks always sort to the top (regardless of filter / sort), so
+    // the "important now" rows stay anchored as the user toggles, deletes,
+    // and re-sorts. Equal-pin items keep insertion order via a stable sort.
+    items = items.slice().sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
+
     tasksEl.innerHTML = items.map((t) => `
-      <li class="${t.done ? "done" : ""}" data-id="${t.id}" data-testid="task-${t.id}">
+      <li class="${t.done ? "done " : ""}${t.pinned ? "pinned" : ""}" data-id="${t.id}" data-testid="task-${t.id}">
         <input type="checkbox" data-testid="toggle-${t.id}" ${t.done ? "checked" : ""} />
-        <div class="title">${escape(t.title)}</div>
+        <div class="title" data-testid="title-${t.id}" tabindex="0" role="button" aria-label="Edit task title">${escape(t.title)}</div>
         <span class="badge ${t.priority}">${t.priority}</span>
+        <button class="pin ${t.pinned ? "pinned" : ""}" data-testid="pin-${t.id}" aria-label="${t.pinned ? "Unpin task" : "Pin task"}" title="${t.pinned ? "Unpin" : "Pin to top"}">${t.pinned ? "📌" : "📍"}</button>
         <button class="del" data-testid="del-${t.id}" aria-label="Delete task">✕</button>
       </li>
     `).join("");
@@ -191,6 +202,56 @@
         render();
       });
     });
+    tasksEl.querySelectorAll(".pin").forEach((b) => {
+      b.addEventListener("click", () => {
+        const id = b.closest("li").dataset.id;
+        const t = state.tasks.find((x) => x.id === id);
+        t.pinned = !t.pinned;
+        toast(t.pinned ? "Pinned to top." : "Unpinned.");
+        render();
+      });
+    });
+    tasksEl.querySelectorAll(".title").forEach((el) => {
+      el.addEventListener("click", () => beginEdit(el));
+    });
+  }
+
+  // Inline title edit. Click a task title → swaps the <div> for an <input>
+  // pre-filled with the current text. Enter saves, Escape cancels, blur
+  // saves (so a click anywhere outside is a "save"). Empty saves are
+  // rejected — a task without a title would be visually confusing.
+  function beginEdit(titleEl) {
+    if (titleEl.querySelector("input")) return; // already editing
+    const li = titleEl.closest("li");
+    const id = li.dataset.id;
+    const t = state.tasks.find((x) => x.id === id);
+    if (!t) return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = t.title;
+    input.className = "title-edit";
+    input.dataset.testid = `title-edit-${id}`;
+    titleEl.innerHTML = "";
+    titleEl.appendChild(input);
+    input.focus();
+    input.select();
+    let cancelled = false;
+    const commit = () => {
+      const next = input.value.trim();
+      if (!next) {
+        toast("Title can't be empty.");
+        render();
+        return;
+      }
+      t.title = next;
+      toast("Title updated.");
+      render();
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); commit(); }
+      else if (e.key === "Escape") { cancelled = true; render(); }
+    });
+    input.addEventListener("blur", () => { if (!cancelled) commit(); });
   }
 
   function escape(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
@@ -228,7 +289,7 @@
     setTimeout(() => {
       btn.classList.remove("loading");
       btn.innerHTML = originalHtml;
-      state.tasks.push({ id: "t" + (state.tasks.length + 1) + "-" + Math.random().toString(36).slice(2, 6), title, priority, done: false });
+      state.tasks.push({ id: "t" + (state.tasks.length + 1) + "-" + Math.random().toString(36).slice(2, 6), title, priority, done: false, pinned: false });
       $("#new-task-input").value = "";
       toast("Task added.");
       render();
@@ -255,8 +316,8 @@
 
   // Seed with some demo data so first run isn't empty
   state.tasks = [
-    { id: "seed-1", title: "Review draft spec", priority: "normal", done: true },
-    { id: "seed-2", title: "Ship Taskpad v0.1", priority: "high", done: false },
+    { id: "seed-1", title: "Review draft spec", priority: "normal", done: true, pinned: false },
+    { id: "seed-2", title: "Ship Taskpad v0.1", priority: "high", done: false, pinned: false },
   ];
   render();
 </script>

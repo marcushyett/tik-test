@@ -39,6 +39,37 @@ export interface TestPlan {
 
 export type EventOutcome = "success" | "failure" | "skipped";
 
+/** A single user action in a CHOREOGRAPHED demo replay (pass 2). The
+ *  agent (pass 1) emits a list of these per goal — its summary of what
+ *  a viewer should see to understand the feature. Pass 2 walks them
+ *  with deliberate dwell so narration has room to land per step.
+ *
+ *  Locator strategy: `label` + optional `role` resolve via Playwright's
+ *  user-facing locators (getByRole / getByLabel / getByPlaceholder /
+ *  getByText fallback). The agent picks `label` from what it actually
+ *  saw on screen during pass 1, so the same label resolves in pass 2's
+ *  fresh browser. */
+export interface DemoStep {
+  kind: "click" | "type" | "press" | "select" | "wait" | "navigate";
+  /** User-facing element name for click / type / select. Examples: "Add task",
+   *  "Email", "Priority". Required for click/type/select. */
+  label?: string;
+  /** ARIA role for click — sharpens the match when label is generic. */
+  role?: string;
+  /** For type: the text to type. For select: the option value/label. */
+  value?: string;
+  /** For press: the key (e.g. "Enter", "Escape"). */
+  key?: string;
+  /** For wait: how long to hold (ms). Used between actions when the page
+   *  needs time to settle but no further click makes sense. */
+  ms?: number;
+  /** For navigate: the URL — only valid when changing app surface mid-demo. */
+  url?: string;
+  /** Optional caption hint — what to mention while this step plays.
+   *  The post-recording narrator uses this verbatim or as a starting point. */
+  hint?: string;
+}
+
 export interface BBox {
   x: number;
   y: number;
