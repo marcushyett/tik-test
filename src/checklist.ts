@@ -13,7 +13,7 @@
 import chalk from "chalk";
 import type { RunArtifacts } from "./types.js";
 import { NARRATION_TIMEOUT_MS, CHECKLIST_MIN_ITEMS, CHECKLIST_MAX_ITEMS } from "./timeouts.js";
-import { runClaude, extractJson } from "./claude-cli.js";
+import { runClaudeJson } from "./claude-cli.js";
 
 export interface ChecklistItem {
   outcome: "success" | "failure" | "skipped";
@@ -161,24 +161,25 @@ export async function generateChecklist(ctx: ChecklistContext): Promise<Checklis
   if (ctx.artifacts.events.length === 0) return null;
   const prompt = buildPrompt(ctx);
   console.log(chalk.dim(`  asking claude to synthesise the outro checklist…`));
-  let raw: string;
   try {
-    raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "checklist", timeoutKnob: "TIK_NARRATION_TIMEOUT_MS" });
-  } catch (e) {
-    console.log(chalk.yellow(`  checklist generation failed (${(e as Error).message.split("\n")[0]}); falling back to goal-level rows`));
-    return null;
-  }
-  try {
-    const json = extractJson(raw);
-    const parsed = JSON.parse(json);
-    const items = Array.isArray(parsed?.items) ? sanitise(parsed.items) : [];
+    // runClaudeJson retries on parse failure with the bad output fed back
+    // in — the LLM almost always self-corrects once shown its own
+    // unescaped quote / trailing comma. Worth the extra CLI calls because
+    // the fallback (one row per goal) hides the granular check data the
+    // grouped outro is specifically designed to display.
+    const { value, attempts } = await runClaudeJson<{ items?: unknown[] }>({
+      prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet",
+      label: "checklist", timeoutKnob: "TIK_NARRATION_TIMEOUT_MS",
+    });
+    if (attempts > 1) console.log(chalk.dim(`  checklist parsed on attempt ${attempts}`));
+    const items = Array.isArray(value?.items) ? sanitise(value.items) : [];
     if (items.length < MIN_ITEMS) {
       console.log(chalk.yellow(`  checklist returned only ${items.length} items (<${MIN_ITEMS}); falling back to goal-level rows`));
       return null;
     }
     return items;
   } catch (e) {
-    console.log(chalk.yellow(`  checklist JSON unparseable (${(e as Error).message.split("\n")[0]}); falling back to goal-level rows`));
+    console.log(chalk.yellow(`  checklist generation failed (${(e as Error).message.split("\n")[0]}); falling back to goal-level rows`));
     return null;
   }
 }

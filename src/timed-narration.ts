@@ -1,7 +1,7 @@
 import chalk from "chalk";
 import type { TestPlan, Goal } from "./types.js";
 import { NARRATION_TIMEOUT_MS } from "./timeouts.js";
-import { runClaude, extractJson } from "./claude-cli.js";
+import { runClaudeJson } from "./claude-cli.js";
 
 /**
  * One CLICK-ANCHORED window of the body video. Windows partition the body
@@ -261,14 +261,15 @@ export async function generateNarration(ctx: NarrationInput): Promise<NarrationO
   }
   const prompt = buildPrompt(ctx);
   console.log(chalk.dim(`  asking claude for click-anchored narration (intro + ${ctx.windows.length} body windows + outro, ${ctx.goals.length} goals)…`));
-  const raw = await runClaude({ prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet", label: "narration", timeoutKnob: "TIK_NARRATION_TIMEOUT_MS" });
-  const json = extractJson(raw);
-  let parsed: NarrationOutput;
-  try {
-    parsed = JSON.parse(json) as NarrationOutput;
-  } catch (e) {
-    throw new Error(`claude returned unparseable JSON for narration: ${(e as Error).message.split("\n")[0]}\n--- raw output (first 500 chars) ---\n${raw.slice(0, 500)}`);
-  }
+  // runClaudeJson retries on malformed JSON with the bad output fed back
+  // — crucial for narration because the prompt asks for many freeform
+  // strings (every window's text + captionText), each a chance for an
+  // unescaped quote to break the parse and leave the video silent.
+  const { value: parsed, attempts } = await runClaudeJson<NarrationOutput>({
+    prompt, timeoutMs: NARRATION_TIMEOUT_MS, model: "sonnet",
+    label: "narration", timeoutKnob: "TIK_NARRATION_TIMEOUT_MS",
+  });
+  if (attempts > 1) console.log(chalk.dim(`  narration parsed on attempt ${attempts}`));
   for (const key of ["intro", "outro"] as const) {
     const line = parsed[key];
     if (!line || typeof line.text !== "string" || !line.text.trim()) {
