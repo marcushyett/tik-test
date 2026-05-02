@@ -63,6 +63,7 @@ export interface ReplayArtifacts {
   interactions: NonNullable<RunArtifacts["interactions"]>;
   clickBboxes: NonNullable<RunArtifacts["clickBboxes"]>;
   mutations: NonNullable<RunArtifacts["mutations"]>;
+  cameraPlan: NonNullable<RunArtifacts["cameraPlan"]>;
 }
 
 // Per-step pacing. Tuned for narration headroom: each click gets at least
@@ -145,6 +146,11 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
 
   const events: StepEvent[] = [];
   const toolWindows: NonNullable<RunArtifacts["toolWindows"]> = [];
+  // Camera plan — one entry per demo step. The agent's `camera` directive
+  // on each step drives mode (tight / wide / follow); focus comes from the
+  // step's click bbox if it's tight (else inherits the most recent click
+  // for follow, or is unset for wide).
+  const cameraPlan: NonNullable<RunArtifacts["cameraPlan"]> = [];
 
   try {
     console.log(chalk.cyan(`\n  pass 2 — replaying ${opts.goals.length} demo goal${opts.goals.length === 1 ? "" : "s"}`));
@@ -190,11 +196,17 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
       const goalStartMs = Math.max(0, Math.round(performance.now() - recordingStart));
       console.log(chalk.dim(`     ${gi + 1}/${opts.goals.length}  ${goal.shortLabel || goal.description.slice(0, 48)} (${goal.steps.length} steps)`));
 
+      // The current step's click bbox (mutated by record.click). Used at
+      // step end to pin the camera plan's focus point when mode === "tight".
+      let stepClickCx: number | null = null;
+      let stepClickCy: number | null = null;
       const record = {
         click: (cx: number, cy: number, bbox?: { x: number; y: number; width: number; height: number }) => {
           const ts = Math.max(0, Math.round(performance.now() - recordingStart));
           interactions.push({ ts, kind: "click", x: cx, y: cy });
           if (bbox) clickBboxes.push({ ts, x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height });
+          stepClickCx = cx;
+          stepClickCy = cy;
         },
         key: (key: string) => {
           interactions.push({
@@ -206,12 +218,21 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
           });
         },
       };
+      // Track the most recent click coords across the goal — when a step
+      // (e.g. wait, press) has no click of its own, "tight" / "follow"
+      // inherits the previous click as its focus point.
+      let lastClickCx: number | null = null;
+      let lastClickCy: number | null = null;
 
       for (const step of goal.steps) {
         const stepStartMs = Math.max(0, Math.round(performance.now() - recordingStart));
+        stepClickCx = null;
+        stepClickCy = null;
+        let stepFailed = false;
         try {
           await runStep(page, step, record);
         } catch (e) {
+          stepFailed = true;
           console.log(chalk.yellow(`       step skipped: ${describeStep(step)} — ${(e as Error).message.split("\n")[0].slice(0, 100)}`));
           // Log a tool window so the editor doesn't think this was dead air.
           const stepEndMs = Math.max(stepStartMs + 50, Math.round(performance.now() - recordingStart));
@@ -222,16 +243,43 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
             input: describeStep(step),
             result: (e as Error).message.split("\n")[0].slice(0, 200),
           });
-          continue;
         }
+        if (!stepFailed) {
+          const stepEndMs = Math.max(stepStartMs + 50, Math.round(performance.now() - recordingStart));
+          toolWindows.push({
+            startMs: stepStartMs,
+            endMs: stepEndMs,
+            kind: `replay_${step.kind}`,
+            input: describeStep(step),
+            result: step.hint,
+          });
+        }
+        // Update the goal-level "last click" cursor from this step's click.
+        if (stepClickCx !== null && stepClickCy !== null) {
+          lastClickCx = stepClickCx;
+          lastClickCy = stepClickCy;
+        }
+        // Build the camera plan entry for this step's window. Default to
+        // wide when the agent didn't pick a mode — most of the demo should
+        // be full-page so the viewer follows what's happening.
         const stepEndMs = Math.max(stepStartMs + 50, Math.round(performance.now() - recordingStart));
-        toolWindows.push({
+        const mode: "tight" | "wide" | "follow" = step.camera ?? "wide";
+        const entry: { startMs: number; endMs: number; mode: typeof mode; focusX?: number; focusY?: number } = {
           startMs: stepStartMs,
           endMs: stepEndMs,
-          kind: `replay_${step.kind}`,
-          input: describeStep(step),
-          result: step.hint,
-        });
+          mode,
+        };
+        if (mode === "tight" || mode === "follow") {
+          // Prefer this step's own click bbox; fall back to the last click
+          // we saw (so a wait-after-click step inherits the action point).
+          const fx = stepClickCx ?? lastClickCx;
+          const fy = stepClickCy ?? lastClickCy;
+          if (fx !== null && fy !== null) {
+            entry.focusX = fx;
+            entry.focusY = fy;
+          }
+        }
+        cameraPlan.push(entry);
       }
 
       const goalEndMs = Math.max(goalStartMs + 200, Math.round(performance.now() - recordingStart));
@@ -279,6 +327,11 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
   }
   console.log(chalk.dim(`  pass 2 done: ${(totalMs / 1000).toFixed(1)}s body, ${events.length} goals, ${toolWindows.length} step windows`));
 
+  if (cameraPlan.length > 0) {
+    const counts = cameraPlan.reduce<Record<string, number>>((a, e) => { a[e.mode] = (a[e.mode] ?? 0) + 1; return a; }, {});
+    console.log(chalk.dim(`  camera plan: ${cameraPlan.length} entries (${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ")})`));
+  }
+
   return {
     rawVideoPath,
     startedAt,
@@ -289,6 +342,7 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
     interactions,
     clickBboxes,
     mutations,
+    cameraPlan,
   };
 }
 

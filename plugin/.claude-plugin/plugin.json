@@ -1,7 +1,7 @@
 {
   "name": "tiktest",
   "description": "Record a TikTok-style video walkthrough of your local dev server using the tik-test CLI.",
-  "version": "1.5.3",
+  "version": "1.5.4",
   "author": {
     "name": "Marcus Hyett",
     "email": "marc.hyett@gmail.com"

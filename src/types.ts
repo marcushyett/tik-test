@@ -68,6 +68,21 @@ export interface DemoStep {
   /** Optional caption hint — what to mention while this step plays.
    *  The post-recording narrator uses this verbatim or as a starting point. */
   hint?: string;
+  /** Camera intent for this step's window — replaces the previous reactive
+   *  click-driven zoom logic with an agent-planned directive. The agent
+   *  picks one mode per step based on what the viewer should be looking
+   *  at while that step plays. Default if omitted: "wide".
+   *
+   *  - "tight" — zoom in on the action point (the step's click target,
+   *    or the most recent click if this step is a wait/press). Use when
+   *    a specific control IS the subject.
+   *  - "wide"  — full page view. Use for context-establishing shots and
+   *    for moments where the result spans the page (a list updates, a
+   *    toast appears in the corner, multiple things change at once).
+   *  - "follow" — start tight on the action, ease out to wide over the
+   *    step's duration. Use when an action triggers a visible side effect
+   *    elsewhere on the page that the viewer needs to see. */
+  camera?: "tight" | "wide" | "follow";
 }
 
 export interface BBox {
@@ -123,6 +138,15 @@ export interface RunArtifacts {
    *  `mutations` below to detect post-click DOM updates that landed OUTSIDE
    *  the clicked element — the signal that pan-zoom should release. */
   clickBboxes?: Array<{ ts: number; x: number; y: number; width: number; height: number }>;
+  /** Agent-planned camera plan for the body — one window per demo step,
+   *  keyed to RAW recording-relative ms (same timeline as toolWindows /
+   *  events). Each entry has a `mode` directive (tight / wide / follow)
+   *  and an optional viewport-pixel focus point. Replaces the reactive
+   *  click-driven pan-zoom with explicit creative direction from the
+   *  agent that designed the demo. The editor maps these to body-relative
+   *  seconds via the trim plan; the Remotion compositor lerps zoom +
+   *  focus between consecutive entries for smooth transitions. */
+  cameraPlan?: Array<{ startMs: number; endMs: number; mode: "tight" | "wide" | "follow"; focusX?: number; focusY?: number }>;
   /** DOM mutations observed page-side via a MutationObserver, with each
    *  mutation's bounding rect at observation time. The editor pairs these
    *  with `clickBboxes` to find post-click off-target page changes that

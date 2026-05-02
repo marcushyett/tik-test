@@ -121,6 +121,13 @@ export interface SingleVideoInput {
   /** Animated check / cross / dash stamps timed to the moment each goal
    *  was decided by the agent. Body-relative seconds. */
   verificationStamps?: Array<{ atS: number; outcome: "success" | "failure" | "skipped"; label: string }>;
+  /** Agent-planned camera plan — one entry per demo step in body-relative
+   *  seconds. The Remotion compositor reads this instead of the reactive
+   *  click-driven pan-zoom rules: each entry's `mode` (tight / wide /
+   *  follow) drives zoom, optional focus is in viewport pixels (same
+   *  coord space as `interactions`). When this is provided pan-zoom is
+   *  ENTIRELY agent-directed; legacy rules only run if it's empty. */
+  cameraPlan?: Array<{ startS: number; durS: number; mode: "tight" | "wide" | "follow"; focusX?: number; focusY?: number }>;
   /** Body-relative intervals where the pan-zoom should RELEASE to neutral
    *  framing. Computed from page-side MutationObserver data: whenever a
    *  click triggers DOM mutations OUTSIDE the clicked element's bbox
@@ -939,6 +946,23 @@ export async function editSingleVideo({
     verificationStamps.push({ atS, outcome: c.outcome, label: c.label });
     lastEndS = atS + STAMP_DUR_S;
   }
+  // Convert the raw-ms cameraPlan from the runner into body-relative
+  // seconds. Drop entries whose window doesn't intersect the trim plan
+  // (those are pure dead air the editor cropped out anyway).
+  const cameraPlanBody: Array<{ startS: number; durS: number; mode: "tight" | "wide" | "follow"; focusX?: number; focusY?: number }> = [];
+  for (const entry of artifacts.cameraPlan ?? []) {
+    const startBodyS = rawToTrimmed(entry.startMs / 1000, plan);
+    const endBodyS = rawToTrimmed(entry.endMs / 1000, plan);
+    const durS = Math.max(0.05, endBodyS - startBodyS);
+    if (startBodyS >= masterDurS - 0.05) continue;
+    cameraPlanBody.push({ startS: Math.max(0, startBodyS), durS, mode: entry.mode, focusX: entry.focusX, focusY: entry.focusY });
+  }
+  cameraPlanBody.sort((a, b) => a.startS - b.startS);
+  if (cameraPlanBody.length > 0) {
+    const counts = cameraPlanBody.reduce<Record<string, number>>((a, e) => { a[e.mode] = (a[e.mode] ?? 0) + 1; return a; }, {});
+    console.log(chalk.dim(`  camera plan (body-relative): ${cameraPlanBody.length} entries (${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ")})`));
+  }
+
   if (verificationStamps.length > 0) {
     console.log(chalk.dim(`  verification stamps: ${verificationStamps.length} (${verificationStamps.filter(s => s.outcome === "success").length} pass / ${verificationStamps.filter(s => s.outcome === "failure").length} fail / ${verificationStamps.filter(s => s.outcome === "skipped").length} skip)`));
   }
@@ -964,6 +988,7 @@ export async function editSingleVideo({
     bodyChunks,
     bodyBadges: bodyBadges.length > 0 ? bodyBadges : undefined,
     verificationStamps: verificationStamps.length > 0 ? verificationStamps : undefined,
+    cameraPlan: cameraPlanBody.length > 0 ? cameraPlanBody : undefined,
     zoomReleaseIntervals: mergedReleaseIntervals.length > 0 ? mergedReleaseIntervals : undefined,
     interactions: remotionInteractions.length > 0 ? remotionInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,
