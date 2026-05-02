@@ -37,13 +37,17 @@ Output ONLY a single JSON object (no prose, no markdown fences):
 }
 
 VIEWPORT — pick the size that best showcases the change. Read the PR text, diff, and comments for signals:
-- 540×960 (mobile portrait) — pick when the PR mentions mobile/phone/small-screen/touch, when the diff touches mobile-only surfaces (drawers, sheets, bottom-sheets, mobile nav), or when responsive breakpoints below ~768px are involved.
+- 1920×1080 (desktop) — DEFAULT. Use whenever the PR doesn't have a clear mobile signal. This is the US standard desktop resolution and matches what most reviewers see.
+- 360×800 (mobile portrait) — pick when the PR mentions mobile / phone / small-screen / touch, when the diff touches mobile-only surfaces (drawers, sheets, bottom sheets, mobile nav), or when responsive breakpoints below ~768px are involved. Matches modern phone widths (iPhone 15, Pixel 8, Galaxy S24).
 - 720×1024 (tablet portrait) — only when explicitly relevant; rare.
-- 1080×800 (desktop) — default. Use for changes to desktop-first surfaces (sidebars, multi-column layouts, hover states, keyboard shortcuts) and when the PR gives no mobile signal.
-Pick ONE viewport. If the change renders identically across sizes, pick the size most relevant to the PR's audience. Project-setup may pin a viewport in tiktest.md — only override that pin when the PR signal is unambiguous. These widths are chosen to render crisply in the reel canvas (no aliased downscaling), so don't substitute other widths.
+Pick ONE viewport. If the change renders identically across sizes, default to 1920×1080. Project-setup may pin a viewport in tiktest.md — honor that pin unless the PR signal is unambiguous. These widths are chosen to render crisply in the reel canvas (no aliased downscaling), so don't substitute other widths.
 
 GOAL-WRITING GUIDANCE:
-1. **1-{{MAX_GOALS}} goals. Ruthlessly tight.** The video is a scroll-feed review under 60 seconds. One PRIMARY goal (the core flow of what this PR does), optionally up to {{MAX_SECONDARY_GOALS}} secondary goals (bug-probing variants — double-click, edge case, keyboard shortcut). If you can't justify an extra goal as essential, leave it out.
+1. **1-{{MAX_GOALS}} goals. Match the count to the PR's surface area.** The video is a scroll-feed review under ~90 seconds, so pick the COUNT that lets a reviewer SEE each distinct user-visible change without padding.
+   • SINGLE-FEATURE PR (one new flow, no obvious alternate paths) → 1 goal that covers it end-to-end.
+   • MULTI-SURFACE PR (two or three independent user-visible changes — e.g. "added pinning AND inline editing") → 1 goal per surface, up to {{MAX_GOALS}}. Don't merge unrelated features into one mega-goal.
+   • PRIMARY + edge case → 2 goals (primary flow + a deliberate edge variant).
+   Don't pad. If only one thing changed, ONE goal is correct. Don't invent a "secondary" just because the cap allows it.
 2. **The primary goal is end-to-end.** It includes navigating to the feature AND exercising it in a single natural-language instruction. Don't split "navigate" and "use feature" into two goals — the agent will do both inside one goal.
 3. **Let the diff drive WHAT.** Read the PR: what's new? what's the ONE thing a reviewer cares about most? That's your primary goal.
 4. **READ THE REVIEWER COMMENTS and bake any testing advice into the goal.** If a commenter says "fresh discoveries worked" or "run X before you'll see Y" or "the legacy data is broken, trigger a new flow", your primary goal MUST incorporate that action. Skipping the reviewer's suggested setup is the #1 way plans end up testing broken state instead of the fixed state.
