@@ -698,12 +698,15 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   // Persisted storageState from the end of pass 1 — captures any login that
   // happened during the pre-test sign-in goal so pass 2 starts authenticated.
   let pass1StoragePath: string | undefined;
-  // Login STEPS emitted by the pre-test sign-in agent. Pass 2 replays these
-  // when its fresh browser lands on a login screen — the storageState
-  // carryover only covers cookies + localStorage, so apps that store auth
-  // in-memory (or behind a session-cookie that didn't get set) need a
-  // re-login at replay time.
-  let pass1LoginSteps: import("./types.js").DemoStep[] | undefined;
+  // Literal mouse + key events captured during the pre-test sign-in goal.
+  // Pass 2 replays these byte-for-byte (page.mouse.click(x, y),
+  // page.keyboard.press(key)) when its fresh browser lands on a login
+  // screen — the storageState carryover only covers cookies + localStorage,
+  // so apps that store auth in-memory (or behind a session-cookie that
+  // didn't get set) need a re-login at replay time. Recording the literal
+  // bytes that worked once is more robust than asking the agent to
+  // describe the flow back to us in STEPS form.
+  let pass1LoginInteractions: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }> | undefined;
   const logLine = (label: string, step: { description: string }, extra = "") => {
     const pad = String(events.length + 1).padStart(2, "0");
     console.log(`  ${chalk.dim(pad)} ${label} ${chalk.bold(step.description)}${extra ? chalk.dim("  " + extra) : ""}`);
@@ -762,14 +765,20 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       const loginGoal: Goal = {
         id: "_login",
         intent:
-          "If the current page shows a sign-in / login / authentication screen, sign in using the credentials in the CONTEXT below. " +
-          "If the page is already past auth (you can see the app's main content), do nothing and emit OUTCOME: success — already authenticated, with EMPTY STEPS array (no login replay needed). " +
-          "DO NOT explore the app, DO NOT test any feature beyond the login itself. " +
-          "STEPS REQUIREMENT (this overrides the 'design the perfect demo' framing): if you DID sign in, your STEPS list MUST contain the exact actions a fresh browser needs to repeat the same login — the email-input action, the password-input action, the submit click, and a final wait. Use the user-visible label of each field ('Email', 'Password', 'Sign in', etc) — pass 2 will resolve them via getByLabel / getByRole. Skipping STEPS for the login goal will leave pass 2's fresh browser stuck on the login screen." +
+          "If the current page shows a sign-in / login / authentication screen, sign in using the credentials in the CONTEXT below, then stop. " +
+          "If the page is already past auth (you can see the app's main content), do nothing and emit OUTCOME: success — already authenticated. " +
+          "DO NOT explore the app, DO NOT test any feature, DO NOT click around. Sign in only." +
           expectedBtnHint,
         shortLabel: "Sign in",
         importance: "high",
       };
+      // Capture the recording-relative timestamp window of the sign-in goal.
+      // Pass 2 replays every interaction (click + key) that occurred in this
+      // window LITERALLY — no LLM, no labels, no locator resolution. Just
+      // page.mouse.click(x, y) at the coordinates the agent's first-pass
+      // login actually used. This is robust to in-memory auth (the demo's
+      // display-flag pattern) and survives agents that skip STEPS.
+      const loginStartMs = Math.max(0, Math.round(performance.now() - recordingStart));
       logLine(chalk.dim("◦"), { id: "_login", kind: "intent", description: "pre-test sign-in", importance: "low" } as any);
       try {
         const loginResult = await runGoal(page, loginGoal, projectContext.trim(), cdpEndpoint);
@@ -792,9 +801,18 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
         } else {
           console.log(chalk.dim(`  ✓ pre-test sign-in: ${loginResult.note?.slice(0, 80)}`));
         }
-        if (loginResult.steps?.length) {
-          pass1LoginSteps = loginResult.steps;
-          console.log(chalk.dim(`  ✓ login STEPS captured for pass 2 replay (${loginResult.steps.length} steps)`));
+        // Slice the live interactions stream to exactly the login window.
+        // We deliberately ignore agent-emitted STEPS for login (they're
+        // unreliable — the agent paraphrases or omits) and use the actual
+        // mouse + key events that performed the sign-in. This is the
+        // robust path: the bytes that worked once will work again.
+        const loginEndMs = Math.max(loginStartMs + 1, Math.round(performance.now() - recordingStart));
+        pass1LoginInteractions = interactions.filter((i) => i.ts >= loginStartMs && i.ts <= loginEndMs);
+        if (pass1LoginInteractions.length > 0) {
+          const counts: Record<string, number> = {};
+          for (const it of pass1LoginInteractions) counts[it.kind] = (counts[it.kind] ?? 0) + 1;
+          const breakdown = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}=${v}`).join(" ");
+          console.log(chalk.dim(`  ✓ captured ${pass1LoginInteractions.length} login interactions for pass 2 replay (${breakdown})`));
         }
       } catch (e) {
         console.log(chalk.yellow(`  ! login phase crashed but continuing: ${(e as Error).message.split("\n")[0]}`));
@@ -1010,7 +1028,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     try {
       const replay = await replayDemo({
         goals: goalReplays,
-        loginSteps: pass1LoginSteps,
+        loginInteractions: pass1LoginInteractions,
         runDir,
         startUrl: plan.startUrl,
         viewport,

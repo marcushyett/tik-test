@@ -36,12 +36,14 @@ export interface GoalReplay {
 
 export interface ReplayOptions {
   goals: GoalReplay[];
-  /** STEPS emitted by the pre-test sign-in agent. Replayed on pass-2's
-   *  fresh browser whenever the start URL lands on a login screen — the
-   *  storageState carryover only covers cookies + localStorage, so apps
-   *  whose auth lives in-memory (or behind a session cookie that wasn't
-   *  set during pass 1) need a fresh login before the goal demos run. */
-  loginSteps?: DemoStep[];
+  /** Literal mouse + key interactions captured during pass 1's pre-test
+   *  sign-in goal. Pass 2 replays them byte-for-byte when its fresh
+   *  browser lands on a login screen — the storageState carryover only
+   *  covers cookies + localStorage, so apps whose auth lives in-memory
+   *  (or behind a session cookie that wasn't set in pass 1) need a fresh
+   *  login. Replaying the literal bytes that worked once avoids asking
+   *  an LLM to describe the flow back to us. */
+  loginInteractions?: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }>;
   runDir: string;
   startUrl: string;
   viewport: { width: number; height: number };
@@ -163,41 +165,23 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
     let onLogin = false;
     try { onLogin = await passwordInput.first().isVisible({ timeout: 1500 }); } catch {}
     if (onLogin) {
-      if (opts.loginSteps?.length) {
-        console.log(chalk.dim(`     login screen detected — replaying ${opts.loginSteps.length} login step${opts.loginSteps.length === 1 ? "" : "s"}`));
-        const loginRecorder = {
-          click: (cx: number, cy: number, bbox?: { x: number; y: number; width: number; height: number }) => {
-            const ts = Math.max(0, Math.round(performance.now() - recordingStart));
-            interactions.push({ ts, kind: "click", x: cx, y: cy });
-            if (bbox) clickBboxes.push({ ts, x: bbox.x, y: bbox.y, width: bbox.width, height: bbox.height });
-          },
-          key: (key: string) => {
-            interactions.push({
-              ts: Math.max(0, Math.round(performance.now() - recordingStart)),
-              kind: "key",
-              x: 0,
-              y: 0,
-              key,
-            });
-          },
-        };
-        for (const step of opts.loginSteps) {
-          try { await runStep(page, step, loginRecorder); } catch (e) {
-            console.log(chalk.yellow(`     login step skipped: ${describeStep(step)} — ${(e as Error).message.split("\n")[0].slice(0, 100)}`));
-          }
-        }
-        // After login, give the app time to switch surfaces (some apps
-        // animate the gate out, mount the main view, fetch initial data).
-        await page.waitForTimeout(1200);
-        // Sanity check: did we get past the login form? If a password
-        // input is STILL visible we're going to fail every locator below
-        // anyway — log and proceed (the goal demos will skip cleanly).
+      const ints = (opts.loginInteractions ?? []).filter((i) => i.kind === "click" || i.kind === "key");
+      if (ints.length > 0) {
+        const counts = ints.reduce<Record<string, number>>((acc, i) => { acc[i.kind] = (acc[i.kind] ?? 0) + 1; return acc; }, {});
+        console.log(chalk.dim(`     login screen detected — replaying ${ints.length} captured interactions (${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ")})`));
+        await replayLoginInteractions(page, ints);
+        // Give the app time to switch surfaces (animate the gate out,
+        // mount the main view, fetch initial data).
+        await page.waitForTimeout(1500);
         try {
           const stillOnLogin = await passwordInput.first().isVisible({ timeout: 800 });
           if (stillOnLogin) console.log(chalk.yellow(`     login replay completed but a password input is still visible — goal demos may fail`));
-        } catch {}
+          else console.log(chalk.dim(`     login replay successful — login form gone, proceeding with goal demos`));
+        } catch {
+          console.log(chalk.dim(`     login replay successful — login form gone, proceeding with goal demos`));
+        }
       } else {
-        console.log(chalk.yellow(`     login screen detected but no login STEPS were captured in pass 1 — goal demos will likely fail`));
+        console.log(chalk.yellow(`     login screen detected but no login interactions were captured in pass 1 — goal demos will likely fail`));
       }
     }
 
@@ -411,6 +395,76 @@ async function runStep(page: Page, step: DemoStep, record: Recorder): Promise<vo
     }
     default:
       throw new Error(`unknown step kind: ${(step as DemoStep).kind}`);
+  }
+}
+
+/** Replay pass-1's literal login interactions byte-for-byte. We use the
+ *  exact x/y coords for clicks and pass each key character through
+ *  page.keyboard.press. No locators, no labels, no LLM — just the bytes
+ *  that worked the first time, with small natural delays between events
+ *  so the visible effect is human-paced (focus → caret → typed chars
+ *  appearing → next field).
+ *
+ *  Why coordinate-level replay instead of agent-emitted STEPS:
+ *  - The agent is asked to paraphrase what it did into label-keyed steps;
+ *    that translation is lossy. Coords + key events are not.
+ *  - Login rendering doesn't shift between pass 1 and pass 2 (same
+ *    viewport, same code path, no animations that move inputs).
+ *  - Robust to any sign-in UI: dev-mode "any password" gates,
+ *    SSO-emulated buttons, multi-step forms — if the agent could click
+ *    its way through them once, the same clicks work again. */
+async function replayLoginInteractions(
+  page: Page,
+  events: Array<{ ts: number; kind: "move" | "click" | "key"; x: number; y: number; key?: string }>,
+): Promise<void> {
+  // Coalesce contiguous key events on the same tick boundary into one
+  // type() call — keeps replay snappy when the agent typed a long string.
+  // Mixed click/key sequences play out in original order.
+  const sorted = events.slice().sort((a, b) => a.ts - b.ts);
+  let i = 0;
+  while (i < sorted.length) {
+    const ev = sorted[i];
+    if (ev.kind === "click") {
+      // Move + click. Move first so the cursor overlay glides naturally.
+      try {
+        await page.mouse.move(ev.x, ev.y, { steps: 6 });
+        await page.mouse.click(ev.x, ev.y);
+      } catch {}
+      await page.waitForTimeout(220);
+      i++;
+    } else if (ev.kind === "key") {
+      // Gather contiguous keys (no click in between).
+      let j = i;
+      const keys: string[] = [];
+      while (j < sorted.length && sorted[j].kind === "key") {
+        if (sorted[j].key) keys.push(sorted[j].key as string);
+        j++;
+      }
+      // Single-character "printable" runs go through type() so they look
+      // like real typing. Special keys (length>1, e.g. "Enter", "Tab",
+      // "Backspace", "ArrowDown") press individually.
+      let runStart = 0;
+      for (let k = 0; k <= keys.length; k++) {
+        const isEnd = k === keys.length;
+        const special = !isEnd && keys[k].length > 1;
+        if (isEnd || special) {
+          if (k > runStart) {
+            const word = keys.slice(runStart, k).join("");
+            try { await page.keyboard.type(word, { delay: 55 }); } catch {}
+          }
+          if (!isEnd && special) {
+            try { await page.keyboard.press(keys[k]); } catch {}
+            await page.waitForTimeout(120);
+            runStart = k + 1;
+          }
+        }
+      }
+      await page.waitForTimeout(220);
+      i = j;
+    } else {
+      // skip "move" — page.mouse.click already does the cursor move
+      i++;
+    }
   }
 }
 
