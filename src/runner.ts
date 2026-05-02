@@ -1031,6 +1031,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
   let finalClickBboxes = clickBboxes;
   let finalMutations = mutations;
   let finalCameraPlan: NonNullable<RunArtifacts["cameraPlan"]> = [];
+  let finalContentBbox: RunArtifacts["contentBbox"] = undefined;
   if (goalReplays.length > 0) {
     try {
       const replay = await replayDemo({
@@ -1054,6 +1055,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
       finalClickBboxes = replay.clickBboxes;
       finalMutations = replay.mutations;
       finalCameraPlan = replay.cameraPlan;
+      finalContentBbox = replay.contentBbox;
       console.log(chalk.green(`  pass 2 replay used as final video (pass-1 recording kept at ${path.basename(rawVideoPath)} for debugging)`));
     } catch (e) {
       console.log(chalk.yellow(`  pass 2 replay failed (${(e as Error).message.split("\n")[0]}); falling back to pass-1 video`));
@@ -1079,6 +1081,7 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
     clickBboxes: finalClickBboxes.length ? finalClickBboxes : undefined,
     mutations: finalMutations.length ? finalMutations : undefined,
     cameraPlan: finalCameraPlan.length ? finalCameraPlan : undefined,
+    contentBbox: finalContentBbox,
   };
   await writeFile(artifacts.eventsJsonPath, JSON.stringify({ plan, events, startedAt, finishedAt, totalMs, toolWindows: artifacts.toolWindows }, null, 2));
   if (artifacts.interactions?.length) {

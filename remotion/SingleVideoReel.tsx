@@ -60,6 +60,11 @@ export interface SingleVideoInput {
    *  When this is provided, pan-zoom is ENTIRELY agent-directed; the
    *  legacy click-reactive logic falls back only when it's missing. */
   cameraPlan?: Array<{ startS: number; durS: number; mode: "tight" | "wide" | "follow"; focusX?: number; focusY?: number }>;
+  /** Active-region rect in viewport pixels — anchors the BASE camera framing
+   *  so a desktop recording whose actual app fills only ~30% of the viewport
+   *  (Taskpad-style centered card) zooms in to fill the canvas. Per-step
+   *  cameraPlan modes layer on top of this base. */
+  contentBbox?: { x: number; y: number; width: number; height: number };
   /** Body-relative intervals where pan-zoom should RELEASE — computed by
    *  the editor from post-click DOM mutations that landed outside the
    *  clicked element. When the page changes far from where you clicked,
@@ -194,6 +199,36 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
     cy: offsetY + y * fitScale,
   });
 
+  // ── BASE AUTO-ZOOM from contentBbox.
+  //
+  // For desktop recordings (1920×1080) where the actual app fills only a
+  // small centered region, the canvas was rendering ~70% empty background
+  // with the app crammed into a thin band. Now: when contentBbox is
+  // provided, we compute a base zoom that scales the active region to
+  // FILL the canvas while still centering on the bbox.
+  //
+  // Math: contentBbox is in viewport pixels. After fitScale, it occupies
+  // (bbox.width * fitScale, bbox.height * fitScale) canvas pixels.
+  // Auto-zoom is the LARGEST scale that still fits the bbox within the
+  // canvas without cropping. Clamped to [1, 3.5] so we don't (a) zoom
+  // OUT for already-full-bleed apps, (b) over-magnify on tiny bboxes.
+  // The base origin shifts toward the bbox center so the zoom is
+  // anchored on the active content, not the recording center.
+  let baseZoom = 1;
+  let baseFocusVx = vw / 2;
+  let baseFocusVy = vh / 2;
+  if (input.contentBbox && input.contentBbox.width > 0 && input.contentBbox.height > 0) {
+    const bb = input.contentBbox;
+    const bbCanvasW = bb.width * fitScale;
+    const bbCanvasH = bb.height * fitScale;
+    // Min — we want the bbox to FIT inside the canvas, not overflow.
+    // (max would crop sides; min preserves the entire bbox.)
+    const fillScale = Math.min(canvasW / bbCanvasW, canvasH / bbCanvasH);
+    baseZoom = Math.max(1, Math.min(3.5, fillScale));
+    baseFocusVx = bb.x + bb.width / 2;
+    baseFocusVy = bb.y + bb.height / 2;
+  }
+
   const interactions = input.interactions ?? [];
   const clicks = interactions.filter((i) => i.kind === "click");
 
@@ -325,29 +360,39 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
   // Falls through to the legacy click-reactive path when no plan is
   // provided (older recordings, edge-case runs that bypassed pass 2).
   if (input.cameraPlan && input.cameraPlan.length > 0) {
-    const TIGHT_ZOOM = 1.6;
+    // Tight is BOTH the agent's "punch in on this control" mode AND the
+    // multiplier on top of base auto-zoom. We use a SOFTER tight factor
+    // (1.35) when the base zoom is already large, so we don't end up at
+    // baseZoom × 1.6 = 4.5×+ which would crop most things off-canvas.
+    const TIGHT_FACTOR = baseZoom > 2.0 ? 1.25 : 1.6;
+    const TIGHT_ZOOM = baseZoom * TIGHT_FACTOR;
     const TRANSITION_S = 0.35;
     const computeTarget = (e: NonNullable<SingleVideoInput["cameraPlan"]>[number], t: number) => {
       if (e.mode === "tight") {
         return {
           zoom: TIGHT_ZOOM,
-          fx: e.focusX ?? vw / 2,
-          fy: e.focusY ?? vh / 2,
+          fx: e.focusX ?? baseFocusVx,
+          fy: e.focusY ?? baseFocusVy,
         };
       }
       if (e.mode === "follow") {
         const elapsed = Math.max(0, Math.min(e.durS, t - e.startS));
         const progress = elapsed / Math.max(0.001, e.durS);
         const eased = Easing.bezier(0.25, 0, 0.2, 1)(Math.min(1, Math.max(0, progress)));
-        const z = TIGHT_ZOOM + (1 - TIGHT_ZOOM) * eased;
+        // Ease from tight back to BASE (not 1.0) — the base is still
+        // useful framing on the active region, and dropping all the way
+        // to 1.0 would suddenly reveal all the empty desktop background.
+        const z = TIGHT_ZOOM + (baseZoom - TIGHT_ZOOM) * eased;
         return {
           zoom: z,
-          fx: e.focusX ?? vw / 2,
-          fy: e.focusY ?? vh / 2,
+          fx: e.focusX ?? baseFocusVx,
+          fy: e.focusY ?? baseFocusVy,
         };
       }
-      // "wide" or anything else → neutral framing.
-      return { zoom: 1, fx: vw / 2, fy: vh / 2 };
+      // "wide" — sit at the BASE auto-zoom on the content bbox center.
+      // (Was zoom=1.0 + center; that mode left desktop apps swimming in
+      // background. Now wide = "the natural framing of the active app".)
+      return { zoom: baseZoom, fx: baseFocusVx, fy: baseFocusVy };
     };
     // Find the active entry for this frame. Plan is sorted ascending.
     let active = -1;
@@ -358,19 +403,16 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
     }
     if (active === -1) {
       // Before first entry (intro tail) or after last (outro prelude) →
-      // wide neutral. Lets the verification stamp + final dwell sit on
-      // a calm full-page view.
-      zoomScale = 1;
-      focusVx = vw / 2;
-      focusVy = vh / 2;
+      // sit at the BASE framing so the recording is still well-framed
+      // even between cameraPlan entries (e.g. while a verification
+      // stamp pops up).
+      zoomScale = baseZoom;
+      focusVx = baseFocusVx;
+      focusVy = baseFocusVy;
     } else {
       const e = input.cameraPlan[active];
       const tgt = computeTarget(e, timeS);
       const intoEntry = timeS - e.startS;
-      // Smooth boundary: ease from the PREVIOUS entry's end-of-window
-      // values toward this entry's target over TRANSITION_S. Without
-      // this, switching tight → wide is a step change that visually
-      // snaps. With it, the camera glides.
       if (active > 0 && intoEntry < TRANSITION_S) {
         const prev = input.cameraPlan[active - 1];
         const prevTgt = computeTarget(prev, e.startS);
@@ -380,13 +422,13 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
         focusVx = prevTgt.fx + (tgt.fx - prevTgt.fx) * eased;
         focusVy = prevTgt.fy + (tgt.fy - prevTgt.fy) * eased;
       } else if (active === 0 && intoEntry < TRANSITION_S) {
-        // First entry — ease from neutral wide so the camera isn't
-        // already "popped in" at body start.
+        // First entry — ease from BASE framing so we always start framed
+        // on the active content, not zoomed all the way out.
         const t = Math.min(1, Math.max(0, intoEntry / TRANSITION_S));
         const eased = Easing.bezier(0.4, 0, 0.2, 1)(t);
-        zoomScale = 1 + (tgt.zoom - 1) * eased;
-        focusVx = vw / 2 + (tgt.fx - vw / 2) * eased;
-        focusVy = vh / 2 + (tgt.fy - vh / 2) * eased;
+        zoomScale = baseZoom + (tgt.zoom - baseZoom) * eased;
+        focusVx = baseFocusVx + (tgt.fx - baseFocusVx) * eased;
+        focusVy = baseFocusVy + (tgt.fy - baseFocusVy) * eased;
       } else {
         zoomScale = tgt.zoom;
         focusVx = tgt.fx;
@@ -453,7 +495,11 @@ const SingleVideoBody: React.FC<{ input: SingleVideoInput }> = ({ input }) => {
     }
   } else {
     // NEUTRAL — pre-first-click body opening, or post-last-release.
-    zoomScale = 1;
+    // Sits at base auto-zoom on the content bbox center when available
+    // (no contentBbox → baseZoom=1, baseFocus=center, identical behaviour).
+    zoomScale = baseZoom;
+    focusVx = baseFocusVx;
+    focusVy = baseFocusVy;
   }
   const focus = toCanvas(focusVx, focusVy);
 

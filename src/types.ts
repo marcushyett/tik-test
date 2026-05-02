@@ -154,6 +154,15 @@ export interface RunArtifacts {
    *  updates, etc.). Bursts of mutations within the same node group are
    *  throttled page-side so we don't drown in keystroke-driven entries. */
   mutations?: Array<{ ts: number; x: number; y: number; width: number; height: number }>;
+  /** Bounding rect (in viewport pixels) of where action actually happened
+   *  during the run — union of click + mutation rects with padding. The
+   *  Remotion compositor uses this as the BASE camera framing so a desktop
+   *  recording whose actual app content fills only ~30% of the viewport
+   *  (Taskpad-style centered card) zooms in to fill the canvas instead
+   *  of being letterboxed inside ~70% empty background. Per-step camera
+   *  modes (tight / wide / follow) layer ON TOP of this base. Undefined
+   *  when the run had too little signal to compute reliably. */
+  contentBbox?: { x: number; y: number; width: number; height: number };
 }
 
 export interface Config {

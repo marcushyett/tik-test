@@ -64,6 +64,14 @@ export interface ReplayArtifacts {
   clickBboxes: NonNullable<RunArtifacts["clickBboxes"]>;
   mutations: NonNullable<RunArtifacts["mutations"]>;
   cameraPlan: NonNullable<RunArtifacts["cameraPlan"]>;
+  /** Bounding rect (in viewport pixels) of the area where action actually
+   *  happens — computed from union of click bboxes + mutation bboxes after
+   *  the recording finishes. The compositor uses this as the BASE camera
+   *  framing so a desktop app whose content is a small centered card
+   *  (Taskpad-style) zooms in instead of being shown letterboxed inside
+   *  ~70% empty background. Per-step camera modes (tight/wide/follow)
+   *  layer on top of this base. */
+  contentBbox?: { x: number; y: number; width: number; height: number };
 }
 
 // Per-step pacing — tuned to LOOK HUMAN, not optimal. The recording is for
@@ -368,6 +376,20 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
     console.log(chalk.dim(`  camera plan: ${cameraPlan.length} entries (${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ")})`));
   }
 
+  // ── CONTENT BBOX. Computed from the union of click + mutation rects
+  // observed during the run. Anchors the BASE camera framing so a
+  // desktop recording whose actual app content fills only ~30% of the
+  // viewport (Taskpad-style centered card) is auto-zoomed instead of
+  // shown letterboxed with empty background. Falls through to undefined
+  // when we have <3 distinct rects to union — too little signal to
+  // pick a base framing reliably.
+  const contentBbox = computeContentBbox(clickBboxes, mutations, opts.viewport);
+  if (contentBbox) {
+    const fillW = ((contentBbox.width / opts.viewport.width) * 100).toFixed(0);
+    const fillH = ((contentBbox.height / opts.viewport.height) * 100).toFixed(0);
+    console.log(chalk.dim(`  content bbox: ${contentBbox.width}×${contentBbox.height} at (${contentBbox.x},${contentBbox.y}) — fills ${fillW}%×${fillH}% of viewport`));
+  }
+
   return {
     rawVideoPath,
     startedAt,
@@ -379,7 +401,73 @@ export async function replayDemo(opts: ReplayOptions): Promise<ReplayArtifacts> 
     clickBboxes,
     mutations,
     cameraPlan,
+    contentBbox,
   };
+}
+
+/**
+ * Compute the union of click + mutation rects observed during the run,
+ * with sensible padding, clamped to the viewport. Used by the editor /
+ * compositor to pick a BASE camera framing — instead of always showing
+ * the full recording (which on desktop apps with centered cards leaves
+ * 70% of the canvas as empty background), we frame the actual active
+ * region.
+ *
+ * Returns undefined when we have <3 distinct rects to union (too little
+ * signal — fall back to full-page framing). Click bboxes are weighted
+ * higher than mutations; mutations alone are noisy because animations
+ * fire mutations across the whole page.
+ *
+ * Padding is generous (10% of viewport in each direction) so a tight
+ * union of clicked targets doesn't crop adjacent visual context like
+ * the page header above the action area.
+ */
+function computeContentBbox(
+  clickBboxes: NonNullable<RunArtifacts["clickBboxes"]>,
+  mutations: NonNullable<RunArtifacts["mutations"]>,
+  viewport: { width: number; height: number },
+): { x: number; y: number; width: number; height: number } | undefined {
+  // Prefer click bboxes alone — those are pure user-action targets and
+  // won't include far-flung animation noise. Fall back to including
+  // mutations if we don't have enough clicks.
+  let rects = clickBboxes.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height }));
+  if (rects.length < 3) {
+    rects = rects.concat(mutations.map((m) => ({ x: m.x, y: m.y, width: m.width, height: m.height })));
+  }
+  // De-duplicate near-identical rects (multiple clicks on same target
+  // produce identical bboxes; we want unique signals, not weight).
+  const dedupe = new Set<string>();
+  const unique = rects.filter((r) => {
+    const k = `${Math.round(r.x)}-${Math.round(r.y)}-${Math.round(r.width)}-${Math.round(r.height)}`;
+    if (dedupe.has(k)) return false;
+    dedupe.add(k);
+    return true;
+  });
+  if (unique.length < 3) return undefined;
+
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const r of unique) {
+    if (r.width <= 0 || r.height <= 0) continue;
+    if (r.x < x1) x1 = r.x;
+    if (r.y < y1) y1 = r.y;
+    if (r.x + r.width > x2) x2 = r.x + r.width;
+    if (r.y + r.height > y2) y2 = r.y + r.height;
+  }
+  if (!isFinite(x1)) return undefined;
+  // Padding: 10% of viewport in each direction. Clamps below to viewport.
+  const padX = viewport.width * 0.1;
+  const padY = viewport.height * 0.1;
+  x1 = Math.max(0, x1 - padX);
+  y1 = Math.max(0, y1 - padY);
+  x2 = Math.min(viewport.width, x2 + padX);
+  y2 = Math.min(viewport.height, y2 + padY);
+  const width = Math.round(x2 - x1);
+  const height = Math.round(y2 - y1);
+  // If the bbox already covers ~the entire viewport, don't bother — base
+  // framing is identical to no-base. (Common for already-mobile or
+  // full-bleed apps.)
+  if (width >= viewport.width * 0.85 && height >= viewport.height * 0.85) return undefined;
+  return { x: Math.round(x1), y: Math.round(y1), width, height };
 }
 
 /** Try each candidate locator in priority order; the first that resolves

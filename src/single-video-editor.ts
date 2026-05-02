@@ -131,6 +131,12 @@ export interface SingleVideoInput {
    *  coord space as `interactions`). When this is provided pan-zoom is
    *  ENTIRELY agent-directed; legacy rules only run if it's empty. */
   cameraPlan?: Array<{ startS: number; durS: number; mode: "tight" | "wide" | "follow"; focusX?: number; focusY?: number }>;
+  /** Active-region rect in viewport pixels — see RunArtifacts.contentBbox.
+   *  When present, drives a base auto-zoom in the compositor so the app's
+   *  content fills the canvas instead of being letterboxed in ~70% empty
+   *  background (typical for desktop apps with centered cards). Per-step
+   *  cameraPlan modes (tight / wide / follow) layer on top of this base. */
+  contentBbox?: { x: number; y: number; width: number; height: number };
   /** Body-relative intervals where the pan-zoom should RELEASE to neutral
    *  framing. Computed from page-side MutationObserver data: whenever a
    *  click triggers DOM mutations OUTSIDE the clicked element's bbox
@@ -1030,6 +1036,7 @@ export async function editSingleVideo({
     bodyBadges: bodyBadges.length > 0 ? bodyBadges : undefined,
     verificationStamps: verificationStamps.length > 0 ? verificationStamps : undefined,
     cameraPlan: cameraPlanBody.length > 0 ? cameraPlanBody : undefined,
+    contentBbox: artifacts.contentBbox,
     zoomReleaseIntervals: mergedReleaseIntervals.length > 0 ? mergedReleaseIntervals : undefined,
     interactions: remotionInteractions.length > 0 ? remotionInteractions : undefined,
     checklist: checklist.length > 0 ? checklist : undefined,
