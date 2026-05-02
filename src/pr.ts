@@ -10,6 +10,7 @@ import { runPlan } from "./runner.js";
 import { editSingleVideo } from "./single-video-editor.js";
 import { renderPreviewGif } from "./preview-gif.js";
 import { generateChecklist, type ChecklistItem } from "./checklist.js";
+import { clipToWord } from "./text.js";
 
 export interface PROptions {
   outDir: string;
@@ -698,7 +699,7 @@ function buildChecklistMarkdown(
     .filter((g): g is typeof g & { kind: string; stepId: string } => g.kind === "intent" && !!g.stepId)
     .map((g) => ({
       id: g.stepId,
-      heading: (g.shortLabel ?? g.description.replace(/\s+/g, " ").slice(0, 64)).trim() || g.stepId,
+      heading: clipToWord((g.shortLabel ?? g.description.replace(/\s+/g, " ").trim()), 60) || g.stepId,
       outcome: g.outcome,
     }));
   const itemsByGoal = new Map<string, typeof items>();

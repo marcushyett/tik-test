@@ -130,8 +130,14 @@ STEP 4 — Write each window's beat. RULES PER BEAT:
   • Word budget = window durS × 3 words/sec, ±15%. UNDER means silence; OVER means rushed audio. Most windows are 3–8s, so 9–24 words.
 
 STEP 5 — INTRO and OUTRO.
-  • INTRO (≈{{INTRO_WORDS}} words): name the feature in plain English, name the problem it solves, foreshadow the demo. Example shape: "I shipped a Bulk Archive option for the task list. Up until now you had to clear completed tasks one at a time, which gets tedious past five or six. Let me walk you through the new flow and how I'm checking it doesn't break anything else."
-  • OUTRO (≈{{OUTRO_WORDS}} words): one sentence inviting input. Examples: "let me know if the confirm dialog feels heavy — I almost cut it" / "open question: should bulk-archive also include high-priority tasks, or only low?"
+  • INTRO — HARD CAP {{INTRO_WORDS}} WORDS. One sentence naming the feature in plain English. NO setup, NO problem statement, NO "let me walk you through". Examples (each ≤12 words):
+      "I shipped a Bulk Archive option for the task list."
+      "New: pinning tasks to the top, plus inline title edits."
+      "Quick review of the new sort-by-priority filter."
+  • OUTRO — HARD CAP {{OUTRO_WORDS}} WORDS. One sentence SUMMARISING what was tested and how it landed. NO questions. NO "open question:". NO "let me know". NO "?" anywhere in the text or captionText. Examples (each ≤12 words):
+      "Pin sorts to top and inline edit saves on Enter, both green."
+      "Bulk Archive clears completed tasks; counter and empty state both correct."
+      "Filter narrows to today; badges stay aligned, no regressions."
 
 EXAMPLES OF GOOD vs BAD BEATS:
 

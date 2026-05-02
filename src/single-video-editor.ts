@@ -10,6 +10,7 @@ import { runFfmpeg, ffprobeDuration } from "./ffmpeg.js";
 import { resolveBackend, describeBackend, synth, type TTSBackend } from "./tts.js";
 import { generateNarration, type NarrationWindow } from "./timed-narration.js";
 import { generateChecklist } from "./checklist.js";
+import { clipToWord } from "./text.js";
 import {
   MIN_CHUNK_S, MAX_BODY_SCENES, TRIM_MERGE_S,
   INTRO_TARGET_S, OUTRO_TARGET_S, OUTRO_HOLD_S,
@@ -942,8 +943,8 @@ export async function editSingleVideo({
     });
     checklist = ranked.slice(0, 6).map((e) => ({
       outcome: e.outcome,
-      label: (e.shortLabel ?? e.description).replace(/\s+/g, " ").slice(0, 36).trim(),
-      note: e.shortNote?.replace(/\s+/g, " ").slice(0, 64).trim() || undefined,
+      label: clipToWord((e.shortLabel ?? e.description).replace(/\s+/g, " ").trim(), 40),
+      note: e.shortNote ? clipToWord(e.shortNote.replace(/\s+/g, " ").trim(), 80) : undefined,
       goalId: e.stepId,
     }));
     console.log(chalk.dim(`  checklist: ${checklist.length} fallback goal-level items`));
@@ -972,7 +973,7 @@ export async function editSingleVideo({
       // Pull stamps slightly INSIDE the body so the entrance animation
       // isn't clipped by the master end. Also nudge off the very start.
       bodyS = Math.max(0.1, Math.min(masterDurS - 0.1, bodyS));
-      const label = (e.shortLabel ?? e.description ?? "").replace(/\s+/g, " ").trim().slice(0, 48);
+      const label = clipToWord((e.shortLabel ?? e.description ?? "").replace(/\s+/g, " ").trim(), 48);
       return label ? { atS: bodyS, outcome: e.outcome, label } : null;
     })
     .filter((x): x is { atS: number; outcome: typeof goalEvents[number]["outcome"]; label: string } => !!x)
@@ -1039,7 +1040,7 @@ export async function editSingleVideo({
     goalGroups: goalEvents.length > 0 && checklist.some((c) => !!c.goalId)
       ? goalEvents.map((e) => ({
           id: e.stepId,
-          label: (e.shortLabel ?? e.description ?? "").replace(/\s+/g, " ").trim().slice(0, 48) || "Goal",
+          label: clipToWord((e.shortLabel ?? e.description ?? "").replace(/\s+/g, " ").trim(), 48) || "Goal",
           outcome: e.outcome,
         }))
       : undefined,

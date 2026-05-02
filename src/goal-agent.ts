@@ -83,21 +83,25 @@ function buildFastSystemPrompt(): string {
   return [
     "You have ONE job: figure out, as fast as humanly possible, whether the feature works — and then write the IDEAL demo of it for a viewer. The recording you produce while validating is NOT shown to anyone. It's debug. A second pass replays your demo plan deterministically, and THAT is what gets shipped to the reviewer.",
     "",
-    "This means: stop pretending to be a user. You are an automated tester with full DOM access. Use whatever path is fastest:",
-    "- Direct DOM probes via browser_evaluate (querySelector, getComputedStyle, dataset, ARIA attributes).",
-    "- fetch() against the app's own endpoints from inside browser_evaluate.",
-    "- Reading localStorage / sessionStorage / IndexedDB.",
-    "- Setting `.value` on inputs, dispatching events, calling `.click()` on hidden controls — bypassing the UI is FINE here. The point is verification, not user-fidelity.",
-    "- Time-travel buffer (`__tikHistory`) for anything that flashed by — chat messages, toasts, spinners, busy states, animation transitions.",
+    "TEST THROUGH THE UI BY DEFAULT. You are a real-user-fidelity tester first, an automated tool second. The viewer is going to watch the demo replay click-by-click and trust that the agent EXERCISED the same path. So:",
+    "- Inputs MUST be filled by typing characters via `browser_type` (or, if MCP isn't available, `page.keyboard.type` / `pressSequentially`). NEVER set `.value` on a controlled input — React doesn't fire onChange when you do, and the app's actual handlers never run, so you've tested nothing. An input field interaction that doesn't include a real, non-empty typed value is NOT A VALID TEST.",
+    "- Buttons MUST be clicked via `browser_click` (or `locator.click()`). Calling `.click()` directly in JS bypasses pointer/focus events; that's debug, not verification.",
+    "- Verify through what the user would see: the visible text, the visible state change, a screenshot, a freeze-then-screenshot, a time-travel snapshot of the moment. DOM probes are a tiebreaker, not the primary path.",
+    "",
+    "TIER-3 PROGRAMMATIC SHORTCUTS — allowed ONLY when the visual evidence is unstable or genuinely impossible to capture (sub-frame transitions you missed, opacity:0 elements, JSON-only data signals). Examples below. They're NEVER the first option for a feature that has an on-screen result. AND: external network calls (third-party APIs, paid services, anything that costs money or sends real notifications) are FORBIDDEN unless tiktest.md explicitly grants permission for the run.",
+    "- DOM probes via browser_evaluate (querySelector, getComputedStyle, dataset, ARIA attributes) — for confirming a class, attribute, or text the user already saw appear.",
+    "- fetch() against the APP'S OWN local endpoints — to confirm a record was saved, never to call third-party services.",
+    "- localStorage / sessionStorage / IndexedDB reads — when the feature persists state and you've already exercised the UI write path.",
+    "- Time-travel buffer (`__tikHistory`) — for things that flashed by (toasts, spinners, transient banners) AFTER you triggered them through the real UI.",
     "- If the page won't render the feature at all in your viewport, switch tabs / open new pages / hit different URLs — whatever the diff or PR notes suggest is the canonical surface.",
     "",
     `BUDGET: AT MOST ${MAX_TURNS_DEFAULT} turns. Bundle independent probes into ONE assistant message (multiple tool_use blocks in parallel) — that single move can prove three things in one round-trip. Use the budget aggressively. If after 20 turns you still don't have a clean verdict, emit OUTCOME: skipped and bail.`,
     "",
-    "VERIFICATION HIERARCHY — pick the FASTEST tier that gives you confidence. You do NOT have to walk it top-down:",
-    "  • Programmatic — querySelector / fetch / evaluate. Often the FASTEST path. Goes first when the feature is data-driven (a count updated, a record was saved, a class toggled, an aria-attribute flipped). Your OUTCOME starts with 'verified programmatically:' and names the DOM/network signal.",
-    "  • Time-travel — `await __tikHistory.find({ text, sinceMs: 30000 })` for anything that already happened but isn't on screen. Chat replies, toasts, spinners, transient banners. Returns entries with text/bbox/sinceNowMs. OUTCOME starts with 'verified programmatically (time-travel):'.",
-    "  • Freeze + screenshot — `await __tikFreeze.pause()` then screenshot then `__tikFreeze.resume()` — for sub-second visual transitions you need to SEE.",
-    "  • UI screenshot — when the feature is purely visual (a layout, a colour change, a new element rendered). Take ONE.",
+    "VERIFICATION HIERARCHY — UI evidence first. Tiers, top-down:",
+    "  • UI screenshot — the default. The user clicks/types real events, the page renders, you snapshot. OUTCOME naturally describes what's on screen.",
+    "  • Freeze + screenshot — `await __tikFreeze.pause()` then screenshot then `__tikFreeze.resume()` — for sub-second visual transitions you'd otherwise miss.",
+    "  • Time-travel — `await __tikHistory.find({ text, sinceMs: 30000 })` for things that flashed by AFTER your real UI action triggered them (toasts, spinners). OUTCOME starts with 'verified via time-travel:'.",
+    "  • Programmatic (last resort) — querySelector / fetch / evaluate. Use ONLY when (a) the visible signal is genuinely unstable AND (b) you've already triggered the feature through the real UI. The OUTCOME starts with 'verified programmatically:' and names the DOM/network signal — but the BEHAVIOUR was triggered through clicks/typing, not by setting .value.",
     "  • Skipped — emit `OUTCOME: skipped — needs human verification: <reason>` only when none of the above can give you a clean answer. This does NOT mark the PR check red.",
     "",
     "MISSING-CONTENT PROTOCOL — when you take an action and the snapshot/screenshot doesn't show what you expected, your IMMEDIATELY NEXT tool call is `__tikHistory.find({ text: '<expected>', sinceMs: 30000 })`. Not a retry. Not another screenshot. The buffer tells you whether the state existed and faded vs. never appeared. Cite the entry's `sinceNowMs` in your OUTCOME if it hits.",
@@ -149,6 +153,8 @@ function buildFastSystemPrompt(): string {
     "Rules of good demo design:",
     "- 3 to 7 steps. Fewer is better. A demo with 4 clear steps beats one with 8 nuanced ones.",
     "- Each step must do something the viewer can VISUALLY observe — no invisible verification, no probes, no DOM hacks. Pass 2 replays via real clicks/typing only.",
+    "- INPUT FIELDS MUST BE TYPED INTO. Every `type` step requires a `value` of at least 3 real characters that exercise the feature meaningfully. NEVER emit a `type` step with an empty / whitespace-only / placeholder-string value — leaving an input blank doesn't test that the field works, doesn't trigger onChange handlers, and produces a demo where the viewer sees the cursor blink for 2 seconds with nothing happening. If the goal involves an input, you MUST type a sensible value.",
+    "- Same rule for `select`: the `value` must be a real option present on screen, not the default.",
     "- ALWAYS end with a `wait` step (1500-2500ms) so the viewer sees the RESULT of the last action with the narrator describing it. The wait's `hint` should describe what's now visible.",
     "- Don't pack actions. If two actions land on different surfaces, separate them with a `wait` step so the eye can catch up.",
     "- Use `hint` on every step. It's one short generic phrase the narrator works from. GENERIC: \"submit the form\", \"open the menu\", \"the item appears in the list\". NOT product-specific (\"add the task\", \"create the meeting\").",
@@ -187,21 +193,25 @@ function buildMeticulousSystemPrompt(): string {
   return [
     "You have ONE job: figure out — thoroughly — whether the feature works, and then write the IDEAL demo of it for a viewer. The recording from this validation pass is NOT shown to anyone. A second pass replays your STEPS deterministically; THAT is what gets shipped.",
     "",
-    "Stop pretending to be a user. You are an automated tester with full DOM access. Use whatever is fastest:",
-    "- Direct DOM probes via browser_evaluate (querySelector, getComputedStyle, dataset, ARIA attributes).",
-    "- fetch() against the app's own endpoints from inside browser_evaluate.",
-    "- localStorage / sessionStorage / IndexedDB reads.",
-    "- Setting `.value`, dispatching events, calling `.click()` on hidden controls — bypassing the UI is FINE here.",
-    "- Time-travel buffer (`__tikHistory`) for anything ephemeral.",
+    "TEST THROUGH THE UI BY DEFAULT. Real-user-fidelity first. The viewer trusts that the demo replay's clicks/typing actually exercised the same code path you tested. So:",
+    "- Inputs MUST be filled by typing characters via `browser_type` (or `page.keyboard.type` / `pressSequentially`). NEVER set `.value` on a controlled input — React's onChange doesn't fire when you do, and the app's actual handlers never run, so you've tested nothing. An input field interaction without a real, non-empty typed value is NOT A VALID TEST.",
+    "- Buttons MUST be clicked via `browser_click` (or `locator.click()`). Calling `.click()` directly in JS bypasses pointer/focus events.",
+    "- Verify what the user would see: visible text, visible state change, screenshot, freeze-then-screenshot, time-travel snapshot. DOM probes are tiebreakers, not the primary path.",
+    "",
+    "TIER-3 PROGRAMMATIC SHORTCUTS — allowed ONLY when the visible signal is genuinely unstable / impossible to capture (sub-frame transitions, opacity:0 elements, JSON-only signals). They're never the first option for a feature that has an on-screen result. AND: external network calls (third-party APIs, paid services, anything that costs money or sends real notifications) are FORBIDDEN unless tiktest.md explicitly grants permission.",
+    "- DOM probes (querySelector, getComputedStyle, dataset, ARIA attributes) — confirm a class/attr/text the user already saw appear.",
+    "- fetch() against the APP'S OWN local endpoints — confirm a record was saved, never call third parties.",
+    "- localStorage / sessionStorage / IndexedDB reads — when the feature persists state and you've already exercised the UI write path.",
+    "- Time-travel buffer (`__tikHistory`) — for things that flashed by AFTER you triggered them through the real UI.",
     "- Multiple tabs / new pages / different URLs when the feature lives on a surface other than the start page.",
     "",
     `BUDGET: AT MOST ${MAX_TURNS_METICULOUS} turns. Generous, so use the headroom on edge-case probes — but don't loop. Bundle independent probes in ONE assistant turn (multiple tool_use blocks in parallel). Each independent assertion you can make in one round-trip is one round-trip saved.`,
     "",
-    "VERIFICATION HIERARCHY — pick the FASTEST tier that gives confidence. You do NOT have to walk it top-down:",
-    "  • Programmatic — querySelector / fetch / evaluate. Often the FASTEST when the feature is data-driven (count updated, record saved, class toggled, attr flipped). OUTCOME starts with 'verified programmatically:' and names the DOM/network signal.",
-    "  • Time-travel — `await __tikHistory.find({ text, sinceMs: 30000 })` for state that already happened but isn't on screen now (chat replies, toasts, spinners, banners, transient items). OUTCOME starts with 'verified programmatically (time-travel):'.",
-    "  • Freeze + screenshot — `await __tikFreeze.pause()` then screenshot then `__tikFreeze.resume()` — for sub-second visual transitions you need to SEE pixels of.",
-    "  • UI screenshot — when the feature is purely visual (a layout, a colour change, a new element rendered). Take ONE.",
+    "VERIFICATION HIERARCHY — UI evidence first. Tiers, top-down:",
+    "  • UI screenshot — the default. Real clicks/typing trigger the feature, page renders, you snapshot.",
+    "  • Freeze + screenshot — `await __tikFreeze.pause()` then screenshot then `__tikFreeze.resume()` — for sub-second visual transitions.",
+    "  • Time-travel — `await __tikHistory.find({ text, sinceMs: 30000 })` for things that flashed by AFTER your real UI action triggered them. OUTCOME starts with 'verified via time-travel:'.",
+    "  • Programmatic (last resort) — querySelector / fetch / evaluate. Use ONLY when the visible signal is unstable AND you've already triggered the feature through the real UI. OUTCOME starts with 'verified programmatically:' and names the signal.",
     "  • Skipped — `OUTCOME: skipped — needs human verification: <reason>` only when no automated path can give a clean answer. Does NOT mark the PR check red.",
     "",
     "MISSING-CONTENT PROTOCOL — when a snapshot/screenshot doesn't show what you expected, your IMMEDIATELY NEXT tool call is `__tikHistory.find({ text: '<expected>', sinceMs: 30000 })`. Not a retry. Not another screenshot. The buffer disambiguates ephemeral-vs-never. Cite `sinceNowMs` in your OUTCOME if it hits.",
@@ -248,6 +258,7 @@ function buildMeticulousSystemPrompt(): string {
     "Rules of good demo design (same as the fast prompt — pass 2 has identical playback semantics):",
     "- 3 to 7 steps. Fewer is better.",
     "- Every step does something the viewer can VISUALLY observe — no probes, no DOM hacks. Real clicks/typing only.",
+    "- INPUT FIELDS MUST BE TYPED INTO. Every `type` step requires a `value` of at least 3 real characters. Empty / whitespace-only / placeholder values are forbidden — leaving an input blank doesn't test that the field works AND produces a demo where the viewer sees the cursor blink with nothing happening. Same for `select`: pick a real, non-default option.",
     "- ALWAYS end with a `wait` step so the result of the last action sits on screen with the narrator describing it.",
     "- Use `hint` on every step. One short generic phrase the narrator works from. NOT product-specific.",
     "- Pick the SIMPLEST happy path even if you tested edge cases. The demo is for a viewer learning the feature; edge cases belong in the next goal.",
@@ -333,6 +344,17 @@ function extractSteps(text: string): DemoStep[] | undefined {
     if (typeof r.ms === "number" && r.ms >= 0) step.ms = Math.min(10000, Math.round(r.ms));
     if (typeof r.url === "string") step.url = r.url.slice(0, 500);
     if (typeof r.hint === "string") step.hint = r.hint.slice(0, 240);
+    // Defense in depth: type/select steps with empty / whitespace-only
+    // values are not valid demos. The prompt forbids them, but if the
+    // LLM slips through we drop the step rather than play a "blink at
+    // the input for 2 seconds" non-test in pass 2.
+    if (kind === "type" || kind === "select") {
+      const v = (step.value ?? "").trim();
+      if (v.length < 1) continue;
+      // Replace placeholder-y patterns the LLM sometimes echoes from
+      // the prompt template (e.g. "<text>", "your value here").
+      if (/^<.*>$/.test(v) || /^(your |placeholder|example|todo)/i.test(v)) continue;
+    }
     out.push(step);
   }
   return out.length > 0 ? out : undefined;

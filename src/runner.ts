@@ -6,6 +6,7 @@ import type { Goal, RunArtifacts, StepEvent, TestPlan } from "./types.js";
 import { findFeature, isFeaturePageReady, snapshot } from "./feature-finder.js";
 import { runGoal } from "./goal-agent.js";
 import { replayDemo, type GoalReplay } from "./demo-replay.js";
+import { clipToWord } from "./text.js";
 
 /**
  * Wait for all visible <img> elements on the page to finish loading (or fail
@@ -927,8 +928,11 @@ export async function runPlan({ plan, runDir, headed, extraHTTPHeaders, cookies,
           JSON.stringify({ goal, outcome: result.outcome, note: result.note, actions: result.actions }, null, 2),
         );
       } catch {}
-      const shortLabel = goal.shortLabel?.trim() || goal.intent.replace(/\s+/g, " ").slice(0, 32);
-      const shortNote = result.shortNote?.trim() || result.note?.replace(/\s+/g, " ").slice(0, 60);
+      // Cap headline at 48 chars at a word boundary — the previous 32-char
+      // raw slice produced visible mid-word breaks like "pin it usin" on
+      // the PR comment headings.
+      const shortLabel = goal.shortLabel?.trim() || clipToWord(goal.intent.replace(/\s+/g, " ").trim(), 48);
+      const shortNote = result.shortNote?.trim() || (result.note ? clipToWord(result.note.replace(/\s+/g, " ").trim(), 80) : undefined);
       events.push({
         stepId: goal.id,
         description: goal.intent,

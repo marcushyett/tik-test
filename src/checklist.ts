@@ -14,6 +14,7 @@ import chalk from "chalk";
 import type { RunArtifacts } from "./types.js";
 import { NARRATION_TIMEOUT_MS, CHECKLIST_MIN_ITEMS, CHECKLIST_MAX_ITEMS } from "./timeouts.js";
 import { runClaudeJson } from "./claude-cli.js";
+import { clipToWord } from "./text.js";
 
 export interface ChecklistItem {
   outcome: "success" | "failure" | "skipped";
@@ -41,12 +42,18 @@ RULES:
 - {{MIN_ITEMS}} to {{MAX_ITEMS}} items. Aim for the middle of that range — enough to feel substantive, few enough to scan in 5 seconds AND fit on a vertical 9:16 frame without scrolling.
 - "goalId" is REQUIRED on every item — it MUST exactly match one of the goal IDs listed under "Plan goals" below (e.g. "g1", "_login"). Both the video outro and the PR comment GROUP items by their goalId so the reviewer can see which beat each sub-check belongs to. Items without a valid goalId render under a generic bucket and look broken.
 - Each "label" is a specific CHECK that was performed: subject + verb form, ≤32 chars. Examples should be GENERIC subject+verb form ("Filter shows expected items", "Badge appears on first match", "Counter updates on action"). NOT goal-level summaries.
-- The agent verifies via a 4-tier hierarchy: (1) UI screenshot, (2) freeze-the-moment + screenshot, (3) programmatic fallback (DOM/network/storage; agent's OUTCOME starts with "verified programmatically:"), (4) skipped — needs human verification. Map each goal-level OUTCOME to a checklist row:
-  • "success" — pick this if the agent's OUTCOME described screenshot evidence (tier 1/2) OR explicitly said "verified programmatically" (tier 3). Both are real verification — the tier-3 note tells the reviewer the evidence was DOM-level. For tier-3 successes, the row's 'note' SHOULD start with "via DOM:" so the reviewer can scan the difference at a glance.
-  • "failure" — agent emitted OUTCOME: failure (a real regression) OR a screenshot contradicted the success criterion.
-  • "skipped" — agent emitted OUTCOME: skipped (tier 4 — couldn't verify automatically). The 'note' MUST start with "needs human:" and explain why ("needs human: render only meaningful at 4K", "needs human: requires backend state we can't manufacture").
-- DON'T downgrade tier-3 successes to skipped. If the OUTCOME says "verified programmatically" → it's a SUCCESS row, not a skip. Programmatic verification is real verification, just at a lower-confidence tier — that's why we annotate it with "via DOM:". Only mark a row "skipped" when the agent itself used the tier-4 OUTCOME: skipped form OR the agent never reached that check at all.
-- "note": for failures, skipped items, OR tier-3 successes (to mark them as DOM-verified). 5-12 words. No prose, no apologies, no "the test". Good fail note: "filter empty despite TODAY badge". Good skip note: "needs human: 800ms transition, beyond observation latency". Good tier-3 success note: "via DOM: aria-busy + animate-pulse classes present, removed within 1.2s".
+- The agent verifies via a 4-tier hierarchy: (1) UI screenshot, (2) freeze-the-moment + screenshot, (3) programmatic fallback (DOM/network/storage), (4) skipped — needs human. Map each OUTCOME to a row:
+  • "success" — agent confirmed the behaviour, regardless of whether it used a screenshot (tier 1/2) or DOM probe (tier 3). All counted equally — the reviewer cares THAT it works, not WHICH method confirmed it.
+  • "failure" — real regression: agent emitted OUTCOME: failure OR a screenshot contradicted the criterion.
+  • "skipped" — tier-4 only (agent couldn't verify automatically). Note prefix optional but should mention what blocked verification.
+- "note": MANDATORY for every row. PLAIN ENGLISH explaining HOW the check was done — what the agent did and what they saw. 6-14 words. Conversational, not technical. NO jargon: never write "via DOM", "DOM", "querySelector", "aria-busy", "textContent", "getBoundingClientRect", class names, hex colours, or pixel values. The reviewer should understand the test from the note alone.
+  • Good (success): "Clicked the pin and watched the task jump to the top of the list."
+  • Good (success): "Edited the title inline and confirmed the new text appeared after Enter."
+  • Good (success): "Pinning a task showed a confirmation toast that read 'Pinned to top'."
+  • Bad (jargon, opaque): "via DOM: index 0 confirmed, pinned class + gold border applied"
+  • Bad (jargon, opaque): "via DOM: textContent changed to updated value"
+  • Good (failure): "Clicked the filter but no items showed despite the TODAY badge."
+  • Good (skipped): "Couldn't verify the 4K-only render automatically; needs a human eye."
 - Order: failures first (so truncation never hides them), then successes, then skipped.
 - Don't invent checks the agent didn't actually do. Read the action log carefully — every label must map to specific clicks/types/snapshots/screenshots.
 - Don't repeat the same check phrased differently. Merge near-duplicates.
@@ -124,18 +131,6 @@ const MIN_ITEMS = CHECKLIST_MIN_ITEMS;
 const MAX_ITEMS = CHECKLIST_MAX_ITEMS;
 const MAX_LABEL = 36;
 const MAX_NOTE = 64;
-
-/** Hard cap on length, but cut at the last word boundary so we don't end
- *  up with "Today filte" or "Verify the foot…" — both look broken on
- *  the outro card. Adds an ellipsis only if we actually had to drop a
- *  whole word; an exact-fit just stays as-is. */
-function clipToWord(s: string, max: number): string {
-  if (s.length <= max) return s;
-  const cut = s.slice(0, max);
-  const lastSpace = cut.lastIndexOf(" ");
-  if (lastSpace < max * 0.6) return cut.trimEnd(); // word too long, just hard-cut
-  return cut.slice(0, lastSpace).trimEnd() + "…";
-}
 
 function sanitise(items: any[]): ChecklistItem[] {
   const out: ChecklistItem[] = [];
