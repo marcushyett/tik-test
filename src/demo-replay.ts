@@ -616,12 +616,27 @@ async function runStep(page: Page, step: DemoStep, record: Recorder): Promise<vo
       await loc.click({ timeout: 5000 });
       if (bbox) record.click(bbox.x + bbox.width / 2, bbox.y + bbox.height / 2, bbox);
       await page.waitForTimeout(POST_TYPE_PAUSE_MS);
-      // Clear first if the field already has content — keeps demo deterministic.
+      // ── DEFENSE: ensure the typed value WILL produce a visible change.
+      // The agent prompt forbids re-using values from pass 1, but the LLM
+      // doesn't always remember what it typed during validation. If the
+      // field already contains the exact value we're about to type, the
+      // demo would clear-and-retype to the same string — viewer sees the
+      // cursor move but the list never changes. Append a unique short
+      // suffix so the saved state genuinely differs. The suffix is plain
+      // English (not "_v2" / hash garbage) so it reads as a natural edit.
+      const currentValue = await loc.inputValue().catch(() => "");
+      let valueToType = step.value;
+      if (currentValue.trim() === step.value.trim() && currentValue.length > 0) {
+        valueToType = `${step.value} (updated)`;
+        console.log(chalk.dim(`       field already has '${step.value}' — appending '(updated)' so the demo shows a real change`));
+      }
+      // Clear first so we type into an empty field (deterministic, and
+      // shows the typing motion clearly).
       try { await loc.fill(""); } catch {}
       // Type letter-by-letter at human pace. pressSequentially fires real
       // keydown/keypress/input events for each character, so the cursor
       // overlay's keystroke recorder catches every one.
-      await loc.pressSequentially(step.value, { delay: TYPE_PER_CHAR_MS });
+      await loc.pressSequentially(valueToType, { delay: TYPE_PER_CHAR_MS });
       await page.waitForTimeout(POST_ACTION_DWELL_MS);
       return;
     }
